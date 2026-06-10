@@ -27,12 +27,76 @@ simulation and synthesis are the final project verification targets.
 | `src/tb_l1d_cache.sv` | Self-checking testbench and line-memory model |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
-| `scripts/run_vivado.tcl` | Vivado simulation, synthesis, utilization, timing |
+| `scripts/run_vivado.tcl` | Vivado simulation, synthesis, utilization, timing, power |
 | `constraints/l1d_baseline.xdc` | Default 100 MHz synthesis clock constraint |
 | `traces/smoke.trace` | Redistributable trace-replay format smoke test |
 
 All SystemVerilog files remain under `src/` as required by the repository
 layout.
+
+## Architecture and Block-Diagram
+
+
+The following corrections are required for it to represent the current RTL:
+
+- the CPU request and response channels each have their own ready/valid
+  handshake; `cpu_req_ready` belongs to the request channel and
+  `cpu_rsp_valid`/`cpu_rsp_ready` belong to the response channel;
+- hit/miss determination comes from tag, valid metadata, and the fully
+  associative victim lookup, not from the data array;
+- the next-line address is `line_address + LINE_BYTES`, not byte address
+  `+1`; the prefetcher produces a candidate and does not access memory
+  directly;
+- a victim-cache entry stores the complete line address, line data, valid,
+  dirty, and prefetched metadata. A victim hit swaps both data and metadata;
+- dirty victim replacement is sent through the controller's write-back state,
+  not directly from the victim cache to memory;
+- event counters are currently integrated in `l1d_cache`, rather than a
+  separate hardware-monitor module; and
+- the current blocking design has one serialized lower-memory request path.
+  The apparent bus arbiter is therefore FSM request selection, not a separate
+  multi-master interconnect.
+
+The implementation-level diagram is:
+
+```mermaid
+flowchart TB
+    CPU["CPU Core"]
+    DRAM["Lower Memory / DRAM Model"]
+
+    subgraph L1D["Blocking L1 Data Cache"]
+        SELECT["Request Selection<br/>CPU > External Prefetch > Next-Line"]
+        FSM["Cache Controller FSM<br/>Lookup / Allocate / Swap / Write-Back"]
+        SRAM["Synchronous Tag and Data SRAMs<br/>Way 0 .. NUM_WAYS-1"]
+        META["L1 Metadata<br/>Valid / Dirty / Prefetched / Replacement"]
+        VC["Fully Associative Victim Cache<br/>Line Address + Data + Metadata"]
+        PF["Next-Line Candidate Queue<br/>Demand Line + LINE_BYTES"]
+        MON["Event Pulses and Counters<br/>Integrated in Controller"]
+        MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
+    end
+
+    CPU -->|"Request: valid/ready, address, write, data, strobe"| SELECT
+    SELECT -->|"Selected demand or prefetch request"| FSM
+    FSM -->|"Response: valid/ready, read data"| CPU
+
+    FSM -->|"Indexed synchronous read/write"| SRAM
+    SRAM -->|"Tag and complete-line outputs"| FSM
+    FSM <-->|"Metadata update and replacement choice"| META
+    FSM <-->|"Associative lookup, eviction, and full-line swap"| VC
+
+    FSM -->|"Completed demand fill"| PF
+    PF -->|"Best-effort aligned candidate"| SELECT
+    FSM -->|"Hit, miss, victim, write-back, and prefetch events"| MON
+
+    FSM -->|"One line request at a time"| MEMIF
+    MEMIF -->|"Read request or dirty line write-back"| DRAM
+    DRAM -->|"Complete-line read response"| MEMIF
+    MEMIF -->|"Fill response"| FSM
+```
+
+`SELECT`, `META`, `MON`, and `MEMIF` are conceptual boundaries inside
+`l1d_cache.sv`; only the SRAM wrapper and next-line generator are separate RTL
+module instances in the present baseline.
 
 ## Configurable Parameters
 
@@ -209,8 +273,23 @@ and elapsed testbench cycles.
 
 ## Vivado Verification
 
-Vivado is not installed on the current development machine, so the final flow
-has not yet been executed here. On a machine with Vivado in `PATH`, run:
+The batch flow was executed successfully on June 10, 2026 with Vivado
+2024.2.1 targeting `xc7a35tcpg236-1`. The local macOS host still uses Icarus
+for preliminary regression; final XSim and synthesis were run on a remote
+Windows installation. All seven XSim configurations completed with
+`ALL TESTS PASSED`:
+
+| XSim configuration | Result |
+| --- | --- |
+| Direct-mapped, VC4, prefetch off | PASS |
+| 2-way, VC4, prefetch off | PASS |
+| 2-way, VC8, prefetch off | PASS |
+| 2-way, VC4, next-line prefetch on | PASS |
+| Direct-mapped, VC4 synthetic workloads | PASS |
+| 2-way, VC4 synthetic workloads | PASS |
+| 2-way, VC4 prefetch synthetic workloads | PASS |
+
+Run the same flow on a machine with Vivado in `PATH` using:
 
 ```tcl
 vivado -mode batch -source scripts/run_vivado.tcl
@@ -227,9 +306,34 @@ generated under
 - `timing_summary.rpt`;
 - `power.rpt`.
 
-Simulation logs are copied to `build/vivado/reports/`. Before final project
-sign-off, inspect waveforms for every FSM path and record the exact Vivado
-version, FPGA part, and power activity assumptions used for PPA comparison.
+Simulation logs are copied to `build/vivado/reports/`. The June 10 synthesis
+results are:
+
+| Configuration | LUTs | FFs | RAMB36 | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Direct-mapped, VC4, prefetch off | 1,502 | 1,493 | 2 | 1.876 ns | 123.1 MHz | 0.100 W |
+| 2-way, VC4, prefetch off | 1,839 | 1,621 | 4 | 1.525 ns | 118.0 MHz | 0.099 W |
+| 2-way, VC8, prefetch off | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
+| 2-way, VC4, prefetch on | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
+
+All configurations meet the 100 MHz synthesis constraint. The data arrays
+were inferred as block RAM; tag arrays were inferred as distributed RAM. The
+Fmax column is calculated as `1000 / (10 - WNS)` and is only a post-synthesis
+STA estimate. Routing and implementation can reduce it.
+
+The power values use Vivado vectorless activity propagation, with no SAIF/VCD
+activity file, default operating conditions, and `Low` confidence. They are
+useful only as early relative estimates. The very high top-level I/O count
+also makes these figures unsuitable as board-level power predictions.
+
+On Windows, use an ASCII-only project path. Vivado simulation worked under a
+Chinese user profile, but the synthesis child process could not reopen the
+project when its path contained non-ASCII characters.
+
+Before final project sign-off, inspect XSim waveforms for every FSM path and
+run implementation/post-route timing. For meaningful power comparison, rerun
+`report_power` with representative switching activity from the workload
+traces.
 
 ## Workload-Driven Boundary Analysis
 
@@ -367,5 +471,6 @@ zero-entry bypass configuration is future work.
 - Counter overflow is modulo 32 bits.
 - Coherence, atomics, fences, flush/invalidate commands, ECC, and unaligned
   accesses spanning words or lines are outside this baseline.
-- Vivado simulation, synthesis, timing, and power reports remain required for
-  final validation.
+- XSim behavioral regression and post-synthesis reports are complete;
+  waveform review, implementation/post-route timing, and activity-based power
+  analysis remain required for final sign-off.

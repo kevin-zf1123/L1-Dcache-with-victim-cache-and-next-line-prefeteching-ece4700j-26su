@@ -30,10 +30,11 @@
 
 ## Vivado and PPA
 
-- [ ] Run Vivado simulation for direct-mapped and 2-way configurations.
+- [x] Run Vivado simulation for direct-mapped and 2-way configurations.
 - [ ] Inspect waveforms for all hit, miss, swap, fill, and write-back paths.
-- [ ] Run synthesis and record LUT, FF, inferred memory, and timing reports.
+- [x] Run synthesis and record LUT, FF, inferred memory, and timing reports.
 - [x] Add a baseline 10 ns clock constraint.
-- [ ] Calculate Fmax from an actual Vivado STA report.
-- [ ] Run FPGA power estimation with documented activity assumptions.
+- [x] Calculate an approximate post-synthesis Fmax from Vivado STA reports.
+- [x] Run vectorless FPGA power estimation and document its assumptions.
+- [ ] Run implementation/post-route timing and activity-based power analysis.
 - [ ] Compare baseline, victim-cache, prefetch, and combined configurations.

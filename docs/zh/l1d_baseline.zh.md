@@ -27,11 +27,75 @@ Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真
 | `src/tb_l1d_cache.sv` | 自检 testbench 和缓存行内存模型 |
 | `scripts/run_iverilog.sh` | 功能与 synthetic workload 初步回归 |
 | `scripts/summarize_workloads.sh` | 将 workload 日志记录转换为 CSV |
-| `scripts/run_vivado.tcl` | Vivado 仿真、综合、资源与时序报告 |
+| `scripts/run_vivado.tcl` | Vivado 仿真、综合、资源、时序与功耗报告 |
 | `constraints/l1d_baseline.xdc` | 默认 100 MHz 综合时钟约束 |
 | `traces/smoke.trace` | 可重新分发的 trace replay 格式 smoke test |
 
 所有 SystemVerilog 文件均位于 `src/` 下。
+
+## 架构与 Block Diagram 审查
+
+组员绘制的原图包含了正确的高层组件，但若要准确描述当前 RTL，需要做以下
+修正：
+
+- CPU request 和 response 分别使用独立的 ready/valid handshake；
+  `cpu_req_ready` 属于 request channel，而 `cpu_rsp_valid` 和
+  `cpu_rsp_ready` 属于 response channel；
+- hit/miss 由 tag、valid metadata 和全相联 victim lookup 决定，不是由
+  data array 决定；
+- next-line 地址是 `line_address + LINE_BYTES`，不是 byte address `+1`；
+  prefetcher 只产生 candidate，不直接访问内存；
+- victim entry 保存完整 line address、line data、valid、dirty 和
+  prefetched metadata；victim hit 会同时交换数据与 metadata；
+- dirty victim replacement 通过 controller write-back state 发送，不是
+  victim cache 直接访问内存；
+- event counter 当前集成在 `l1d_cache` 内，不是独立 hardware monitor
+  module；
+- 当前 blocking 设计只有一条串行下级内存请求路径，因此图中的 bus
+  arbiter 实际是 FSM request selection，而非独立 multi-master
+  interconnect。
+
+修正后的 implementation-level diagram 如下。为避免 Mermaid 中文渲染问题，
+图中统一使用英文：
+
+```mermaid
+flowchart TB
+    CPU["CPU Core"]
+    DRAM["Lower Memory / DRAM Model"]
+
+    subgraph L1D["Blocking L1 Data Cache"]
+        SELECT["Request Selection<br/>CPU > External Prefetch > Next-Line"]
+        FSM["Cache Controller FSM<br/>Lookup / Allocate / Swap / Write-Back"]
+        SRAM["Synchronous Tag and Data SRAMs<br/>Way 0 .. NUM_WAYS-1"]
+        META["L1 Metadata<br/>Valid / Dirty / Prefetched / Replacement"]
+        VC["Fully Associative Victim Cache<br/>Line Address + Data + Metadata"]
+        PF["Next-Line Candidate Queue<br/>Demand Line + LINE_BYTES"]
+        MON["Event Pulses and Counters<br/>Integrated in Controller"]
+        MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
+    end
+
+    CPU -->|"Request: valid/ready, address, write, data, strobe"| SELECT
+    SELECT -->|"Selected demand or prefetch request"| FSM
+    FSM -->|"Response: valid/ready, read data"| CPU
+
+    FSM -->|"Indexed synchronous read/write"| SRAM
+    SRAM -->|"Tag and complete-line outputs"| FSM
+    FSM <-->|"Metadata update and replacement choice"| META
+    FSM <-->|"Associative lookup, eviction, and full-line swap"| VC
+
+    FSM -->|"Completed demand fill"| PF
+    PF -->|"Best-effort aligned candidate"| SELECT
+    FSM -->|"Hit, miss, victim, write-back, and prefetch events"| MON
+
+    FSM -->|"One line request at a time"| MEMIF
+    MEMIF -->|"Read request or dirty line write-back"| DRAM
+    DRAM -->|"Complete-line read response"| MEMIF
+    MEMIF -->|"Fill response"| FSM
+```
+
+`SELECT`、`META`、`MON` 和 `MEMIF` 是 `l1d_cache.sv` 内部的概念边界；
+当前 baseline 中只有 SRAM wrapper 和 next-line generator 是独立 RTL
+module instance。
 
 ## 参数
 
@@ -183,8 +247,22 @@ select 的提示信息，但编译和全部自检均成功。
 
 ## Vivado 验证
 
-当前机器未安装 Vivado，因此尚未在本机执行最终流程。在安装了 Vivado 的
-机器上运行：
+2026 年 6 月 10 日已使用 Vivado 2024.2.1 对
+`xc7a35tcpg236-1` 成功执行 batch flow。本地 macOS 仍使用 Icarus
+进行初步回归，最终 XSim 和综合在远端 Windows Vivado 上完成。七种 XSim
+配置均输出 `ALL TESTS PASSED`：
+
+| XSim 配置 | 结果 |
+| --- | --- |
+| 直接映射，VC4，关闭 prefetch | PASS |
+| 2 路，VC4，关闭 prefetch | PASS |
+| 2 路，VC8，关闭 prefetch | PASS |
+| 2 路，VC4，开启 next-line prefetch | PASS |
+| 直接映射，VC4，synthetic workload | PASS |
+| 2 路，VC4，synthetic workload | PASS |
+| 2 路，VC4，prefetch synthetic workload | PASS |
+
+在 Vivado 已加入 `PATH` 的机器上，可用以下命令重复该流程：
 
 ```tcl
 vivado -mode batch -source scripts/run_vivado.tcl
@@ -199,8 +277,29 @@ vivado -mode batch -source scripts/run_vivado.tcl
 - `timing_summary.rpt`；
 - `power.rpt`。
 
-仿真日志复制到 `build/vivado/reports/`。最终签核前还需检查所有 FSM 路径
-波形，并记录 Vivado 版本、精确 FPGA 型号和功耗 activity assumption。
+仿真日志复制到 `build/vivado/reports/`。6 月 10 日的综合结果如下：
+
+| 配置 | LUT | FF | RAMB36 | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 直接映射，VC4，关闭 prefetch | 1,502 | 1,493 | 2 | 1.876 ns | 123.1 MHz | 0.100 W |
+| 2 路，VC4，关闭 prefetch | 1,839 | 1,621 | 4 | 1.525 ns | 118.0 MHz | 0.099 W |
+| 2 路，VC8，关闭 prefetch | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
+| 2 路，VC4，开启 prefetch | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
+
+四种配置均满足 100 MHz 综合约束。data array 被推断为 block RAM，tag
+array 被推断为 distributed RAM。Fmax 按 `1000 / (10 - WNS)` 计算，只是
+综合后 STA 估算；布局布线后结果可能下降。
+
+功耗值使用 Vivado vectorless activity propagation，没有 SAIF/VCD activity
+文件，采用默认 operating condition，且置信度为 `Low`。这些数据只能作为
+早期相对估算。顶层 I/O 数量也很高，因此不能把它们视为板级功耗预测。
+
+Windows 上应使用纯 ASCII 工程路径。Vivado 仿真可以在中文用户目录下运行，
+但综合子进程无法重新打开包含非 ASCII 字符的工程路径。
+
+最终签核前仍需检查所有 FSM 路径的 XSim 波形，并执行 implementation/
+post-route timing。为了获得有意义的功耗比较，还应使用 workload trace
+产生的代表性 switching activity 重新运行 `report_power`。
 
 ## Workload-Driven Boundary Analysis
 
@@ -324,4 +423,5 @@ prefetch 开关、cache capacity、line size 和下级内存延迟。当前 RTL 
 - 32 位计数器溢出后回绕；
 - coherence、atomic、fence、flush/invalidate、ECC，以及跨 word/line 的
   unaligned access 不属于本 baseline；
-- 最终仍需完成 Vivado 仿真、综合、时序和功耗报告。
+- XSim 行为回归与综合后报告已经完成；最终签核仍需波形检查、
+  implementation/post-route timing 和基于真实 activity 的功耗分析。

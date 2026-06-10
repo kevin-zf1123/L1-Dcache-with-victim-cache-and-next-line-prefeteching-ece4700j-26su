@@ -32,10 +32,11 @@
 
 ## Vivado 与 PPA
 
-- [ ] 对 direct-mapped 和 2-way 配置运行 Vivado 仿真。
+- [x] 对 direct-mapped 和 2-way 配置运行 Vivado 仿真。
 - [ ] 检查所有 hit、miss、swap、fill 和 write-back 波形。
-- [ ] 综合并记录 LUT、FF、推断存储和时序报告。
+- [x] 综合并记录 LUT、FF、推断存储和时序报告。
 - [x] 添加基线 10 ns 时钟约束。
-- [ ] 根据实际 Vivado STA 报告计算 Fmax。
-- [ ] 使用有记录的 activity assumption 运行 FPGA power estimation。
+- [x] 根据 Vivado STA 报告计算近似综合后 Fmax。
+- [x] 运行 vectorless FPGA power estimation 并记录其假设。
+- [ ] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
 - [ ] 比较 baseline、victim cache、prefetch 和组合配置。
