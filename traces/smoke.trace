@@ -1,0 +1,7 @@
+# opcode address data write_strobe
+# 0 = read; 1 = write. Hex values have no 0x prefix.
+0 00000020
+1 00000024 deadbeef f
+0 00000024
+1 00000024 0000aa00 2
+0 00000024
