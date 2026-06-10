@@ -38,19 +38,20 @@ set simulation_configurations [list \
         "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4" ""] \
     [list workload_direct_mapped_vc4 \
         "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" \
-        "+WORKLOADS_ONLY"] \
+        "-testplusarg WORKLOADS_ONLY"] \
     [list workload_two_way_vc4 \
         "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" \
-        "+WORKLOADS_ONLY"] \
+        "-testplusarg WORKLOADS_ONLY"] \
     [list workload_next_line_prefetch_vc4 \
         "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4" \
-        "+WORKLOADS_ONLY"]]
+        "-testplusarg WORKLOADS_ONLY"]]
 
 foreach configuration $simulation_configurations {
     lassign $configuration name generics more_options
     puts "Running Vivado behavioral simulation: $name"
     set_property generic $generics [get_filesets sim_1]
-    set_property xsim.simulate.xsim.more_options $more_options \
+    set_property -dict [list \
+        xsim.simulate.xsim.more_options $more_options] \
         [get_filesets sim_1]
     launch_simulation -simset sim_1 -mode behavioral
     run all
