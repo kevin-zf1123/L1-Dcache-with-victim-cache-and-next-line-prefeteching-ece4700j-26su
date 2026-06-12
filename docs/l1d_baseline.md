@@ -354,6 +354,10 @@ license to eligible accredited institutions, requested by a professor or
 full-time staff member. Benchmark source or proprietary input data must never
 be committed to this repository.
 
+Current local status: the SPEC CPU benchmark package was not downloaded. No
+licensed local copy or public unauthenticated download URL is available in this
+workspace; only public documentation links are recorded.
+
 ### Trace-based RTL method
 
 Running complete SPEC programs directly in an RTL testbench is impractical.

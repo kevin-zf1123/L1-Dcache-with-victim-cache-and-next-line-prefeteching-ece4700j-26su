@@ -160,5 +160,6 @@ and add access dates for mutable web pages.
 - [When Prefetching Works, TACO 2012](https://doi.org/10.1145/2133382.2133384)
 - [Pythia, MICRO 2021](https://arxiv.org/abs/2109.12021)
 - [Gaze, HPCA 2025](https://arxiv.org/abs/2412.05211)
+- [XiangShan, MICRO 2022](https://talks-pubs.xiangshan.cc/publications/micro2022-xiangshan.pdf)
 - [Rocket Chip DCache](https://github.com/chipsalliance/rocket-chip/blob/master/src/main/scala/rocket/DCache.scala)
 - [ChampSim next-line prefetcher](https://github.com/ChampSim/ChampSim/tree/master/prefetcher/next_line)

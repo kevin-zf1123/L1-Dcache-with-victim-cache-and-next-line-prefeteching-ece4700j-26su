@@ -114,3 +114,15 @@ CPU 或下级内存协议。
 
 最终 proposal bibliography 应尽量用官方厂商资料或同行评审测量替换较弱
 网页来源，并为会变化的网页补充访问日期。
+
+## 主要链接
+
+- [Jouppi victim cache, ISCA 1990](https://doi.org/10.1109/ISCA.1990.134547)
+- [Chen and Baer hardware prefetching, IEEE TC 1995](https://doi.org/10.1109/12.381947)
+- [Feedback Directed Prefetching, HPCA 2007](https://doi.org/10.1109/HPCA.2007.346185)
+- [When Prefetching Works, TACO 2012](https://doi.org/10.1145/2133382.2133384)
+- [Pythia, MICRO 2021](https://arxiv.org/abs/2109.12021)
+- [Gaze, HPCA 2025](https://arxiv.org/abs/2412.05211)
+- [XiangShan, MICRO 2022](https://talks-pubs.xiangshan.cc/publications/micro2022-xiangshan.pdf)
+- [Rocket Chip DCache](https://github.com/chipsalliance/rocket-chip/blob/master/src/main/scala/rocket/DCache.scala)
+- [ChampSim next-line prefetcher](https://github.com/ChampSim/ChampSim/tree/master/prefetcher/next_line)
