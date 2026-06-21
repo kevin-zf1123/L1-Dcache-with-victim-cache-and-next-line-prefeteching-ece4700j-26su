@@ -3,14 +3,15 @@
 module tb_l1d_cache #(
     parameter integer NUM_WAYS = 1,
     parameter integer ENABLE_PREFETCH = 0,
-    parameter integer VICTIM_ENTRIES = 4
+    parameter integer VICTIM_ENTRIES = 4,
+    parameter integer MEM_BYTES = 1048576
 );
     localparam integer ADDR_WIDTH = 32;
     localparam integer DATA_WIDTH = 32;
     localparam integer LINE_BYTES = 16;
     localparam integer NUM_SETS = 4;
     localparam integer LINE_BITS = LINE_BYTES * 8;
-    localparam integer MEM_BYTES = 4096;
+    localparam logic [ADDR_WIDTH-1:0] ADDR_MASK = MEM_BYTES - 1;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
 
     logic clk;
@@ -142,6 +143,7 @@ module tb_l1d_cache #(
         integer b;
         logic [LINE_BITS-1:0] result;
         begin
+            addr = addr & ADDR_MASK;
             result = '0;
             for (b = 0; b < LINE_BYTES; b = b + 1) begin
                 result[b*8 +: 8] = memory[addr + b];
@@ -156,6 +158,7 @@ module tb_l1d_cache #(
         integer b;
         logic [DATA_WIDTH-1:0] result;
         begin
+            addr = addr & ADDR_MASK;
             result = '0;
             for (b = 0; b < DATA_WIDTH/8; b = b + 1) begin
                 result[b*8 +: 8] = memory[addr + b];
@@ -170,6 +173,7 @@ module tb_l1d_cache #(
         integer b;
         logic [DATA_WIDTH-1:0] result;
         begin
+            addr = addr & ADDR_MASK;
             result = '0;
             for (b = 0; b < DATA_WIDTH/8; b = b + 1) begin
                 result[b*8 +: 8] = golden_memory[addr + b];
@@ -195,6 +199,7 @@ module tb_l1d_cache #(
     );
         integer b;
         begin
+            addr = addr & ADDR_MASK;
             for (b = 0; b < DATA_WIDTH/8; b = b + 1) begin
                 if (wstrb[b]) begin
                     golden_memory[addr + b] = data[b*8 +: 8];
@@ -892,7 +897,7 @@ module tb_l1d_cache #(
                 if (mem_req_write) begin
                     accepted_mem_writes <= accepted_mem_writes + 1;
                     for (b = 0; b < LINE_BYTES; b = b + 1) begin
-                        memory[mem_req_addr + b] <= mem_req_wdata[b*8 +: 8];
+                        memory[(mem_req_addr & ADDR_MASK) + b] <= mem_req_wdata[b*8 +: 8];
                     end
                 end else begin
                     accepted_mem_reads <= accepted_mem_reads + 1;
