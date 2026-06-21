@@ -319,6 +319,9 @@ speed/rate 套件。
 申请免费的 SPEC CPU 2026 学术许可证。不得把 benchmark 源码或专有输入
 数据提交到本仓库。
 
+当前本地状态：没有下载 SPEC CPU benchmark package。本 workspace 中没有
+已授权的本地副本，也没有公开免登录下载 URL；目前只记录公开文档链接。
+
 ### 基于 Trace 的 RTL 方法
 
 在 RTL testbench 中直接运行完整 SPEC 程序并不现实。计划采用：
