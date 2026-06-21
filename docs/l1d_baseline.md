@@ -17,13 +17,45 @@ write-allocate cache with:
 Icarus Verilog is used only for fast preliminary functional checks. Vivado
 simulation and synthesis are the final project verification targets.
 
+## Refactor Summary
+
+The original monolithic `src/l1d_cache.sv` has been split into smaller RTL
+leaves around stable, toolchain-friendly boundaries:
+
+- `src/l1d_request_arbiter.sv`: idle-cycle CPU / external-prefetch /
+  next-line request selection and ready signaling.
+- `src/l1d_controller.sv`: packed-port FSM and request-side working state.
+- `src/l1d_lookup.sv`: combinational tag hit, invalid-way, and victim-hit
+  detection.
+- `src/l1d_array_bank.sv`: per-way tag/data SRAM wrapper.
+- `src/l1d_victim_cache.sv`: victim entry storage and round-robin pointer.
+- `src/l1d_cache_pkg.sv`: shared enums and cache-local types.
+
+`src/l1d_cache.sv` is now primarily an integration layer. It still owns:
+
+- top-level wiring between submodules;
+- L1 metadata arrays and replacement policy updates;
+- array access control and write-intent generation;
+- statistics counters and one-cycle event outputs; and
+- simulation-only assertions and configuration guards.
+
+This refactor keeps behavior unchanged while reducing review surface area.
+The current regression checkpoint is `bash scripts/run_iverilog.sh`, which
+passes after every extraction listed above.
+
 ## Source Layout
 
 | Path | Purpose |
 | --- | --- |
+| `src/l1d_cache_pkg.sv` | Shared cache-local types used across refactored RTL files |
+| `src/l1d_lookup.sv` | Pure combinational request decode, L1 hit detection, invalid-way search, victim lookup |
+| `src/l1d_array_bank.sv` | Per-way tag/data SRAM wrapper and unified array port boundary |
+| `src/l1d_request_arbiter.sv` | `ST_IDLE` request selection, ready signaling, and chosen-request packaging |
+| `src/l1d_controller.sv` | Packed-port controller for request-state registers and FSM transitions |
+| `src/l1d_victim_cache.sv` | Packed-port victim-cache storage and round-robin pointer state |
 | `src/l1d_sram.sv` | Single-port synchronous SRAM inference wrapper |
 | `src/l1d_next_line_prefetch.sv` | Replaceable one-entry next-line candidate generator |
-| `src/l1d_cache.sv` | Cache datapath, FSM, victim cache, prefetcher, counters |
+| `src/l1d_cache.sv` | Top-level cache integration, controller FSM, victim metadata, counters |
 | `src/tb_l1d_cache.sv` | Self-checking testbench and line-memory model |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
@@ -94,9 +126,14 @@ flowchart TB
     MEMIF -->|"Fill response"| FSM
 ```
 
-`SELECT`, `META`, `MON`, and `MEMIF` are conceptual boundaries inside
-`l1d_cache.sv`; only the SRAM wrapper and next-line generator are separate RTL
-module instances in the present baseline.
+`META`, `MON`, and `MEMIF` are still conceptual boundaries inside
+`l1d_cache.sv`. As of the June 21, 2026 refactor pass, request selection is a
+real leaf RTL module in `src/l1d_request_arbiter.sv`, the packed request-state
+controller is a real leaf RTL module in `src/l1d_controller.sv`, victim-cache
+storage is a real leaf RTL module in `src/l1d_victim_cache.sv`, the lookup
+path is a real leaf RTL module in `src/l1d_lookup.sv`, the tag/data SRAM
+wrapper is a real leaf RTL module in `src/l1d_array_bank.sv`, and shared
+controller state types live in `src/l1d_cache_pkg.sv`.
 
 ## Configurable Parameters
 
@@ -166,6 +203,66 @@ The main states are:
 The synchronous SRAM read is initiated in `ST_IDLE`; tag and data outputs are
 examined in `ST_LOOKUP`. Metadata valid, dirty, and prefetched bits are
 registered separately.
+
+## Refactor Status
+
+The code base is in an incremental modularization phase intended to make
+`src/l1d_cache.sv` easier to review and extend without changing behavior.
+
+Completed:
+
+- `state_t` moved into `src/l1d_cache_pkg.sv`;
+- idle-cycle CPU / external-prefetch / next-line candidate arbitration moved
+  into `src/l1d_request_arbiter.sv`;
+- request-state registers and FSM transition logic moved into
+  `src/l1d_controller.sv`;
+- victim-cache entry storage and RR pointer state moved into
+  `src/l1d_victim_cache.sv`;
+- request decode, L1 tag hit detection, invalid-way discovery, and victim-hit
+  discovery moved into `src/l1d_lookup.sv`; and
+- per-way tag/data SRAM instantiation moved into `src/l1d_array_bank.sv`; and
+- the main sequential behavior in `src/l1d_cache.sv` was split into separate
+  always_ff blocks for controller/request state, L1 metadata, victim-cache
+  state, and stats/events; and
+- the Icarus regression flow now compiles the package and lookup module
+  explicitly before `src/l1d_cache.sv`.
+
+Still integrated in `src/l1d_cache.sv`:
+
+- array access control and write-intent generation;
+- victim-cache policy decisions; and
+- event counter and pulse generation policy.
+
+Planned next extractions:
+
+1. Optional monitor/statistics extraction if it can preserve the current
+   one-cycle event semantics without creating duplicate writers.
+2. Optional L1 metadata helper extraction if it reduces top-level policy noise
+   without reintroducing fragile unpacked-array ports.
+
+The current refactor order intentionally favors boundaries that can be carried
+through Icarus Verilog without relying on unpacked-array module ports, because
+those interfaces have already caused elaboration problems in this project.
+
+## Verification Notes
+
+The current documented regression target is:
+
+```bash
+./scripts/run_iverilog.sh
+```
+
+That script runs directed tests, workload-profile tests, and the redistributable
+smoke trace replay using `traces/smoke.trace`.
+
+Icarus still emits non-fatal informational warnings about constant selects in
+`always_*` for:
+
+- `src/l1d_lookup.sv`
+- `src/l1d_request_arbiter.sv`
+
+Those warnings are a known simulator limitation rather than a functional
+failure in the present regression flow.
 
 ## Write-Back and Write-Allocate Policy
 
@@ -393,6 +490,72 @@ Icarus plusarg limitation when an absolute workspace path contains non-ASCII
 characters. A SPEC extraction tool must convert committed accesses into this
 cache-interface format, align or split accesses as required, and omit
 licensed data values when redistribution is not permitted.
+
+### gem5-based extraction notes
+
+The repository now includes repo-local helper scripts for a gem5-assisted
+trace flow without placing config files in `~/gem5`:
+
+- `scripts/gem5_trace_capture.py`: a standalone gem5 SE-mode config that
+  attaches `CommMonitor` and `MemTraceProbe` to the data side of a
+  `TimingSimpleCPU`;
+- `scripts/convert_gem5_packet_trace.py`: converts the decoded gem5 packet
+  trace into this repository's replay format for read-only regions.
+- `scripts/convert_gem5_write_trace.py`: converts a committed-store ASCII
+  write trace into the RTL replay format for mixed read/write studies.
+
+Example WSL flow:
+
+```bash
+cd /mnt/d/470/470p/1/L1-Dcache-with-victim-cache-and-next-line-prefeteching-ece4700j-26su
+
+~/gem5/build/X86/gem5.opt \
+    scripts/gem5_trace_capture.py \
+    --cmd /path/to/workload \
+    --options "workload arguments" \
+    --trace-file /mnt/d/470/470p/1/L1-Dcache-with-victim-cache-and-next-line-prefeteching-ece4700j-26su/traces/workload.ptrc.gz \
+    --max-ticks 1000000000
+
+python3 ~/gem5/util/decode_packet_trace.py \
+    traces/workload.ptrc.gz \
+    traces/workload_packet.csv
+
+python3 scripts/convert_gem5_packet_trace.py \
+    traces/workload_packet.csv \
+    traces/workload_readonly.trace
+
+vvp sim/two_way_vc4.vvp +TRACE=traces/workload_readonly.trace
+```
+
+Important limitation: stock gem5 packet traces do not store write payload
+bytes or write strobes. That means they are sufficient for:
+
+- address-stream studies;
+- read-only or mostly-read bounded regions; and
+- early victim-cache/prefetch sensitivity exploration.
+
+They are not sufficient for full replay of mixed read/write regions into the
+current RTL testbench format. For write-containing traces, one of the
+following is required:
+
+1. add a small gem5 instrumentation patch that logs store data bytes at
+   commit or at the data-cache request interface;
+2. create a read-only filtered region where writes are excluded by design; or
+3. extend the RTL replay path to support address-only stores with an external
+   memory-image checkpoint, if that approximation is acceptable for the study.
+
+For this project, the safest near-term method is to use gem5 packet traces to
+identify and extract read-dominant windows first, then add a small
+payload-capturing hook only if mixed read/write replay becomes necessary.
+
+The committed-store logger, when implemented in gem5, should emit:
+
+```text
+tick op addr size wstrb data [pc]
+```
+
+The `data` field is raw bytes in little-endian order, and the converter will
+split each record on 32-bit boundaries while preserving the byte enables.
 
 ### Workload classes
 
