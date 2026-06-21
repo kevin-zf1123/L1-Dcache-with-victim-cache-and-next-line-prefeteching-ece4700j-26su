@@ -19,6 +19,12 @@ run_case() {
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
         -o "${output}" \
+        "${ROOT_DIR}/src/l1d_cache_pkg.sv" \
+        "${ROOT_DIR}/src/l1d_lookup.sv" \
+        "${ROOT_DIR}/src/l1d_array_bank.sv" \
+        "${ROOT_DIR}/src/l1d_request_arbiter.sv" \
+        "${ROOT_DIR}/src/l1d_controller.sv" \
+        "${ROOT_DIR}/src/l1d_victim_cache.sv" \
         "${ROOT_DIR}/src/l1d_sram.sv" \
         "${ROOT_DIR}/src/l1d_next_line_prefetch.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
@@ -40,6 +46,12 @@ run_workload_case() {
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
         -o "${output}" \
+        "${ROOT_DIR}/src/l1d_cache_pkg.sv" \
+        "${ROOT_DIR}/src/l1d_lookup.sv" \
+        "${ROOT_DIR}/src/l1d_array_bank.sv" \
+        "${ROOT_DIR}/src/l1d_request_arbiter.sv" \
+        "${ROOT_DIR}/src/l1d_controller.sv" \
+        "${ROOT_DIR}/src/l1d_victim_cache.sv" \
         "${ROOT_DIR}/src/l1d_sram.sv" \
         "${ROOT_DIR}/src/l1d_next_line_prefetch.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
@@ -58,6 +70,10 @@ run_workload_case workload_next_line_prefetch_vc4 2 1 4
 vvp "${SIM_DIR}/two_way_vc4.vvp" \
     "+TRACE=traces/smoke.trace" | \
     tee "${SIM_DIR}/trace_replay_smoke.log"
+
+vvp "${SIM_DIR}/two_way_vc8.vvp" \
+    "+TRACE=traces/spec2017_replay.trace" | \
+    tee "${SIM_DIR}/spec_trace.log"
 
 "${ROOT_DIR}/scripts/summarize_workloads.sh"
 echo "Icarus regression passed. Logs are in ${SIM_DIR}."
