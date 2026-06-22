@@ -5,6 +5,7 @@
 ## Baseline
 
 - [x] 定义 blocking ready/valid CPU 和缓存行内存接口。
+- [x] 实现 RV64 load/store 请求字段、64 位地址和 XLEN 数据宽度。
 - [x] 实现可配置 direct-mapped / 2-way L1D。
 - [x] 实现同步 tag/data SRAM wrapper。
 - [x] 实现 write-back / write-allocate FSM。
@@ -19,6 +20,8 @@
 ## 验证与高级功能
 
 - [x] 增加 deterministic randomized golden-memory scoreboard。
+- [x] 验证 RV64 load/store size、符号/零扩展和未对齐错误。
+- [x] 验证 64 位高地址 tag 和 RV64 trace replay 格式。
 - [x] 检查 backpressure 下 CPU response 和下级内存请求稳定性。
 - [x] 增加 handshake stability 和 line uniqueness 仿真检查。
 - [x] 验证 4-entry 和 8-entry victim cache 配置。
@@ -32,11 +35,11 @@
 
 ## Vivado 与 PPA
 
-- [x] 对 direct-mapped 和 2-way 配置运行 Vivado 仿真。
+- [ ] 对 direct-mapped 和 2-way 配置运行 RV64 Vivado 仿真。
 - [ ] 检查所有 hit、miss、swap、fill 和 write-back 波形。
-- [x] 综合并记录 LUT、FF、推断存储和时序报告。
+- [ ] 对 RV64 RTL 综合并记录 LUT、FF、推断存储和时序报告。
 - [x] 添加基线 10 ns 时钟约束。
-- [x] 根据 Vivado STA 报告计算近似综合后 Fmax。
-- [x] 运行 vectorless FPGA power estimation 并记录其假设。
+- [ ] 根据 RV64 Vivado STA 报告计算近似综合后 Fmax。
+- [ ] 运行 RV64 vectorless FPGA power estimation 并记录其假设。
 - [ ] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
 - [ ] 比较 baseline、victim cache、prefetch 和组合配置。

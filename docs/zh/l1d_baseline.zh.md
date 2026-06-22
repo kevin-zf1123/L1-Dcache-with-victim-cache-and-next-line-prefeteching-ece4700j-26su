@@ -6,6 +6,10 @@
 `docs/l1d_baseline.md` 是权威版本。当前 RTL 实现了 blocking、
 write-back、write-allocate 数据缓存，包含：
 
+- RV64 load/store 请求约定，使用 64 位字节地址和 XLEN 数据宽度；
+- byte、halfword、word、word-unsigned 和 doubleword load 语义，并支持
+  符号扩展或零扩展；
+- byte、halfword、word 和 doubleword store 语义，并报告对齐错误；
 - 可配置的直接映射或 2 路组相联结构；
 - 同步 tag/data SRAM wrapper；
 - CPU 与缓存行内存侧 ready/valid 接口；
@@ -74,9 +78,9 @@ flowchart TB
         MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
     end
 
-    CPU -->|"Request: valid/ready, address, write, data, strobe"| SELECT
+    CPU -->|"Request: valid/ready, address, op size, unsigned flag, data"| SELECT
     SELECT -->|"Selected demand or prefetch request"| FSM
-    FSM -->|"Response: valid/ready, read data"| CPU
+    FSM -->|"Response: valid/ready, data, error cause"| CPU
 
     FSM -->|"Indexed synchronous read/write"| SRAM
     SRAM -->|"Tag and complete-line outputs"| FSM
@@ -101,8 +105,8 @@ module instance。
 
 | 参数 | 默认值 | 约束或含义 |
 | --- | ---: | --- |
-| `ADDR_WIDTH` | 32 | 字节地址宽度 |
-| `DATA_WIDTH` | 32 | CPU 传输宽度，支持字节写使能 |
+| `ADDR_WIDTH` | 64 | RV64 字节地址宽度 |
+| `DATA_WIDTH` | 64 | RV64 XLEN 数据宽度 |
 | `LINE_BYTES` | 16 | 2 的幂次的缓存行大小 |
 | `NUM_SETS` | 8 | 至少为 2 的 2 次幂 |
 | `NUM_WAYS` | 2 | `1` 表示直接映射，`2` 表示 2 路 |
@@ -115,16 +119,33 @@ module instance。
 
 ### CPU 请求与响应
 
-上升沿满足 `cpu_req_valid && cpu_req_ready` 时接收请求。请求包含字节
-地址、读写类型、写数据和逐字节写使能。缓存是 blocking 结构，同一时间
-只处理一个请求。
+上升沿满足 `cpu_req_valid && cpu_req_ready` 时接收请求。请求字段包括：
 
-`cpu_rsp_valid` 会保持到 `cpu_rsp_ready` 接收响应。load 在
-`cpu_rsp_rdata` 返回选中的 word；store 也会产生完成响应，返回值是写后
-word，调用方可以忽略。
+- `cpu_req_addr`：字节地址；
+- `cpu_req_write`：`0` 表示 load，`1` 表示 store；
+- `cpu_req_size`：`0` byte、`1` halfword、`2` word、`3` doubleword；
+- `cpu_req_unsigned`：对小于 XLEN 的 load 选择零扩展；store 和
+  doubleword load 会忽略该字段；
+- `cpu_req_wdata`：未移位的 store 数据，低位字节由 `cpu_req_size` 选择。
 
-CPU 地址必须按 `DATA_WIDTH/8` 对齐；跨 word 或 cache line 的访问不属于
-本 baseline，并会触发仿真 assertion。
+缓存是 blocking 结构，同一时间只处理一个请求。`cpu_rsp_valid` 会保持到
+`cpu_rsp_ready` 接收响应。load 在 `cpu_rsp_rdata` 返回 RV64 架构结果：
+`LB/LH/LW` 符号扩展，`LBU/LHU/LWU` 零扩展，`LD` 返回完整 64 位。store
+也会产生完成响应，返回值是按 store size 选出的写后值，调用方通常忽略。
+
+对齐规则遵循 RV64 自然对齐：
+
+| Access size | 合法地址对齐 |
+| --- | --- |
+| byte | 任意字节地址 |
+| halfword | `addr[0] == 0` |
+| word | `addr[1:0] == 0` |
+| doubleword | `addr[2:0] == 0` |
+
+未对齐 CPU 请求会被接收并返回错误，不会访问 cache array 或下级内存。
+`cpu_rsp_error` 会置位，`cpu_rsp_error_cause` 为 `1` 表示 load address
+misaligned，为 `2` 表示 store address misaligned。当前没有实现对未对齐
+访问的硬件拆分。
 
 ### 下级缓存行内存接口
 
@@ -153,8 +174,10 @@ valid、dirty 和 prefetched metadata 由独立寄存器保存。
 
 ## Write-Back / Write-Allocate
 
-- store hit 只更新写使能覆盖的字节，并将 L1 行标记为 dirty；
-- store miss 先读取完整缓存行，再合并写数据并以 dirty 状态安装；
+- store hit 更新由 `cpu_req_size` 选中的连续 byte、halfword、word 或
+  doubleword，并将 L1 行标记为 dirty；
+- store miss 先读取完整缓存行，再合并选中的 store 字节并以 dirty 状态
+  安装；
 - L1 替换首先把缓存行移动到 victim cache；
 - 若目标 victim entry 中已有 dirty 行，先将其写回下级内存；
 - victim hit 直接交换 victim 与 L1 的数据和 metadata，不立即写回脏行。
@@ -223,19 +246,19 @@ verification monitor 使用。累计计数器继续用于软件可见或仿真�
 
 脚本包含定向测试、内存接口 backpressure、CPU response backpressure、
 握手 payload 稳定性检查、160 次操作的 deterministic randomized
-golden-memory scoreboard，以及三种 synthetic workload 配置。
-2026 年 6 月 10 日的结果：
+golden-memory scoreboard，以及三种 synthetic workload 配置。当前 Icarus
+结果：
 
 | 配置 | 覆盖内容 | 结果 |
 | --- | --- | --- |
-| 直接映射，VC4，关闭 prefetch | hit/miss、write-allocate、字节写、victim hit、dirty preservation、随机流量 | PASS |
+| 直接映射，VC4，关闭 prefetch | RV64 load/store size、符号/零扩展、未对齐错误、64 位高地址 tag、victim hit、dirty preservation、随机流量 | PASS |
 | 2 路，VC4，关闭 prefetch | 同上，并覆盖 way replacement 和 backpressure | PASS |
-| 2 路，VC8，关闭 prefetch | 8-entry victim replacement 和 dirty preservation | PASS |
+| 2 路，VC8，关闭 prefetch | 同样 RV64 检查，并覆盖 8-entry victim replacement 和 dirty preservation | PASS |
 | 2 路，VC4，开启 prefetch | next-line fill、prefetch victim rescue、外部注入和 usefulness 计数 | PASS |
 | Direct-mapped，VC4，关闭 prefetch | 五种 synthetic boundary profile | PASS |
 | 2 路，VC4，关闭 prefetch | 五种 synthetic boundary profile | PASS |
 | 2 路，VC4，开启 prefetch | 五种 synthetic boundary profile 和 prefetch boundary assertion | PASS |
-| 2 路，VC4，关闭 prefetch | 文本 trace replay、写、byte strobe 和 golden-memory 检查 | PASS |
+| 2 路，VC4，关闭 prefetch | RV64 文本 trace replay、load signedness、store size 和 golden-memory 检查 | PASS |
 
 生成的 `.vvp` 和日志位于 `sim/`。Icarus 会输出关于 `always_*` constant
 select 的提示信息，但编译和全部自检均成功。
@@ -247,10 +270,13 @@ select 的提示信息，但编译和全部自检均成功。
 
 ## Vivado 验证
 
-2026 年 6 月 10 日已使用 Vivado 2024.2.1 对
-`xc7a35tcpg236-1` 成功执行 batch flow。本地 macOS 仍使用 Icarus
-进行初步回归，最终 XSim 和综合在远端 Windows Vivado 上完成。七种 XSim
-配置均输出 `ALL TESTS PASSED`：
+本地 macOS 使用 Icarus 进行初步回归。RV64 接口改造后，最终 XSim 和
+综合应在有 Vivado 的机器上重新运行。本文档目前保留的最近一次 Vivado
+结果，是 2026 年 6 月 10 日使用 Vivado 2024.2.1、目标器件
+`xc7a35tcpg236-1` 的历史 pre-RV64 baseline 结果；这些面积、时序和功耗
+数据不能作为当前 RV64 RTL 的签核数据。
+
+该历史 pre-RV64 运行中，七种 XSim 配置均输出 `ALL TESTS PASSED`：
 
 | XSim 配置 | 结果 |
 | --- | --- |
@@ -277,7 +303,8 @@ vivado -mode batch -source scripts/run_vivado.tcl
 - `timing_summary.rpt`；
 - `power.rpt`。
 
-仿真日志复制到 `build/vivado/reports/`。6 月 10 日的综合结果如下：
+仿真日志复制到 `build/vivado/reports/`。历史 6 月 10 日 pre-RV64 综合
+结果如下：
 
 | 配置 | LUT | FF | RAMB36 | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -286,9 +313,9 @@ vivado -mode batch -source scripts/run_vivado.tcl
 | 2 路，VC8，关闭 prefetch | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
 | 2 路，VC4，开启 prefetch | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
 
-四种配置均满足 100 MHz 综合约束。data array 被推断为 block RAM，tag
-array 被推断为 distributed RAM。Fmax 按 `1000 / (10 - WNS)` 计算，只是
-综合后 STA 估算；布局布线后结果可能下降。
+这些 pre-RV64 配置均满足 100 MHz 综合约束。data array 被推断为 block
+RAM，tag array 被推断为 distributed RAM。Fmax 按
+`1000 / (10 - WNS)` 计算，只是综合后 STA 估算；布局布线后结果可能下降。
 
 功耗值使用 Vivado vectorless activity propagation，没有 SAIF/VCD activity
 文件，采用默认 operating condition，且置信度为 `Low`。这些数据只能作为
@@ -338,14 +365,15 @@ speed/rate 套件。
 
 ```text
 # 注释以 # 开始
-0 ADDRESS
-1 ADDRESS DATA WRITE_STROBE
+0 SIZE UNSIGNED ADDRESS
+1 SIZE 0 ADDRESS DATA
 ```
 
-除十进制 opcode 外，其他字段均为十六进制。`0` 表示 32 位对齐读，`1`
-表示 32 位对齐写；write strobe 每个 bit 对应一个 byte。读请求会与
-testbench golden memory 比较，写请求在 cache 完成后更新 golden memory。
-空行和注释行会被忽略。例如：
+`0` 表示 load，`1` 表示 store。`SIZE` 为十进制：`0` byte、`1`
+halfword、`2` word、`3` doubleword。`UNSIGNED` 为十进制，仅 load 使用。
+地址和数据是不带 `0x` 前缀的十六进制。load 会按请求的符号扩展或零扩展
+与 testbench golden memory 比较；store 在 cache 完成后更新 golden
+memory。空行和注释行会被忽略。例如：
 
 ```bash
 vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
@@ -353,8 +381,9 @@ vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
 
 该命令需要从仓库根目录运行。使用 ASCII 相对路径可以避免 Icarus 在工作区
 绝对路径包含非 ASCII 字符时的 plusarg 限制。SPEC extraction 工具需要将
-committed access 转换为该 cache interface 格式，按需对齐或拆分 access，
-并在许可证不允许重新分发时省略受保护的数据值。
+committed access 转换为该 cache interface 格式，保留自然对齐的 RV64
+access size，并按实验策略记录或过滤 misaligned access。若许可证不允许
+重新分发，则必须省略受保护的数据值。
 
 ### Workload 类型
 
@@ -424,7 +453,10 @@ prefetch 开关、cache capacity、line size 和下级内存延迟。当前 RTL 
 - 替换策略为 round-robin，而不是真正 LRU；
 - prefetch 为 best-effort，在持续 demand 流量下可能饥饿；
 - 32 位计数器溢出后回绕；
-- coherence、atomic、fence、flush/invalidate、ECC，以及跨 word/line 的
-  unaligned access 不属于本 baseline；
+- 未对齐 CPU 请求会返回 load/store-address-misaligned 错误；cache 不会
+  将一次架构访问拆分成多个对齐 cache 访问；
+- coherence、atomic、显式 fence/flush/invalidate 命令、ECC、MMU/TLB
+  地址转换、PMP/PMA 检查和 uncached MMIO region 不属于该 L1D baseline，
+  需要由外围系统逻辑或后续 RTL 处理；
 - XSim 行为回归与综合后报告已经完成；最终签核仍需波形检查、
   implementation/post-route timing 和基于真实 activity 的功耗分析。

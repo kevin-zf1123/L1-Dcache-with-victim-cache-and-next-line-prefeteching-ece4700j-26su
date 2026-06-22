@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 module l1d_next_line_prefetch #(
-    parameter integer ADDR_WIDTH = 32,
+    parameter integer ADDR_WIDTH = 64,
     parameter integer LINE_BYTES = 16
 ) (
     input  logic                  clk,
