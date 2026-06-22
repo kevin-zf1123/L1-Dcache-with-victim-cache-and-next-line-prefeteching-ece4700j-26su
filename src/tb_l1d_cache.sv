@@ -1033,6 +1033,7 @@ module tb_l1d_cache #(
         integer operation;
         integer trace_size;
         integer trace_unsigned;
+        integer check_load_data;
         integer accesses;
         reg [8*256-1:0] trace_line;
         logic [ADDR_WIDTH-1:0] addr;
@@ -1048,6 +1049,10 @@ module tb_l1d_cache #(
 
             $display("TEST trace replay file=%s ways=%0d prefetch=%0d",
                      trace_path, NUM_WAYS, ENABLE_PREFETCH);
+            check_load_data = !$test$plusargs("TRACE_SKIP_LOAD_CHECKS");
+            if (!check_load_data) begin
+                $display("TRACE load-data checks disabled");
+            end
             accesses = 0;
             trace_line_number = 0;
             while (!$feof(trace_fd)) begin
@@ -1074,7 +1079,8 @@ module tb_l1d_cache #(
                                 size = trace_size;
                                 unsigned_load = trace_unsigned != 0;
                                 cpu_load(addr, size, unsigned_load, actual);
-                                if (actual !== golden_load(addr, size,
+                                if (check_load_data &&
+                                    actual !== golden_load(addr, size,
                                                            unsigned_load)) begin
                                     $display("FAIL trace load line=%0d addr=%016x size=%0d unsigned=%0d expected=%016x actual=%016x",
                                              trace_line_number, addr, size,

@@ -346,8 +346,11 @@ speed/rate 套件。
 申请免费的 SPEC CPU 2026 学术许可证。不得把 benchmark 源码或专有输入
 数据提交到本仓库。
 
-当前本地状态：没有下载 SPEC CPU benchmark package。本 workspace 中没有
-已授权的本地副本，也没有公开免登录下载 URL；目前只记录公开文档链接。
+当前本地状态：该流程假设通过 `SPEC_DIR` 提供本地获许可 SPEC CPU 2026
+tree，并通过 `RV64_VM_DIR` 提供 Debian RV64 QEMU VM。这些路径有意不写入
+仓库。本仓库包含一个有界的 `782.lbm_r` test workload trace 片段，用于
+本地获许可分析。若未经过单独的再分发审查，不要在获许可项目上下文之外
+发布该 SPEC-derived trace。
 
 ### 基于 Trace 的 RTL 方法
 
@@ -384,6 +387,126 @@ vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
 committed access 转换为该 cache interface 格式，保留自然对齐的 RV64
 access size，并按实验策略记录或过滤 misaligned access。若许可证不允许
 重新分发，则必须省略受保护的数据值。
+
+当 replay 的 trace 来自真实程序，而不是来自 testbench golden-memory
+generator 时，传入 `+TRACE_SKIP_LOAD_CHECKS`。这会保留 cache 性能流中的
+所有 load/store 地址，但关闭与 synthetic golden memory image 的 load
+数据比较：
+
+```bash
+vvp sim/two_way_vc4_trace.vvp \
+  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
+  +TRACE_SKIP_LOAD_CHECKS
+```
+
+### 已复现的 SPEC CPU 2026 `782.lbm_r` 抓取
+
+RV64 Debian VM 从 VM 目录启动：
+
+```bash
+export RV64_VM_DIR=/path/to/debian-rv64
+cd "$RV64_VM_DIR"
+./start.sh
+./ssh.sh
+```
+
+host 侧 QEMU memory-trace plugin 从仓库根目录构建：
+
+```bash
+scripts/build_qemu_memtrace_plugin.sh
+```
+
+该 plugin 直接输出 trace-replay 文本格式。它支持 `out=...`、
+`limit=...`、`start=on|off`、`phys=on|off`、`noio=on|off` 和
+`aligned=on|off`。为了隔离 benchmark，启动 VM 时使用 `start=off`，
+并让带插桩的 `lbm_r_trace` binary 在 LBM timestep loop 前后使用两条
+RISC-V HINT marker 启停 tracing：
+
+`aligned=on` 是 plugin 默认值，会在抓取时省略 misaligned architectural
+access。若需要收集原始 architectural trace，则使用 `aligned=off`，之后在
+RTL model 不拆分 misaligned access 的情况下，再把该文件后处理成
+replay-ready 的 aligned trace。
+
+```c
+__asm__ __volatile__(".word 0x12300013" ::: "memory"); /* start */
+__asm__ __volatile__(".word 0x12400013" ::: "memory"); /* stop */
+```
+
+只把 benchmark 子集复制到 VM，而不是复制完整 SPEC tree：
+
+```bash
+export SPEC_DIR=/path/to/spec2026
+export RV64_VM_DIR=/path/to/debian-rv64
+rsync -a --delete \
+  -e "ssh -p 2222 -o BatchMode=yes \
+      -o UserKnownHostsFile=$RV64_VM_DIR/ssh_known_hosts" \
+  "$SPEC_DIR/benchspec/CPU/782.lbm_r/" \
+  debian@127.0.0.1:/home/debian/spec2026-782-lbm_r/
+```
+
+在 VM 内构建 benchmark，并验证 SPEC test input：
+
+```bash
+export BENCH_DIR=/home/debian/spec2026-782-lbm_r
+cd "$BENCH_DIR/src"
+gcc -std=c18 -DSPEC -DNDEBUG -DSPEC_AUTO_SUPPRESS_THREADING \
+  -DSPEC_RATE -g -O3 lbm.c main.c -lm -o lbm_r
+
+mkdir -p "$BENCH_DIR/run/test"
+cd "$BENCH_DIR/run/test"
+cp ../../data/test/input/lbm.in .
+cp ../../data/all/input/200_200_130_ldc.of .
+../../src/lbm_r $(cat lbm.in) > lbm.out 2> lbm.err
+diff -u ../../data/test/output/lbm.out lbm.out
+```
+
+已验证 run 使用的 `lbm.in` 参数为：
+
+```text
+10 reference.dat 0 0 200_200_130_ldc.of
+```
+
+该验证在 Debian GNU/Linux 13 riscv64 与 GCC 14.2.0 上通过。运行最大
+resident memory 约 1.6 GiB。带插桩的 `lbm_r_trace` binary 在 plugin
+抓取前也产生了完全相同的输出。
+
+本次提交的 trace artifact 为：
+
+| 文件 | 用途 |
+| --- | --- |
+| `traces/spec2026_782_lbm_r_test_1m.trace` | 从带插桩 timestep 区间抓取的原始前 1,000,000 条数据访问 |
+| `traces/spec2026_782_lbm_r_test_1m.trace.zst` | 原始 trace 的压缩副本 |
+| `traces/spec2026_782_lbm_r_test_1m_aligned.trace` | 删除 8 条 misaligned architectural access 后的 replay-ready 版本 |
+| `traces/spec2026_782_lbm_r_test_1m_aligned.trace.zst` | aligned trace 的压缩副本 |
+
+原始 trace 包含 1,000,000 条访问：554,082 次 load 和 445,918 次 store。
+由于 cache model 对 RV64 misaligned operation 返回 misaligned-address
+error，而不是拆分未对齐操作，replay 输入使用 aligned trace，其中包含
+999,992 条访问：554,078 次 load 和 445,914 次 store。
+
+aligned trace 使用关闭 load-data check 的方式在 2-way、4-entry
+victim-cache 配置中 replay：
+
+```bash
+iverilog -g2012 -Wall \
+  -s tb_l1d_cache \
+  -P tb_l1d_cache.NUM_WAYS=2 \
+  -P tb_l1d_cache.ENABLE_PREFETCH=0 \
+  -P tb_l1d_cache.VICTIM_ENTRIES=4 \
+  -o sim/two_way_vc4_trace.vvp \
+  src/l1d_sram.sv src/l1d_next_line_prefetch.sv \
+  src/l1d_cache.sv src/tb_l1d_cache.sv
+
+vvp sim/two_way_vc4_trace.vvp \
+  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
+  +TRACE_SKIP_LOAD_CHECKS
+```
+
+replay 通过，并产生：
+
+```text
+WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
+```
 
 ### Workload 类型
 

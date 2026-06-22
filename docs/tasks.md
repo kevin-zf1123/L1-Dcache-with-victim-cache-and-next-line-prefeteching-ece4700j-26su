@@ -29,7 +29,8 @@
 - [ ] Add separate prefetch-buffer placement option.
 - [ ] Add true pollution, timeliness, and memory-bandwidth measurements.
 - [x] Add reusable trace replay driver for SPEC CPU 2017/2026 regions.
-- [ ] Run licensed SPEC trace extraction and workload classification.
+- [x] Run initial licensed SPEC CPU 2026 782.lbm_r trace extraction and replay validation.
+- [ ] Classify additional licensed SPEC workload regions.
 
 ## Vivado and PPA
 
