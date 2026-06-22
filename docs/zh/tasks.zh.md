@@ -31,7 +31,8 @@
 - [ ] 增加独立 prefetch buffer 放置方案。
 - [ ] 增加真实 pollution、timeliness 和内存带宽测量。
 - [x] 增加 SPEC CPU 2017/2026 区间 trace replay driver。
-- [ ] 运行获许可的 SPEC trace extraction 和 workload 分类。
+- [x] 运行初始获许可 SPEC CPU 2026 782.lbm_r trace extraction 和 replay 验证。
+- [ ] 对更多获许可 SPEC workload 区间进行分类。
 
 ## Vivado 与 PPA
 

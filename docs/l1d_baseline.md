@@ -382,9 +382,12 @@ license to eligible accredited institutions, requested by a professor or
 full-time staff member. Benchmark source or proprietary input data must never
 be committed to this repository.
 
-Current local status: the SPEC CPU benchmark package was not downloaded. No
-licensed local copy or public unauthenticated download URL is available in this
-workspace; only public documentation links are recorded.
+Current local status: this workflow assumes a licensed local SPEC CPU 2026 tree
+provided through `SPEC_DIR` and a Debian RV64 QEMU VM provided through
+`RV64_VM_DIR`. These paths are intentionally kept out of the repository. The
+repository includes a bounded `782.lbm_r` test-workload trace slice for local
+licensed analysis. Do not publish the SPEC-derived trace outside the licensed
+project context without a separate redistribution review.
 
 ### Trace-based RTL method
 
@@ -428,6 +431,127 @@ characters. A SPEC extraction tool must convert committed accesses into this
 cache-interface format, preserve naturally aligned RV64 access sizes, and
 record or filter misaligned accesses according to the experiment policy.
 Licensed data values must be omitted when redistribution is not permitted.
+
+When replaying traces captured from a real program rather than from the
+testbench golden-memory generator, pass `+TRACE_SKIP_LOAD_CHECKS`. This keeps
+all load/store addresses in the cache-performance stream but disables load
+data comparison against the synthetic golden memory image:
+
+```bash
+vvp sim/two_way_vc4_trace.vvp \
+  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
+  +TRACE_SKIP_LOAD_CHECKS
+```
+
+### Reproduced SPEC CPU 2026 `782.lbm_r` capture
+
+The RV64 Debian VM is started from the VM directory:
+
+```bash
+export RV64_VM_DIR=/path/to/debian-rv64
+cd "$RV64_VM_DIR"
+./start.sh
+./ssh.sh
+```
+
+The host-side QEMU memory-trace plugin is built from the repository root:
+
+```bash
+scripts/build_qemu_memtrace_plugin.sh
+```
+
+The plugin writes the trace-replay text format directly. It supports
+`out=...`, `limit=...`, `start=on|off`, `phys=on|off`, `noio=on|off`, and
+`aligned=on|off`. For benchmark isolation, the VM is launched with
+`start=off`, and an instrumented `lbm_r_trace` binary uses two RISC-V HINT
+markers to start and stop tracing around the LBM timestep loop:
+
+`aligned=on` is the plugin default and omits misaligned architectural accesses
+during capture. Use `aligned=off` when collecting a raw architectural trace and
+then post-process that file into a replay-ready aligned trace if the RTL model
+does not split misaligned accesses.
+
+```c
+__asm__ __volatile__(".word 0x12300013" ::: "memory"); /* start */
+__asm__ __volatile__(".word 0x12400013" ::: "memory"); /* stop */
+```
+
+The benchmark subset is copied into the VM instead of copying the full SPEC
+tree:
+
+```bash
+export SPEC_DIR=/path/to/spec2026
+export RV64_VM_DIR=/path/to/debian-rv64
+rsync -a --delete \
+  -e "ssh -p 2222 -o BatchMode=yes \
+      -o UserKnownHostsFile=$RV64_VM_DIR/ssh_known_hosts" \
+  "$SPEC_DIR/benchspec/CPU/782.lbm_r/" \
+  debian@127.0.0.1:/home/debian/spec2026-782-lbm_r/
+```
+
+Inside the VM, the benchmark is built and the SPEC test input is verified:
+
+```bash
+export BENCH_DIR=/home/debian/spec2026-782-lbm_r
+cd "$BENCH_DIR/src"
+gcc -std=c18 -DSPEC -DNDEBUG -DSPEC_AUTO_SUPPRESS_THREADING \
+  -DSPEC_RATE -g -O3 lbm.c main.c -lm -o lbm_r
+
+mkdir -p "$BENCH_DIR/run/test"
+cd "$BENCH_DIR/run/test"
+cp ../../data/test/input/lbm.in .
+cp ../../data/all/input/200_200_130_ldc.of .
+../../src/lbm_r $(cat lbm.in) > lbm.out 2> lbm.err
+diff -u ../../data/test/output/lbm.out lbm.out
+```
+
+The validated run used `lbm.in` arguments:
+
+```text
+10 reference.dat 0 0 200_200_130_ldc.of
+```
+
+Validation passed on Debian GNU/Linux 13 riscv64 with GCC 14.2.0. The run
+used about 1.6 GiB maximum resident memory. The instrumented `lbm_r_trace`
+binary produced identical output before plugin-based capture.
+
+The committed trace artifacts are:
+
+| File | Purpose |
+| --- | --- |
+| `traces/spec2026_782_lbm_r_test_1m.trace` | Raw first 1,000,000 traced data accesses from the instrumented timestep region |
+| `traces/spec2026_782_lbm_r_test_1m.trace.zst` | Compressed copy of the raw trace |
+| `traces/spec2026_782_lbm_r_test_1m_aligned.trace` | Replay-ready version with 8 misaligned architectural accesses removed |
+| `traces/spec2026_782_lbm_r_test_1m_aligned.trace.zst` | Compressed copy of the aligned trace |
+
+The raw trace contains 1,000,000 accesses: 554,082 loads and 445,918 stores.
+Because the cache model returns RV64 misaligned-address errors rather than
+splitting misaligned operations, the replay input is the aligned trace with
+999,992 accesses: 554,078 loads and 445,914 stores.
+
+The aligned trace was replayed through the 2-way, 4-entry victim-cache
+configuration with load-data checks disabled:
+
+```bash
+iverilog -g2012 -Wall \
+  -s tb_l1d_cache \
+  -P tb_l1d_cache.NUM_WAYS=2 \
+  -P tb_l1d_cache.ENABLE_PREFETCH=0 \
+  -P tb_l1d_cache.VICTIM_ENTRIES=4 \
+  -o sim/two_way_vc4_trace.vvp \
+  src/l1d_sram.sv src/l1d_next_line_prefetch.sv \
+  src/l1d_cache.sv src/tb_l1d_cache.sv
+
+vvp sim/two_way_vc4_trace.vvp \
+  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
+  +TRACE_SKIP_LOAD_CHECKS
+```
+
+The replay passed and produced:
+
+```text
+WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
+```
 
 ### Workload classes
 
