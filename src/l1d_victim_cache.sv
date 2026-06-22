@@ -15,12 +15,14 @@ module l1d_victim_cache #(
     input  logic                              evicted_valid,
     input  logic                              evicted_dirty,
     input  logic                              evicted_prefetched,
+    input  logic                              evicted_src_is_prefetch,
     input  logic [ADDR_WIDTH-1:0]             evicted_addr,
     input  logic [LINE_BITS-1:0]              evicted_data,
     output logic [VC_BITS-1:0]                vc_rr,
     output logic [VICTIM_ENTRIES-1:0]         vc_valid_flat,
     output logic [VICTIM_ENTRIES-1:0]         vc_dirty_flat,
     output logic [VICTIM_ENTRIES-1:0]         vc_prefetched_flat,
+    output logic [VICTIM_ENTRIES-1:0]         vc_src_is_prefetch_flat,
     output logic [VICTIM_ENTRIES*ADDR_WIDTH-1:0] vc_addr_flat,
     output logic [VICTIM_ENTRIES*LINE_BITS-1:0]  vc_data_flat
 ) ;
@@ -32,6 +34,7 @@ module l1d_victim_cache #(
             vc_valid_flat <= '0;
             vc_dirty_flat <= '0;
             vc_prefetched_flat <= '0;
+            vc_src_is_prefetch_flat <= '0;
             vc_addr_flat <= '0;
             vc_data_flat <= '0;
         end else begin
@@ -41,12 +44,14 @@ module l1d_victim_cache #(
                         vc_valid_flat[selected_vc] <= 1'b1;
                         vc_dirty_flat[selected_vc] <= evicted_dirty;
                         vc_prefetched_flat[selected_vc] <= evicted_prefetched;
+                        vc_src_is_prefetch_flat[selected_vc] <= evicted_src_is_prefetch;
                         vc_addr_flat[selected_vc*ADDR_WIDTH +: ADDR_WIDTH] <= evicted_addr;
                         vc_data_flat[selected_vc*LINE_BITS +: LINE_BITS] <= evicted_data;
                     end else begin
                         vc_valid_flat[selected_vc] <= 1'b0;
                         vc_dirty_flat[selected_vc] <= 1'b0;
                         vc_prefetched_flat[selected_vc] <= 1'b0;
+                        vc_src_is_prefetch_flat[selected_vc] <= 1'b0;
                     end
                 end
 
@@ -54,6 +59,7 @@ module l1d_victim_cache #(
                     vc_valid_flat[selected_vc] <= evicted_valid;
                     vc_dirty_flat[selected_vc] <= evicted_dirty;
                     vc_prefetched_flat[selected_vc] <= evicted_prefetched;
+                    vc_src_is_prefetch_flat[selected_vc] <= evicted_src_is_prefetch;
                     vc_addr_flat[selected_vc*ADDR_WIDTH +: ADDR_WIDTH] <= evicted_addr;
                     vc_data_flat[selected_vc*LINE_BITS +: LINE_BITS] <= evicted_data;
                     if (vc_rr == VICTIM_ENTRIES-1) begin

@@ -69,6 +69,10 @@ module l1d_cache #(
     localparam integer SRAM_ADDR_WIDTH = (NUM_SETS > 1) ? $clog2(NUM_SETS) : 1;
     localparam integer WAY_BITS        = (NUM_WAYS > 1) ? $clog2(NUM_WAYS) : 1;
     localparam integer VC_BITS         = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES) : 1;
+    localparam integer POLLUTION_TRACK_ENTRIES =
+        (NUM_SETS * NUM_WAYS) + VICTIM_ENTRIES;
+    localparam integer POLLUTION_BITS =
+        (POLLUTION_TRACK_ENTRIES > 1) ? $clog2(POLLUTION_TRACK_ENTRIES) : 1;
 
     state_t state;
 
@@ -86,17 +90,20 @@ module l1d_cache #(
     logic valid_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic dirty_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic prefetched_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
+    logic src_is_prefetch_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic [WAY_BITS-1:0] replacement_way [0:NUM_SETS-1];
 
     logic vc_valid [0:VICTIM_ENTRIES-1];
     logic vc_dirty [0:VICTIM_ENTRIES-1];
     logic vc_prefetched [0:VICTIM_ENTRIES-1];
+    logic vc_src_is_prefetch [0:VICTIM_ENTRIES-1];
     logic [ADDR_WIDTH-1:0] vc_addr [0:VICTIM_ENTRIES-1];
     logic [LINE_BITS-1:0] vc_data [0:VICTIM_ENTRIES-1];
     logic [VC_BITS-1:0] vc_rr;
     logic [VICTIM_ENTRIES-1:0] vc_valid_flat;
     logic [VICTIM_ENTRIES-1:0] vc_dirty_flat;
     logic [VICTIM_ENTRIES-1:0] vc_prefetched_flat;
+    logic [VICTIM_ENTRIES-1:0] vc_src_is_prefetch_flat;
     logic [VICTIM_ENTRIES*ADDR_WIDTH-1:0] vc_addr_flat;
     logic [VICTIM_ENTRIES*LINE_BITS-1:0] vc_data_flat;
 
@@ -115,6 +122,7 @@ module l1d_cache #(
     logic evicted_valid;
     logic evicted_dirty;
     logic evicted_prefetched;
+    logic evicted_src_is_prefetch;
     logic [ADDR_WIDTH-1:0] evicted_addr;
     logic [LINE_BITS-1:0] evicted_data;
 
@@ -134,8 +142,10 @@ module l1d_cache #(
     logic [LINE_BITS-1:0] replacement_line_data_current;
     logic replacement_line_dirty_current;
     logic replacement_line_prefetched_current;
+    logic replacement_line_src_is_prefetch_current;
     logic [LINE_BITS-1:0] victim_line_data_current;
     logic victim_line_dirty_current;
+    logic victim_line_src_is_prefetch_current;
     logic victim_rr_valid_current;
     logic victim_rr_dirty_current;
     logic [ADDR_WIDTH-1:0] victim_rr_addr_current;
@@ -166,6 +176,23 @@ module l1d_cache #(
     logic [SET_BITS-1:0] req_set_comb;
     logic [TAG_BITS-1:0] req_tag_comb;
     logic [ADDR_WIDTH-1:0] req_line_addr_comb;
+    logic set_has_other_src_prefetch_comb;
+    logic pollution_monitor_hit_comb;
+    logic pollution_monitor_free_found_comb;
+    logic [POLLUTION_BITS-1:0] pollution_monitor_hit_index_comb;
+    logic [POLLUTION_BITS-1:0] pollution_monitor_free_index_comb;
+    logic pollution_monitor_candidate_valid_comb;
+    logic [ADDR_WIDTH-1:0] pollution_monitor_candidate_addr_comb;
+    logic pollution_lookup_hit_comb;
+    logic [POLLUTION_BITS-1:0] pollution_lookup_hit_index_comb;
+    logic pollution_install_hit_comb;
+    logic [POLLUTION_BITS-1:0] pollution_install_hit_index_comb;
+    logic [POLLUTION_BITS-1:0] pollution_rr;
+    logic pollution_track_valid [0:POLLUTION_TRACK_ENTRIES-1];
+    logic pollution_track_src_is_prefetch [0:POLLUTION_TRACK_ENTRIES-1];
+    logic [ADDR_WIDTH-1:0] pollution_track_addr [0:POLLUTION_TRACK_ENTRIES-1];
+    integer src_way_i;
+    integer pollution_i;
 
     function automatic [SET_BITS-1:0] address_set(
         input logic [ADDR_WIDTH-1:0] addr
@@ -263,6 +290,7 @@ module l1d_cache #(
             assign vc_valid[vc_entry] = vc_valid_flat[vc_entry];
             assign vc_dirty[vc_entry] = vc_dirty_flat[vc_entry];
             assign vc_prefetched[vc_entry] = vc_prefetched_flat[vc_entry];
+            assign vc_src_is_prefetch[vc_entry] = vc_src_is_prefetch_flat[vc_entry];
             assign vc_addr[vc_entry] = vc_addr_flat[vc_entry*ADDR_WIDTH +: ADDR_WIDTH];
             assign vc_data[vc_entry] = vc_data_flat[vc_entry*LINE_BITS +: LINE_BITS];
         end
@@ -323,12 +351,85 @@ module l1d_cache #(
             dirty_bits[replacement_way_current][req_set_comb];
         replacement_line_prefetched_current =
             prefetched_bits[replacement_way_current][req_set_comb];
+        replacement_line_src_is_prefetch_current =
+            src_is_prefetch_bits[replacement_way_current][req_set_comb];
         victim_line_data_current = vc_data[victim_hit_comb];
         victim_line_dirty_current = vc_dirty[victim_hit_comb];
+        victim_line_src_is_prefetch_current =
+            vc_src_is_prefetch[victim_hit_comb];
         victim_rr_valid_current = vc_valid[vc_rr];
         victim_rr_dirty_current = vc_dirty[vc_rr];
         victim_rr_addr_current = vc_addr[vc_rr];
         victim_rr_data_current = vc_data[vc_rr];
+    end
+
+    assign evicted_src_is_prefetch = replacement_line_src_is_prefetch_current;
+
+    always_comb begin
+        set_has_other_src_prefetch_comb = 1'b0;
+        for (src_way_i = 0; src_way_i < NUM_WAYS; src_way_i = src_way_i + 1) begin
+            if ((src_way_i != replacement_way_current) &&
+                valid_bits[src_way_i][req_set_comb] &&
+                src_is_prefetch_bits[src_way_i][req_set_comb]) begin
+                set_has_other_src_prefetch_comb = 1'b1;
+            end
+        end
+    end
+
+    always_comb begin
+        pollution_monitor_hit_comb = 1'b0;
+        pollution_monitor_free_found_comb = 1'b0;
+        pollution_monitor_hit_index_comb = '0;
+        pollution_monitor_free_index_comb = '0;
+        pollution_lookup_hit_comb = 1'b0;
+        pollution_lookup_hit_index_comb = '0;
+        pollution_install_hit_comb = 1'b0;
+        pollution_install_hit_index_comb = '0;
+        pollution_monitor_candidate_valid_comb = 1'b0;
+        pollution_monitor_candidate_addr_comb = replacement_line_addr_current;
+
+        for (pollution_i = 0;
+             pollution_i < POLLUTION_TRACK_ENTRIES;
+             pollution_i = pollution_i + 1) begin
+            if (pollution_track_valid[pollution_i] &&
+                pollution_track_addr[pollution_i] == replacement_line_addr_current) begin
+                pollution_monitor_hit_comb = 1'b1;
+                pollution_monitor_hit_index_comb = pollution_i[POLLUTION_BITS-1:0];
+            end
+            if (!pollution_track_valid[pollution_i] &&
+                !pollution_monitor_free_found_comb) begin
+                pollution_monitor_free_found_comb = 1'b1;
+                pollution_monitor_free_index_comb = pollution_i[POLLUTION_BITS-1:0];
+            end
+            if (pollution_track_valid[pollution_i] &&
+                pollution_track_addr[pollution_i] == req_line_addr_comb) begin
+                if ((state == ST_LOOKUP) && !l1_hit_comb) begin
+                    pollution_lookup_hit_comb = 1'b1;
+                    pollution_lookup_hit_index_comb = pollution_i[POLLUTION_BITS-1:0];
+                end
+                if (((state == ST_INSTALL) || (state == ST_VC_SWAP)) &&
+                    !pollution_install_hit_comb) begin
+                    pollution_install_hit_comb = 1'b1;
+                    pollution_install_hit_index_comb = pollution_i[POLLUTION_BITS-1:0];
+                end
+            end
+        end
+
+        if ((state == ST_LOOKUP) &&
+            victim_hit_valid_comb &&
+            !req_is_prefetch &&
+            !invalid_way_valid_comb &&
+            !replacement_line_src_is_prefetch_current &&
+            victim_line_src_is_prefetch_current) begin
+            pollution_monitor_candidate_valid_comb = 1'b1;
+        end else if ((state == ST_LOOKUP) &&
+                     !l1_hit_comb &&
+                     !victim_hit_valid_comb &&
+                     !invalid_way_valid_comb &&
+                     !replacement_line_src_is_prefetch_current &&
+                     (req_is_prefetch || set_has_other_src_prefetch_comb)) begin
+            pollution_monitor_candidate_valid_comb = 1'b1;
+        end
     end
 
     l1d_request_arbiter #(
@@ -435,12 +536,14 @@ module l1d_cache #(
         .evicted_valid(evicted_valid),
         .evicted_dirty(evicted_dirty),
         .evicted_prefetched(evicted_prefetched),
+        .evicted_src_is_prefetch(evicted_src_is_prefetch),
         .evicted_addr(evicted_addr),
         .evicted_data(evicted_data),
         .vc_rr(vc_rr),
         .vc_valid_flat(vc_valid_flat),
         .vc_dirty_flat(vc_dirty_flat),
         .vc_prefetched_flat(vc_prefetched_flat),
+        .vc_src_is_prefetch_flat(vc_src_is_prefetch_flat),
         .vc_addr_flat(vc_addr_flat),
         .vc_data_flat(vc_data_flat)
     );
@@ -509,6 +612,7 @@ module l1d_cache #(
                     valid_bits[reset_j][reset_i] <= 1'b0;
                     dirty_bits[reset_j][reset_i] <= 1'b0;
                     prefetched_bits[reset_j][reset_i] <= 1'b0;
+                    src_is_prefetch_bits[reset_j][reset_i] <= 1'b0;
                 end
             end
         end else begin
@@ -534,6 +638,8 @@ module l1d_cache #(
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
+                    src_is_prefetch_bits[selected_way][req_set_comb] <=
+                        victim_line_src_is_prefetch_current;
                     replacement_way[req_set_comb] <=
                         (selected_way + 1'b1) % NUM_WAYS;
                 end
@@ -543,10 +649,58 @@ module l1d_cache #(
                     dirty_bits[selected_way][req_set_comb] <=
                         (!req_is_prefetch && req_write);
                     prefetched_bits[selected_way][req_set_comb] <= req_is_prefetch;
+                    src_is_prefetch_bits[selected_way][req_set_comb] <= req_is_prefetch;
                     replacement_way[req_set_comb] <=
                         (selected_way + 1'b1) % NUM_WAYS;
                 end
             endcase
+        end
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pollution_rr <= '0;
+            for (pollution_i = 0;
+                 pollution_i < POLLUTION_TRACK_ENTRIES;
+                 pollution_i = pollution_i + 1) begin
+                pollution_track_valid[pollution_i] <= 1'b0;
+                pollution_track_src_is_prefetch[pollution_i] <= 1'b0;
+                pollution_track_addr[pollution_i] <= '0;
+            end
+        end else begin
+            if (pollution_lookup_hit_comb) begin
+                pollution_track_valid[pollution_lookup_hit_index_comb] <= 1'b0;
+                pollution_track_src_is_prefetch[pollution_lookup_hit_index_comb] <= 1'b0;
+            end
+
+            if (pollution_install_hit_comb) begin
+                pollution_track_valid[pollution_install_hit_index_comb] <= 1'b0;
+                pollution_track_src_is_prefetch[pollution_install_hit_index_comb] <= 1'b0;
+            end
+
+            if (pollution_monitor_candidate_valid_comb) begin
+                if (pollution_monitor_hit_comb) begin
+                    pollution_track_valid[pollution_monitor_hit_index_comb] <= 1'b1;
+                    pollution_track_src_is_prefetch[pollution_monitor_hit_index_comb] <= 1'b1;
+                    pollution_track_addr[pollution_monitor_hit_index_comb] <=
+                        pollution_monitor_candidate_addr_comb;
+                end else if (pollution_monitor_free_found_comb) begin
+                    pollution_track_valid[pollution_monitor_free_index_comb] <= 1'b1;
+                    pollution_track_src_is_prefetch[pollution_monitor_free_index_comb] <= 1'b1;
+                    pollution_track_addr[pollution_monitor_free_index_comb] <=
+                        pollution_monitor_candidate_addr_comb;
+                end else begin
+                    pollution_track_valid[pollution_rr] <= 1'b1;
+                    pollution_track_src_is_prefetch[pollution_rr] <= 1'b1;
+                    pollution_track_addr[pollution_rr] <=
+                        pollution_monitor_candidate_addr_comb;
+                    if (pollution_rr == POLLUTION_TRACK_ENTRIES-1) begin
+                        pollution_rr <= '0;
+                    end else begin
+                        pollution_rr <= pollution_rr + 1'b1;
+                    end
+                end
+            end
         end
     end
 
@@ -616,13 +770,12 @@ module l1d_cache #(
                         if (!req_is_prefetch) begin
                             stat_cpu_misses <= stat_cpu_misses + 1'b1;
                             event_cpu_miss <= 1'b1;
-                        end
-                        if (!invalid_way_valid_comb &&
-                            req_is_prefetch &&
-                            !prefetched_bits[replacement_way[req_set_comb]][req_set_comb]) begin
-                            stat_prefetch_pollution <=
-                                stat_prefetch_pollution + 1'b1;
-                            event_prefetch_pollution <= 1'b1;
+                            if (pollution_lookup_hit_comb &&
+                                pollution_track_src_is_prefetch[pollution_lookup_hit_index_comb]) begin
+                                stat_prefetch_pollution <=
+                                    stat_prefetch_pollution + 1'b1;
+                                event_prefetch_pollution <= 1'b1;
+                            end
                         end
                     end
                 end
