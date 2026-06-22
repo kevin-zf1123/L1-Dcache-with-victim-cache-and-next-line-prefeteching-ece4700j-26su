@@ -1,8 +1,8 @@
 `timescale 1ns/1ps
 
 module l1d_cache #(
-    parameter integer ADDR_WIDTH       = 32,
-    parameter integer DATA_WIDTH       = 32,
+    parameter integer ADDR_WIDTH       = 64,
+    parameter integer DATA_WIDTH       = 64,
     parameter integer LINE_BYTES       = 16,
     parameter integer NUM_SETS         = 8,
     parameter integer NUM_WAYS         = 2,
@@ -22,12 +22,15 @@ module l1d_cache #(
     output logic                         cpu_req_ready,
     input  logic [ADDR_WIDTH-1:0]        cpu_req_addr,
     input  logic                         cpu_req_write,
+    input  logic [1:0]                   cpu_req_size,
+    input  logic                         cpu_req_unsigned,
     input  logic [DATA_WIDTH-1:0]        cpu_req_wdata,
-    input  logic [(DATA_WIDTH/8)-1:0]    cpu_req_wstrb,
 
     output logic                         cpu_rsp_valid,
     input  logic                         cpu_rsp_ready,
     output logic [DATA_WIDTH-1:0]        cpu_rsp_rdata,
+    output logic                         cpu_rsp_error,
+    output logic [1:0]                   cpu_rsp_error_cause,
 
     output logic                         mem_req_valid,
     input  logic                         mem_req_ready,
@@ -68,6 +71,15 @@ module l1d_cache #(
     localparam integer WAY_BITS        = (NUM_WAYS > 1) ? $clog2(NUM_WAYS) : 1;
     localparam integer VC_BITS         = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES) : 1;
 
+    localparam logic [1:0] ACCESS_BYTE   = 2'b00;
+    localparam logic [1:0] ACCESS_HALF   = 2'b01;
+    localparam logic [1:0] ACCESS_WORD   = 2'b10;
+    localparam logic [1:0] ACCESS_DOUBLE = 2'b11;
+
+    localparam logic [1:0] RSP_OK                = 2'b00;
+    localparam logic [1:0] RSP_LOAD_MISALIGNED  = 2'b01;
+    localparam logic [1:0] RSP_STORE_MISALIGNED = 2'b10;
+
     typedef enum logic [3:0] {
         ST_IDLE,
         ST_LOOKUP,
@@ -106,8 +118,9 @@ module l1d_cache #(
 
     logic [ADDR_WIDTH-1:0] req_addr;
     logic req_write;
+    logic [1:0] req_size;
+    logic req_unsigned;
     logic [DATA_WIDTH-1:0] req_wdata;
-    logic [WORD_BYTES-1:0] req_wstrb;
     logic req_is_prefetch;
 
     logic [WAY_BITS-1:0] selected_way;
@@ -126,6 +139,8 @@ module l1d_cache #(
     logic [LINE_BITS-1:0] wb_data;
 
     logic [DATA_WIDTH-1:0] response_data;
+    logic response_error;
+    logic [1:0] response_error_cause;
     logic next_line_trigger;
     logic next_line_candidate_valid;
     logic next_line_candidate_ready;
@@ -171,38 +186,95 @@ module l1d_cache #(
         compose_line_address = {tag, set_index, {OFFSET_BITS{1'b0}}};
     endfunction
 
-    function automatic [DATA_WIDTH-1:0] line_word(
-        input logic [LINE_BITS-1:0] line,
-        input logic [ADDR_WIDTH-1:0] addr
+    function automatic integer access_bytes(
+        input logic [1:0] size
     );
-        integer word_index;
         begin
-            word_index = (addr >> $clog2(WORD_BYTES)) %
-                         (LINE_BYTES / WORD_BYTES);
-            line_word = line[word_index*DATA_WIDTH +: DATA_WIDTH];
+            case (size)
+                ACCESS_BYTE:   access_bytes = 1;
+                ACCESS_HALF:   access_bytes = 2;
+                ACCESS_WORD:   access_bytes = 4;
+                default:       access_bytes = 8;
+            endcase
         end
     endfunction
 
-    function automatic [LINE_BITS-1:0] merge_word(
+    function automatic logic access_misaligned(
+        input logic [ADDR_WIDTH-1:0] addr,
+        input logic [1:0] size
+    );
+        begin
+            case (size)
+                ACCESS_BYTE:   access_misaligned = 1'b0;
+                ACCESS_HALF:   access_misaligned = addr[0];
+                ACCESS_WORD:   access_misaligned = |addr[1:0];
+                default:       access_misaligned = |addr[2:0];
+            endcase
+        end
+    endfunction
+
+    function automatic [DATA_WIDTH-1:0] line_load_data(
+        input logic [LINE_BITS-1:0] line,
+        input logic [ADDR_WIDTH-1:0] addr,
+        input logic [1:0] size,
+        input logic unsigned_load
+    );
+        integer byte_offset;
+        integer byte_index;
+        logic [DATA_WIDTH-1:0] raw;
+        begin
+            raw = '0;
+            byte_offset = addr[OFFSET_BITS-1:0];
+            for (byte_index = 0; byte_index < WORD_BYTES;
+                 byte_index = byte_index + 1) begin
+                if (byte_index < access_bytes(size)) begin
+                    raw[byte_index*8 +: 8] =
+                        line[(byte_offset + byte_index)*8 +: 8];
+                end
+            end
+
+            case (size)
+                ACCESS_BYTE: begin
+                    line_load_data = unsigned_load ?
+                        {{(DATA_WIDTH-8){1'b0}}, raw[7:0]} :
+                        {{(DATA_WIDTH-8){raw[7]}}, raw[7:0]};
+                end
+                ACCESS_HALF: begin
+                    line_load_data = unsigned_load ?
+                        {{(DATA_WIDTH-16){1'b0}}, raw[15:0]} :
+                        {{(DATA_WIDTH-16){raw[15]}}, raw[15:0]};
+                end
+                ACCESS_WORD: begin
+                    line_load_data = unsigned_load ?
+                        {{(DATA_WIDTH-32){1'b0}}, raw[31:0]} :
+                        {{(DATA_WIDTH-32){raw[31]}}, raw[31:0]};
+                end
+                default: begin
+                    line_load_data = raw;
+                end
+            endcase
+        end
+    endfunction
+
+    function automatic [LINE_BITS-1:0] merge_store_data(
         input logic [LINE_BITS-1:0] line,
         input logic [ADDR_WIDTH-1:0] addr,
         input logic [DATA_WIDTH-1:0] wdata,
-        input logic [WORD_BYTES-1:0] wstrb
+        input logic [1:0] size
     );
-        integer word_index;
+        integer byte_offset;
         integer byte_index;
         logic [LINE_BITS-1:0] result;
         begin
             result = line;
-            word_index = (addr >> $clog2(WORD_BYTES)) %
-                         (LINE_BYTES / WORD_BYTES);
+            byte_offset = addr[OFFSET_BITS-1:0];
             for (byte_index = 0; byte_index < WORD_BYTES; byte_index = byte_index + 1) begin
-                if (wstrb[byte_index]) begin
-                    result[(word_index*DATA_WIDTH)+(byte_index*8) +: 8] =
+                if (byte_index < access_bytes(size)) begin
+                    result[(byte_offset + byte_index)*8 +: 8] =
                         wdata[(byte_index*8) +: 8];
                 end
             end
-            merge_word = result;
+            merge_store_data = result;
         end
     endfunction
 
@@ -290,6 +362,8 @@ module l1d_cache #(
         cpu_req_ready = (state == ST_IDLE);
         cpu_rsp_valid = (state == ST_RESP);
         cpu_rsp_rdata = response_data;
+        cpu_rsp_error = response_error;
+        cpu_rsp_error_cause = response_error_cause;
         cache_idle = (state == ST_IDLE);
         ext_prefetch_ready = 1'b0;
         next_line_candidate_ready = 1'b0;
@@ -310,7 +384,8 @@ module l1d_cache #(
         array_wdata = working_line;
 
         if (state == ST_IDLE) begin
-            if (cpu_req_valid) begin
+            if (cpu_req_valid &&
+                !access_misaligned(cpu_req_addr, cpu_req_size)) begin
                 array_en = 1'b1;
                 array_addr = address_set(cpu_req_addr);
             end else if ((ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
@@ -357,8 +432,9 @@ module l1d_cache #(
             state <= ST_IDLE;
             req_addr <= '0;
             req_write <= 1'b0;
+            req_size <= ACCESS_DOUBLE;
+            req_unsigned <= 1'b0;
             req_wdata <= '0;
-            req_wstrb <= '0;
             req_is_prefetch <= 1'b0;
             selected_way <= '0;
             selected_vc <= '0;
@@ -373,6 +449,8 @@ module l1d_cache #(
             wb_addr <= '0;
             wb_data <= '0;
             response_data <= '0;
+            response_error <= 1'b0;
+            response_error_cause <= RSP_OK;
             vc_rr <= '0;
 
             stat_cpu_hits <= '0;
@@ -431,18 +509,29 @@ module l1d_cache #(
                     if (cpu_req_valid) begin
                         req_addr <= cpu_req_addr;
                         req_write <= cpu_req_write;
+                        req_size <= cpu_req_size;
+                        req_unsigned <= cpu_req_unsigned;
                         req_wdata <= cpu_req_wdata;
-                        req_wstrb <= cpu_req_wstrb;
                         req_is_prefetch <= 1'b0;
+                        response_data <= '0;
+                        response_error <= access_misaligned(cpu_req_addr, cpu_req_size);
+                        response_error_cause <= RSP_OK;
                         event_cpu_access <= 1'b1;
-                        state <= ST_LOOKUP;
+                        if (access_misaligned(cpu_req_addr, cpu_req_size)) begin
+                            response_error_cause <= cpu_req_write ?
+                                RSP_STORE_MISALIGNED : RSP_LOAD_MISALIGNED;
+                            state <= ST_RESP;
+                        end else begin
+                            state <= ST_LOOKUP;
+                        end
                     end else if ((ENABLE_PREFETCH != 0) &&
                                  cfg_prefetch_enable &&
                                  ext_prefetch_valid) begin
                         req_addr <= line_address(ext_prefetch_addr);
                         req_write <= 1'b0;
+                        req_size <= ACCESS_DOUBLE;
+                        req_unsigned <= 1'b0;
                         req_wdata <= '0;
-                        req_wstrb <= '0;
                         req_is_prefetch <= 1'b1;
                         state <= ST_LOOKUP;
                     end else if ((ENABLE_PREFETCH != 0) &&
@@ -450,8 +539,9 @@ module l1d_cache #(
                                  next_line_candidate_valid) begin
                         req_addr <= next_line_candidate_addr;
                         req_write <= 1'b0;
+                        req_size <= ACCESS_DOUBLE;
+                        req_unsigned <= 1'b0;
                         req_wdata <= '0;
-                        req_wstrb <= '0;
                         req_is_prefetch <= 1'b1;
                         state <= ST_LOOKUP;
                     end
@@ -473,19 +563,20 @@ module l1d_cache #(
                                 event_prefetch_useful <= 1'b1;
                             end
                             if (req_write) begin
-                                working_line <= merge_word(
+                                working_line <= merge_store_data(
                                     data_q[hit_way_comb], req_addr,
-                                    req_wdata, req_wstrb
+                                    req_wdata, req_size
                                 );
-                                response_data <= line_word(
-                                    merge_word(data_q[hit_way_comb], req_addr,
-                                               req_wdata, req_wstrb),
-                                    req_addr
+                                response_data <= line_load_data(
+                                    merge_store_data(data_q[hit_way_comb], req_addr,
+                                                     req_wdata, req_size),
+                                    req_addr, req_size, req_unsigned
                                 );
                                 state <= ST_HIT_WRITE;
                             end else begin
-                                response_data <= line_word(
-                                    data_q[hit_way_comb], req_addr
+                                response_data <= line_load_data(
+                                    data_q[hit_way_comb], req_addr,
+                                    req_size, req_unsigned
                                 );
                                 state <= ST_RESP;
                             end
@@ -524,21 +615,23 @@ module l1d_cache #(
                             end
 
                             if (req_write) begin
-                                working_line <= merge_word(
+                                working_line <= merge_store_data(
                                     vc_data[victim_hit_comb], req_addr,
-                                    req_wdata, req_wstrb
+                                    req_wdata, req_size
                                 );
                                 working_dirty <= 1'b1;
-                                response_data <= line_word(
-                                    merge_word(vc_data[victim_hit_comb], req_addr,
-                                               req_wdata, req_wstrb),
-                                    req_addr
+                                response_data <= line_load_data(
+                                    merge_store_data(vc_data[victim_hit_comb],
+                                                     req_addr, req_wdata,
+                                                     req_size),
+                                    req_addr, req_size, req_unsigned
                                 );
                             end else begin
                                 working_line <= vc_data[victim_hit_comb];
                                 working_dirty <= vc_dirty[victim_hit_comb];
-                                response_data <= line_word(
-                                    vc_data[victim_hit_comb], req_addr
+                                response_data <= line_load_data(
+                                    vc_data[victim_hit_comb], req_addr,
+                                    req_size, req_unsigned
                                 );
                             end
                             if (vc_prefetched[victim_hit_comb]) begin
@@ -653,17 +746,19 @@ module l1d_cache #(
                 ST_MEM_READ_WAIT: begin
                     if (mem_rsp_valid) begin
                         if (!req_is_prefetch && req_write) begin
-                            fill_line <= merge_word(
-                                mem_rsp_rdata, req_addr, req_wdata, req_wstrb
+                            fill_line <= merge_store_data(
+                                mem_rsp_rdata, req_addr, req_wdata, req_size
                             );
-                            response_data <= line_word(
-                                merge_word(mem_rsp_rdata, req_addr,
-                                           req_wdata, req_wstrb),
-                                req_addr
+                            response_data <= line_load_data(
+                                merge_store_data(mem_rsp_rdata, req_addr,
+                                                 req_wdata, req_size),
+                                req_addr, req_size, req_unsigned
                             );
                         end else begin
                             fill_line <= mem_rsp_rdata;
-                            response_data <= line_word(mem_rsp_rdata, req_addr);
+                            response_data <= line_load_data(
+                                mem_rsp_rdata, req_addr, req_size, req_unsigned
+                            );
                         end
                         state <= ST_INSTALL;
                     end
@@ -703,6 +798,12 @@ module l1d_cache #(
         if (NUM_SETS < 2 || (NUM_SETS & (NUM_SETS - 1)) != 0) begin
             $error("NUM_SETS must be a power of two and at least 2");
         end
+        if (ADDR_WIDTH != 64) begin
+            $error("RV64 mode requires ADDR_WIDTH to be 64");
+        end
+        if (DATA_WIDTH != 64) begin
+            $error("RV64 mode requires DATA_WIDTH to be 64");
+        end
         if (DATA_WIDTH < 8 || (DATA_WIDTH % 8) != 0 ||
             (WORD_BYTES & (WORD_BYTES - 1)) != 0) begin
             $error("DATA_WIDTH must contain a power-of-two number of bytes");
@@ -724,10 +825,6 @@ module l1d_cache #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n) begin
-            if (cpu_req_valid && cpu_req_ready &&
-                (cpu_req_addr % WORD_BYTES) != 0) begin
-                $fatal(1, "CPU request address must be word aligned");
-            end
             if (state == ST_LOOKUP && l1_hit_comb &&
                 victim_hit_valid_comb) begin
                 $fatal(1, "A line is simultaneously valid in L1 and victim cache");

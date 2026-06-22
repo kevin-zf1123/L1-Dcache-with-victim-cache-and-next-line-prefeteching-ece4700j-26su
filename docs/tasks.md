@@ -3,6 +3,7 @@
 ## Baseline
 
 - [x] Define blocking ready/valid CPU and line-memory interfaces.
+- [x] Implement RV64 load/store request fields, 64-bit addresses, and XLEN data.
 - [x] Implement configurable direct-mapped / 2-way L1D.
 - [x] Implement synchronous tag and data SRAM wrappers.
 - [x] Implement write-back / write-allocate FSM.
@@ -17,6 +18,8 @@
 ## Verification and Advanced Features
 
 - [x] Add deterministic randomized golden-memory scoreboard.
+- [x] Verify RV64 load/store sizes, sign/zero extension, and misaligned errors.
+- [x] Verify 64-bit high-address tags and RV64 trace replay format.
 - [x] Check CPU-response and lower-memory request stability under backpressure.
 - [x] Add simulation checks for handshake stability and line uniqueness.
 - [x] Verify 4-entry and 8-entry victim-cache configurations.
@@ -30,11 +33,11 @@
 
 ## Vivado and PPA
 
-- [x] Run Vivado simulation for direct-mapped and 2-way configurations.
+- [ ] Run RV64 Vivado simulation for direct-mapped and 2-way configurations.
 - [ ] Inspect waveforms for all hit, miss, swap, fill, and write-back paths.
-- [x] Run synthesis and record LUT, FF, inferred memory, and timing reports.
+- [ ] Run RV64 synthesis and record LUT, FF, inferred memory, and timing reports.
 - [x] Add a baseline 10 ns clock constraint.
-- [x] Calculate an approximate post-synthesis Fmax from Vivado STA reports.
-- [x] Run vectorless FPGA power estimation and document its assumptions.
+- [ ] Calculate an approximate RV64 post-synthesis Fmax from Vivado STA reports.
+- [ ] Run RV64 vectorless FPGA power estimation and document its assumptions.
 - [ ] Run implementation/post-route timing and activity-based power analysis.
 - [ ] Compare baseline, victim-cache, prefetch, and combined configurations.

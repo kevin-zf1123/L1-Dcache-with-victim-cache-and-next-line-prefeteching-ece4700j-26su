@@ -6,6 +6,11 @@ This document is the authoritative design and usage description for the
 baseline L1 data cache. The current RTL implements a blocking, write-back,
 write-allocate cache with:
 
+- an RV64 load/store request contract with 64-bit byte addresses and XLEN data;
+- byte, halfword, word, word-unsigned, and doubleword load semantics with
+  sign or zero extension;
+- byte, halfword, word, and doubleword store semantics with alignment error
+  reporting;
 - configurable direct-mapped or 2-way set-associative organization;
 - synchronous tag and data SRAM wrappers;
 - ready/valid CPU and line-memory interfaces;
@@ -75,9 +80,9 @@ flowchart TB
         MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
     end
 
-    CPU -->|"Request: valid/ready, address, write, data, strobe"| SELECT
+    CPU -->|"Request: valid/ready, address, op size, unsigned flag, data"| SELECT
     SELECT -->|"Selected demand or prefetch request"| FSM
-    FSM -->|"Response: valid/ready, read data"| CPU
+    FSM -->|"Response: valid/ready, data, error cause"| CPU
 
     FSM -->|"Indexed synchronous read/write"| SRAM
     SRAM -->|"Tag and complete-line outputs"| FSM
@@ -102,8 +107,8 @@ module instances in the present baseline.
 
 | Parameter | Default | Constraint / meaning |
 | --- | ---: | --- |
-| `ADDR_WIDTH` | 32 | Byte-address width |
-| `DATA_WIDTH` | 32 | CPU transfer width; byte write strobes are supported |
+| `ADDR_WIDTH` | 64 | RV64 byte-address width |
+| `DATA_WIDTH` | 64 | RV64 XLEN data width |
 | `LINE_BYTES` | 16 | Power-of-two cache-line size |
 | `NUM_SETS` | 8 | Power of two, at least 2 |
 | `NUM_WAYS` | 2 | `1` for direct-mapped, `2` for 2-way |
@@ -123,15 +128,33 @@ clock edge. The request fields are:
 
 - `cpu_req_addr`: byte address;
 - `cpu_req_write`: `0` for load, `1` for store;
-- `cpu_req_wdata`: store data; and
-- `cpu_req_wstrb`: one byte enable per `DATA_WIDTH/8`.
+- `cpu_req_size`: `0` byte, `1` halfword, `2` word, `3` doubleword;
+- `cpu_req_unsigned`: zero-extend loads smaller than XLEN when set; ignored
+  for stores and doubleword loads; and
+- `cpu_req_wdata`: unshifted store data in the low bytes selected by
+  `cpu_req_size`.
 
 The cache is blocking and accepts one request at a time. A response remains
 valid in `cpu_rsp_valid` until accepted with `cpu_rsp_ready`. Loads return the
-selected word in `cpu_rsp_rdata`. Stores also produce a completion response;
-the returned data is the post-write word and should otherwise be ignored.
-CPU addresses must be aligned to `DATA_WIDTH/8`; accesses spanning words or
-cache lines are outside this baseline and trigger a simulation assertion.
+RV64 architectural result in `cpu_rsp_rdata`: `LB/LH/LW` sign-extend,
+`LBU/LHU/LWU` zero-extend, and `LD` returns all 64 bits. Stores also produce
+a completion response; the returned data is the post-write value selected by
+the store size and should otherwise be ignored.
+
+Alignment follows the RV64 natural-alignment rules:
+
+| Access size | Legal address alignment |
+| --- | --- |
+| byte | any byte address |
+| halfword | `addr[0] == 0` |
+| word | `addr[1:0] == 0` |
+| doubleword | `addr[2:0] == 0` |
+
+Misaligned CPU requests are accepted and answered without touching the cache
+arrays or lower memory. `cpu_rsp_error` is asserted, and
+`cpu_rsp_error_cause` is `1` for a load-address-misaligned error and `2` for
+a store-address-misaligned error. Hardware splitting of misaligned accesses is
+not implemented.
 
 ### Lower line-memory interface
 
@@ -169,9 +192,10 @@ registered separately.
 
 ## Write-Back and Write-Allocate Policy
 
-- A store hit updates only the enabled bytes and marks the L1 line dirty.
-- A store miss fetches the complete line, merges the store bytes, installs the
-  result, and marks it dirty.
+- A store hit updates the contiguous byte, halfword, word, or doubleword
+  selected by `cpu_req_size` and marks the L1 line dirty.
+- A store miss fetches the complete line, merges the selected store bytes,
+  installs the result, and marks it dirty.
 - An L1 replacement first moves the line into the victim cache.
 - If the selected victim entry already contains a dirty line, that victim line
   is written to lower memory before the new eviction is inserted.
@@ -250,16 +274,16 @@ backpressure, CPU-response backpressure, handshake payload stability checks,
 a 160-operation randomized golden-memory scoreboard, and three
 synthetic-workload configurations:
 
-| Configuration | Covered behavior | Result on 2026-06-10 |
+| Configuration | Covered behavior | Current Icarus result |
 | --- | --- | --- |
-| Direct-mapped, VC4, prefetch off | hit/miss, write-allocate, byte stores, victim hit, dirty preservation, randomized traffic | PASS |
+| Direct-mapped, VC4, prefetch off | RV64 load/store sizes, sign/zero extension, misaligned errors, 64-bit high-address tags, victim hit, dirty preservation, randomized traffic | PASS |
 | 2-way, VC4, prefetch off | same checks with way replacement and backpressure | PASS |
-| 2-way, VC8, prefetch off | 8-entry victim replacement and dirty preservation | PASS |
+| 2-way, VC8, prefetch off | same RV64 checks with 8-entry victim replacement and dirty preservation | PASS |
 | 2-way, VC4, prefetch on | next-line fill, victim rescue of prefetched data, external injection, usefulness accounting | PASS |
 | Direct-mapped, VC4, prefetch off | five synthetic boundary profiles | PASS |
 | 2-way, VC4, prefetch off | five synthetic boundary profiles | PASS |
 | 2-way, VC4, prefetch on | five synthetic boundary profiles and prefetch boundary assertions | PASS |
-| 2-way, VC4, prefetch off | text trace replay, writes, byte strobes, golden-memory checking | PASS |
+| 2-way, VC4, prefetch off | RV64 text trace replay, load signedness, store sizes, golden-memory checking | PASS |
 
 Generated `.vvp` files and logs are written under `sim/`. Icarus emits a known
 informational message about constant selects in `always_*`; compilation and
@@ -273,10 +297,14 @@ and elapsed testbench cycles.
 
 ## Vivado Verification
 
-The batch flow was executed successfully on June 10, 2026 with Vivado
-2024.2.1 targeting `xc7a35tcpg236-1`. The local macOS host still uses Icarus
-for preliminary regression; final XSim and synthesis were run on a remote
-Windows installation. All seven XSim configurations completed with
+The local macOS host uses Icarus for preliminary regression. Final XSim and
+synthesis should be rerun after the RV64 interface change on a machine with
+Vivado available. The most recent Vivado run in this document is a historical
+pre-RV64 baseline run from June 10, 2026 using Vivado 2024.2.1 targeting
+`xc7a35tcpg236-1`; do not treat those area, timing, or power numbers as
+current sign-off data for the RV64 RTL.
+
+That historical pre-RV64 run completed these seven XSim configurations with
 `ALL TESTS PASSED`:
 
 | XSim configuration | Result |
@@ -306,8 +334,8 @@ generated under
 - `timing_summary.rpt`;
 - `power.rpt`.
 
-Simulation logs are copied to `build/vivado/reports/`. The June 10 synthesis
-results are:
+Simulation logs are copied to `build/vivado/reports/`. The historical June 10
+pre-RV64 synthesis results were:
 
 | Configuration | LUTs | FFs | RAMB36 | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -316,10 +344,10 @@ results are:
 | 2-way, VC8, prefetch off | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
 | 2-way, VC4, prefetch on | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
 
-All configurations meet the 100 MHz synthesis constraint. The data arrays
-were inferred as block RAM; tag arrays were inferred as distributed RAM. The
-Fmax column is calculated as `1000 / (10 - WNS)` and is only a post-synthesis
-STA estimate. Routing and implementation can reduce it.
+Those pre-RV64 configurations met the 100 MHz synthesis constraint. The data
+arrays were inferred as block RAM; tag arrays were inferred as distributed
+RAM. The Fmax column is calculated as `1000 / (10 - WNS)` and is only a
+post-synthesis STA estimate. Routing and implementation can reduce it.
 
 The power values use Vivado vectorless activity propagation, with no SAIF/VCD
 activity file, default operating conditions, and `Low` confidence. They are
@@ -378,14 +406,16 @@ is:
 
 ```text
 # comments begin with #
-0 ADDRESS
-1 ADDRESS DATA WRITE_STROBE
+0 SIZE UNSIGNED ADDRESS
+1 SIZE 0 ADDRESS DATA
 ```
 
-Fields are hexadecimal except the decimal opcode: `0` is a 32-bit aligned
-read and `1` is a 32-bit aligned write. The write strobe contains one bit per
-byte. Reads are checked against the testbench golden memory; writes update the
-golden memory after cache completion. Blank and comment lines are ignored.
+`0` is a load and `1` is a store. `SIZE` is decimal:
+`0` byte, `1` halfword, `2` word, and `3` doubleword. `UNSIGNED` is decimal
+and used only by loads. Addresses and data are hexadecimal without a `0x`
+prefix. Loads are checked against the testbench golden memory with the
+requested sign or zero extension; stores update the golden memory after cache
+completion. Blank and comment lines are ignored.
 For example:
 
 ```bash
@@ -395,8 +425,9 @@ vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
 Run this command from the repository root. Relative ASCII paths avoid a known
 Icarus plusarg limitation when an absolute workspace path contains non-ASCII
 characters. A SPEC extraction tool must convert committed accesses into this
-cache-interface format, align or split accesses as required, and omit
-licensed data values when redistribution is not permitted.
+cache-interface format, preserve naturally aligned RV64 access sizes, and
+record or filter misaligned accesses according to the experiment policy.
+Licensed data values must be omitted when redistribution is not permitted.
 
 ### Workload classes
 
@@ -473,8 +504,12 @@ zero-entry bypass configuration is future work.
 - Replacement is round-robin rather than true LRU.
 - Prefetching is best-effort and can starve under continuous demand traffic.
 - Counter overflow is modulo 32 bits.
-- Coherence, atomics, fences, flush/invalidate commands, ECC, and unaligned
-  accesses spanning words or lines are outside this baseline.
+- Misaligned CPU requests return load/store-address-misaligned errors; the
+  cache does not split one architectural access into multiple aligned cache
+  accesses.
+- Coherence, atomics, explicit fence/flush/invalidate commands, ECC, MMU/TLB
+  translation, PMP/PMA checks, and uncached MMIO regions are outside this L1D
+  baseline and must be handled by surrounding system logic or future RTL.
 - XSim behavioral regression and post-synthesis reports are complete;
   waveform review, implementation/post-route timing, and activity-based power
   analysis remain required for final sign-off.
