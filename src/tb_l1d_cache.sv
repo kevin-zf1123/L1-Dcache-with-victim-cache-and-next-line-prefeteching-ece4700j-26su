@@ -10,7 +10,7 @@ module tb_l1d_cache #(
     localparam integer LINE_BYTES = 16;
     localparam integer NUM_SETS = 4;
     localparam integer LINE_BITS = LINE_BYTES * 8;
-    localparam integer MEM_BYTES = 4096;
+    localparam integer MEM_BYTES = 1048576;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
     localparam logic [1:0] SIZE_BYTE   = 2'b00;
     localparam logic [1:0] SIZE_HALF   = 2'b01;
@@ -582,6 +582,49 @@ module tb_l1d_cache #(
         end
     endtask
 
+    task automatic test_zero_entry_victim_bypass;
+        logic [ADDR_WIDTH-1:0] base;
+        logic [31:0] victim_before;
+        logic [31:0] writebacks_before;
+        begin
+            $display("TEST zero-entry victim bypass, ways=%0d", NUM_WAYS);
+            initialize_memory();
+            reset_cache();
+            base = 64'h0000_0000_0000_0000;
+
+            victim_before = stat_victim_hits;
+            writebacks_before = stat_writebacks;
+            for (k = 0; k <= NUM_WAYS + 1; k = k + 1) begin
+                expect_read(base + k*CONFLICT_STRIDE,
+                            memory_load(base + k*CONFLICT_STRIDE,
+                                        SIZE_DOUBLE, 1'b0),
+                            "zero-entry conflict fill");
+            end
+            if (stat_victim_hits != victim_before) begin
+                $display("FAIL zero-entry mode recorded victim hits");
+                errors = errors + 1;
+            end
+
+            cpu_store(base, SIZE_DOUBLE, 64'h1111_2222_3333_4444);
+            update_golden_store(base, 64'h1111_2222_3333_4444, SIZE_DOUBLE);
+            for (k = 1; k <= NUM_WAYS + 2; k = k + 1) begin
+                expect_read(base + k*CONFLICT_STRIDE,
+                            memory_load(base + k*CONFLICT_STRIDE,
+                                        SIZE_DOUBLE, 1'b0),
+                            "zero-entry dirty pressure");
+            end
+            repeat (3) @(posedge clk);
+            if (stat_victim_hits != victim_before) begin
+                $display("FAIL zero-entry mode still recorded victim hits after dirty pressure");
+                errors = errors + 1;
+            end
+            if (stat_writebacks <= writebacks_before) begin
+                $display("FAIL zero-entry mode did not write back dirty eviction");
+                errors = errors + 1;
+            end
+        end
+    endtask
+
     task automatic test_dirty_victim_writeback;
         logic [ADDR_WIDTH-1:0] base;
         logic [31:0] writebacks_before;
@@ -750,6 +793,7 @@ module tb_l1d_cache #(
         logic [31:0] useless_before;
         logic [31:0] victim_before;
         logic [31:0] fills_before;
+        integer reads_before;
         integer timeout;
         begin
             $display("TEST next-line prefetch, ways=%0d", NUM_WAYS);
@@ -810,13 +854,32 @@ module tb_l1d_cache #(
             end
             useful_before = stat_prefetch_useful;
             victim_before = stat_victim_hits;
-            expect_read(prefetched, memory_load(prefetched, SIZE_DOUBLE, 1'b0),
-                        "prefetch rescued from victim");
-            if (stat_prefetch_useful != useful_before + 1 ||
-                stat_victim_hits != victim_before + 1) begin
-                $display("FAIL victim-rescued prefetch accounting");
-                errors = errors + 1;
+            reads_before = accepted_mem_reads;
+            if (VICTIM_ENTRIES > 0) begin
+                expect_read(prefetched, memory_load(prefetched, SIZE_DOUBLE, 1'b0),
+                            "prefetch rescued from victim");
+                if (stat_prefetch_useful != useful_before + 1 ||
+                    stat_victim_hits != victim_before + 1 ||
+                    accepted_mem_reads != reads_before) begin
+                    $display("FAIL victim-rescued prefetch accounting");
+                    errors = errors + 1;
+                end
+            end else begin
+                expect_read(prefetched, memory_load(prefetched, SIZE_DOUBLE, 1'b0),
+                            "prefetch demand refill after eviction");
+                if (stat_prefetch_useful != useful_before ||
+                    stat_victim_hits != victim_before ||
+                    accepted_mem_reads != reads_before + 1) begin
+                    $display("FAIL zero-entry bypass did not force a demand refill after prefetch eviction");
+                    errors = errors + 1;
+                end
             end
+            $display("PREFETCH_COMPARE scenario=evicted_prefetch_reaccess ways=%0d vc=%0d rescue=%0d useful_delta=%0d useless_delta=%0d victim_hits_delta=%0d mem_reads_delta=%0d",
+                     NUM_WAYS, VICTIM_ENTRIES, (VICTIM_ENTRIES > 0),
+                     stat_prefetch_useful - useful_before,
+                     stat_prefetch_useless - useless_before,
+                     stat_victim_hits - victim_before,
+                     accepted_mem_reads - reads_before);
 
             injected = base + 8*LINE_BYTES;
             fills_before = stat_prefetch_fills;
@@ -869,8 +932,9 @@ module tb_l1d_cache #(
         input integer accesses
     );
         begin
-            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d cycles=%0d",
+            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d vc_mode=%s prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d cycles=%0d",
                      workload_name, NUM_WAYS, VICTIM_ENTRIES,
+                     (VICTIM_ENTRIES > 0) ? "enabled" : "bypass",
                      cfg_prefetch_enable, accesses, stat_cpu_hits,
                      stat_cpu_misses, stat_victim_hits, accepted_mem_reads,
                      accepted_mem_writes, stat_prefetch_useful,
@@ -984,10 +1048,18 @@ module tb_l1d_cache #(
             end
             wait_for_quiescence();
             report_workload("same_set_conflict_thrash", total_accesses);
-            if (accepted_mem_reads != active_lines ||
-                stat_victim_hits < total_accesses - active_lines) begin
-                $display("FAIL victim cache did not retain the conflict working set");
-                errors = errors + 1;
+            if (VICTIM_ENTRIES > 0) begin
+                if (accepted_mem_reads != active_lines ||
+                    stat_victim_hits < total_accesses - active_lines) begin
+                    $display("FAIL victim cache did not retain the conflict working set");
+                    errors = errors + 1;
+                end
+            end else begin
+                if (accepted_mem_reads != total_accesses ||
+                    stat_victim_hits != 0) begin
+                    $display("FAIL zero-entry baseline did not expose the expected conflict-miss behavior");
+                    errors = errors + 1;
+                end
             end
 
             pointer_line[0] = 0;
@@ -1242,8 +1314,12 @@ module tb_l1d_cache #(
         end else begin
             test_baseline();
             test_rv64_alignment_faults();
-            test_victim_hit();
-            test_dirty_victim_writeback();
+            if (VICTIM_ENTRIES == 0) begin
+                test_zero_entry_victim_bypass();
+            end else begin
+                test_victim_hit();
+                test_dirty_victim_writeback();
+            end
             test_response_backpressure();
             test_randomized_scoreboard();
         end

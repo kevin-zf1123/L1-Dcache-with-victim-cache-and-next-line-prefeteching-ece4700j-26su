@@ -70,6 +70,9 @@ module l1d_cache #(
     localparam integer SRAM_ADDR_WIDTH = (NUM_SETS > 1) ? $clog2(NUM_SETS) : 1;
     localparam integer WAY_BITS        = (NUM_WAYS > 1) ? $clog2(NUM_WAYS) : 1;
     localparam integer VC_BITS         = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES) : 1;
+    localparam bit VICTIM_ENABLED      = (VICTIM_ENTRIES > 0);
+    localparam integer VICTIM_STORAGE_ENTRIES =
+        (VICTIM_ENTRIES > 0) ? VICTIM_ENTRIES : 1;
 
     localparam logic [1:0] ACCESS_BYTE   = 2'b00;
     localparam logic [1:0] ACCESS_HALF   = 2'b01;
@@ -109,11 +112,11 @@ module l1d_cache #(
     logic prefetched_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic [WAY_BITS-1:0] replacement_way [0:NUM_SETS-1];
 
-    logic vc_valid [0:VICTIM_ENTRIES-1];
-    logic vc_dirty [0:VICTIM_ENTRIES-1];
-    logic vc_prefetched [0:VICTIM_ENTRIES-1];
-    logic [ADDR_WIDTH-1:0] vc_addr [0:VICTIM_ENTRIES-1];
-    logic [LINE_BITS-1:0] vc_data [0:VICTIM_ENTRIES-1];
+    logic vc_valid [0:VICTIM_STORAGE_ENTRIES-1];
+    logic vc_dirty [0:VICTIM_STORAGE_ENTRIES-1];
+    logic vc_prefetched [0:VICTIM_STORAGE_ENTRIES-1];
+    logic [ADDR_WIDTH-1:0] vc_addr [0:VICTIM_STORAGE_ENTRIES-1];
+    logic [LINE_BITS-1:0] vc_data [0:VICTIM_STORAGE_ENTRIES-1];
     logic [VC_BITS-1:0] vc_rr;
 
     logic [ADDR_WIDTH-1:0] req_addr;
@@ -348,12 +351,14 @@ module l1d_cache #(
 
         victim_hit_valid_comb = 1'b0;
         victim_hit_comb = 0;
-        for (lookup_i = 0; lookup_i < VICTIM_ENTRIES;
-             lookup_i = lookup_i + 1) begin
-            if (vc_valid[lookup_i] &&
-                vc_addr[lookup_i] == req_line_addr_comb) begin
-                victim_hit_valid_comb = 1'b1;
-                victim_hit_comb = lookup_i;
+        if (VICTIM_ENABLED) begin
+            for (lookup_i = 0; lookup_i < VICTIM_ENTRIES;
+                 lookup_i = lookup_i + 1) begin
+                if (vc_valid[lookup_i] &&
+                    vc_addr[lookup_i] == req_line_addr_comb) begin
+                    victim_hit_valid_comb = 1'b1;
+                    victim_hit_comb = lookup_i;
+                end
             end
         end
     end
@@ -482,13 +487,15 @@ module l1d_cache #(
                     prefetched_bits[reset_j][reset_i] <= 1'b0;
                 end
             end
-            for (reset_i = 0; reset_i < VICTIM_ENTRIES;
-                 reset_i = reset_i + 1) begin
-                vc_valid[reset_i] <= 1'b0;
-                vc_dirty[reset_i] <= 1'b0;
-                vc_prefetched[reset_i] <= 1'b0;
-                vc_addr[reset_i] <= '0;
-                vc_data[reset_i] <= '0;
+            if (VICTIM_ENABLED) begin
+                for (reset_i = 0; reset_i < VICTIM_ENTRIES;
+                     reset_i = reset_i + 1) begin
+                    vc_valid[reset_i] <= 1'b0;
+                    vc_dirty[reset_i] <= 1'b0;
+                    vc_prefetched[reset_i] <= 1'b0;
+                    vc_addr[reset_i] <= '0;
+                    vc_data[reset_i] <= '0;
+                end
             end
         end else begin
             event_cpu_access <= 1'b0;
@@ -664,21 +671,30 @@ module l1d_cache #(
                                 tag_q[replacement_way[req_set_comb]], req_set_comb
                             );
                             evicted_data <= data_q[replacement_way[req_set_comb]];
-                            selected_vc <= vc_rr;
-
                             if (req_is_prefetch &&
                                 !prefetched_bits[replacement_way[req_set_comb]][req_set_comb]) begin
                                 stat_prefetch_pollution <=
                                     stat_prefetch_pollution + 1'b1;
                                 event_prefetch_pollution <= 1'b1;
                             end
-
-                            if (vc_valid[vc_rr] && vc_dirty[vc_rr]) begin
-                                wb_addr <= vc_addr[vc_rr];
-                                wb_data <= vc_data[vc_rr];
+                            if (VICTIM_ENABLED) begin
+                                selected_vc <= vc_rr;
+                                if (vc_valid[vc_rr] && vc_dirty[vc_rr]) begin
+                                    wb_addr <= vc_addr[vc_rr];
+                                    wb_data <= vc_data[vc_rr];
+                                    state <= ST_WB_REQ;
+                                end else begin
+                                    state <= ST_VC_INSERT;
+                                end
+                            end else if (dirty_bits[replacement_way[req_set_comb]][req_set_comb]) begin
+                                wb_addr <= compose_line_address(
+                                    tag_q[replacement_way[req_set_comb]],
+                                    req_set_comb
+                                );
+                                wb_data <= data_q[replacement_way[req_set_comb]];
                                 state <= ST_WB_REQ;
                             end else begin
-                                state <= ST_VC_INSERT;
+                                state <= ST_MEM_READ_REQ;
                             end
                         end
                     end
@@ -715,24 +731,30 @@ module l1d_cache #(
                     if (mem_req_ready) begin
                         stat_writebacks <= stat_writebacks + 1'b1;
                         event_writeback <= 1'b1;
-                        state <= ST_VC_INSERT;
+                        if (VICTIM_ENABLED) begin
+                            state <= ST_VC_INSERT;
+                        end else begin
+                            state <= ST_MEM_READ_REQ;
+                        end
                     end
                 end
 
                 ST_VC_INSERT: begin
-                    if (vc_valid[selected_vc] && vc_prefetched[selected_vc]) begin
-                        stat_prefetch_useless <= stat_prefetch_useless + 1'b1;
-                        event_prefetch_useless <= 1'b1;
-                    end
-                    vc_valid[selected_vc] <= evicted_valid;
-                    vc_dirty[selected_vc] <= evicted_dirty;
-                    vc_prefetched[selected_vc] <= evicted_prefetched;
-                    vc_addr[selected_vc] <= evicted_addr;
-                    vc_data[selected_vc] <= evicted_data;
-                    if (vc_rr == VICTIM_ENTRIES-1) begin
-                        vc_rr <= '0;
-                    end else begin
-                        vc_rr <= vc_rr + 1'b1;
+                    if (VICTIM_ENABLED) begin
+                        if (vc_valid[selected_vc] && vc_prefetched[selected_vc]) begin
+                            stat_prefetch_useless <= stat_prefetch_useless + 1'b1;
+                            event_prefetch_useless <= 1'b1;
+                        end
+                        vc_valid[selected_vc] <= evicted_valid;
+                        vc_dirty[selected_vc] <= evicted_dirty;
+                        vc_prefetched[selected_vc] <= evicted_prefetched;
+                        vc_addr[selected_vc] <= evicted_addr;
+                        vc_data[selected_vc] <= evicted_data;
+                        if (vc_rr == VICTIM_ENTRIES-1) begin
+                            vc_rr <= '0;
+                        end else begin
+                            vc_rr <= vc_rr + 1'b1;
+                        end
                     end
                     state <= ST_MEM_READ_REQ;
                 end
@@ -813,9 +835,10 @@ module l1d_cache #(
             (LINE_BYTES & (LINE_BYTES - 1)) != 0) begin
             $error("LINE_BYTES must be a power-of-two multiple of the CPU word");
         end
-        if (VICTIM_ENTRIES < 1 ||
-            (VICTIM_ENTRIES & (VICTIM_ENTRIES - 1)) != 0) begin
-            $error("VICTIM_ENTRIES must be a non-zero power of two");
+        if (VICTIM_ENTRIES < 0 ||
+            (VICTIM_ENTRIES > 0 &&
+             (VICTIM_ENTRIES & (VICTIM_ENTRIES - 1)) != 0)) begin
+            $error("VICTIM_ENTRIES must be 0 or a power of two");
         end
         if (ADDR_WIDTH <= OFFSET_BITS + SET_BITS) begin
             $error("ADDR_WIDTH is too small for the configured cache geometry");
@@ -829,14 +852,16 @@ module l1d_cache #(
                 victim_hit_valid_comb) begin
                 $fatal(1, "A line is simultaneously valid in L1 and victim cache");
             end
-            for (assert_i = 0; assert_i < VICTIM_ENTRIES;
-                 assert_i = assert_i + 1) begin
-                for (assert_j = assert_i + 1;
-                     assert_j < VICTIM_ENTRIES;
-                     assert_j = assert_j + 1) begin
-                    if (vc_valid[assert_i] && vc_valid[assert_j] &&
-                        vc_addr[assert_i] == vc_addr[assert_j]) begin
-                        $fatal(1, "Duplicate line in victim cache");
+            if (VICTIM_ENABLED) begin
+                for (assert_i = 0; assert_i < VICTIM_ENTRIES;
+                     assert_i = assert_i + 1) begin
+                    for (assert_j = assert_i + 1;
+                         assert_j < VICTIM_ENTRIES;
+                         assert_j = assert_j + 1) begin
+                        if (vc_valid[assert_i] && vc_valid[assert_j] &&
+                            vc_addr[assert_i] == vc_addr[assert_j]) begin
+                            $fatal(1, "Duplicate line in victim cache");
+                        end
                     end
                 end
             end

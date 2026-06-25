@@ -24,7 +24,13 @@
 - [x] Add simulation checks for handshake stability and line uniqueness.
 - [x] Verify 4-entry and 8-entry victim-cache configurations.
 - [x] Add deterministic synthetic workload-boundary regression and CSV output.
-- [ ] Add a zero-entry victim-cache bypass configuration.
+- [x] Add a zero-entry victim-cache bypass configuration.
+  - [x] Make `VICTIM_ENTRIES=0` legal in the RTL and testbench parameter checks.
+  - [x] Bypass all victim-cache lookup, swap, insert, and replacement logic when the victim cache is disabled.
+  - [x] Keep the same L1 miss/fill/write-back behavior so the zero-entry mode is a true baseline comparison.
+  - [x] Add directed tests for conflict misses, dirty evictions, and prefetch pollution with victim cache disabled.
+  - [x] Update workload CSV output so zero-entry runs are easy to compare against 4-entry and 8-entry runs.
+  - [x] Confirm synthesis/simulation still pass for both `VICTIM_ENTRIES=0` and enabled configurations.
 - [ ] Add LRU victim replacement option.
 - [ ] Add separate prefetch-buffer placement option.
 - [ ] Add true pollution, timeliness, and memory-bandwidth measurements.

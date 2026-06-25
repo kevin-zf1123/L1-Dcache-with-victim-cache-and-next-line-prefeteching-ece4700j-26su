@@ -19,12 +19,6 @@ run_case() {
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
         -o "${output}" \
-        "${ROOT_DIR}/src/l1d_cache_pkg.sv" \
-        "${ROOT_DIR}/src/l1d_lookup.sv" \
-        "${ROOT_DIR}/src/l1d_array_bank.sv" \
-        "${ROOT_DIR}/src/l1d_request_arbiter.sv" \
-        "${ROOT_DIR}/src/l1d_controller.sv" \
-        "${ROOT_DIR}/src/l1d_victim_cache.sv" \
         "${ROOT_DIR}/src/l1d_sram.sv" \
         "${ROOT_DIR}/src/l1d_next_line_prefetch.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
@@ -46,12 +40,6 @@ run_workload_case() {
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
         -o "${output}" \
-        "${ROOT_DIR}/src/l1d_cache_pkg.sv" \
-        "${ROOT_DIR}/src/l1d_lookup.sv" \
-        "${ROOT_DIR}/src/l1d_array_bank.sv" \
-        "${ROOT_DIR}/src/l1d_request_arbiter.sv" \
-        "${ROOT_DIR}/src/l1d_controller.sv" \
-        "${ROOT_DIR}/src/l1d_victim_cache.sv" \
         "${ROOT_DIR}/src/l1d_sram.sv" \
         "${ROOT_DIR}/src/l1d_next_line_prefetch.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
@@ -62,9 +50,13 @@ run_workload_case() {
 run_case direct_mapped_vc4 1 0 4
 run_case two_way_vc4 2 0 4
 run_case two_way_vc8 2 0 8
+run_case two_way_vc0 2 0 0
 run_case next_line_prefetch_vc4 2 1 4
+run_case next_line_prefetch_vc0 2 1 0
+run_workload_case workload_two_way_vc0 2 0 0
 run_workload_case workload_direct_mapped_vc4 1 0 4
 run_workload_case workload_two_way_vc4 2 0 4
+run_workload_case workload_next_line_prefetch_vc0 2 1 0
 run_workload_case workload_next_line_prefetch_vc4 2 1 4
 
 vvp "${SIM_DIR}/two_way_vc4.vvp" \
@@ -72,8 +64,13 @@ vvp "${SIM_DIR}/two_way_vc4.vvp" \
     tee "${SIM_DIR}/trace_replay_smoke.log"
 
 vvp "${SIM_DIR}/two_way_vc8.vvp" \
-    "+TRACE=traces/spec2017_replay.trace" | \
-    tee "${SIM_DIR}/spec_trace.log"
+    "+TRACE=traces/test.trace" "+VCD" | \
+    tee "${SIM_DIR}/spec2026_test_trace.log"
+
+# vvp "${SIM_DIR}/two_way_vc8.vvp" \
+#     "+TRACE=traces/spec2026_782_lbm_r_test_1m.trace" | \
+#     tee "${SIM_DIR}/spec2026_trace.log"
+
 
 "${ROOT_DIR}/scripts/summarize_workloads.sh"
 echo "Icarus regression passed. Logs are in ${SIM_DIR}."
