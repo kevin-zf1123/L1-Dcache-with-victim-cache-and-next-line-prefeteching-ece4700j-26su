@@ -3,7 +3,8 @@
 module tb_l1d_cache #(
     parameter integer NUM_WAYS = 1,
     parameter integer ENABLE_PREFETCH = 0,
-    parameter integer VICTIM_ENTRIES = 4
+    parameter integer VICTIM_ENTRIES = 4,
+    parameter integer PREFETCH_BUFFER_SIZE = 4
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
@@ -59,6 +60,10 @@ module tb_l1d_cache #(
     logic [31:0] stat_prefetch_useless;
     logic [31:0] stat_prefetch_pollution;
     logic [31:0] stat_prefetch_dropped;
+    logic [31:0] stat_prefetch_buffer_allocated;
+    logic [31:0] stat_prefetch_buffer_promoted;
+    logic [31:0] stat_prefetch_buffer_evicted;
+    logic [31:0] stat_prefetch_buffer_full_drops;
     logic cache_idle;
     logic event_cpu_access;
     logic event_cpu_hit;
@@ -70,6 +75,10 @@ module tb_l1d_cache #(
     logic event_prefetch_useless;
     logic event_prefetch_pollution;
     logic event_prefetch_dropped;
+    logic event_pb_allocated;
+    logic event_pb_promoted;
+    logic event_pb_evicted;
+    logic event_pb_full_drop;
 
     byte unsigned memory [0:MEM_BYTES-1];
     byte unsigned golden_memory [0:MEM_BYTES-1];
@@ -99,7 +108,8 @@ module tb_l1d_cache #(
         .NUM_SETS(NUM_SETS),
         .NUM_WAYS(NUM_WAYS),
         .VICTIM_ENTRIES(VICTIM_ENTRIES),
-        .ENABLE_PREFETCH(ENABLE_PREFETCH)
+        .ENABLE_PREFETCH(ENABLE_PREFETCH),
+        .PREFETCH_BUFFER_SIZE(PREFETCH_BUFFER_SIZE)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -136,6 +146,10 @@ module tb_l1d_cache #(
         .stat_prefetch_useless(stat_prefetch_useless),
         .stat_prefetch_pollution(stat_prefetch_pollution),
         .stat_prefetch_dropped(stat_prefetch_dropped),
+        .stat_prefetch_buffer_allocated(stat_prefetch_buffer_allocated),
+        .stat_prefetch_buffer_promoted(stat_prefetch_buffer_promoted),
+        .stat_prefetch_buffer_evicted(stat_prefetch_buffer_evicted),
+        .stat_prefetch_buffer_full_drops(stat_prefetch_buffer_full_drops),
         .cache_idle(cache_idle),
         .event_cpu_access(event_cpu_access),
         .event_cpu_hit(event_cpu_hit),
@@ -146,7 +160,11 @@ module tb_l1d_cache #(
         .event_prefetch_useful(event_prefetch_useful),
         .event_prefetch_useless(event_prefetch_useless),
         .event_prefetch_pollution(event_prefetch_pollution),
-        .event_prefetch_dropped(event_prefetch_dropped)
+        .event_prefetch_dropped(event_prefetch_dropped),
+        .event_pb_allocated(event_pb_allocated),
+        .event_pb_promoted(event_pb_promoted),
+        .event_pb_evicted(event_pb_evicted),
+        .event_pb_full_drop(event_pb_full_drop)
     );
 
     always #5 clk = ~clk;
@@ -932,19 +950,34 @@ module tb_l1d_cache #(
         input integer accesses
     );
         begin
-            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d vc_mode=%s prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d cycles=%0d",
+            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d vc_mode=%s prefetch=%0d pb=%0d pb_mode=%s accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d pb_alloc=%0d pb_promote=%0d pb_evict=%0d pb_full_drop=%0d cycles=%0d",
                      workload_name, NUM_WAYS, VICTIM_ENTRIES,
                      (VICTIM_ENTRIES > 0) ? "enabled" : "bypass",
-                     cfg_prefetch_enable, accesses, stat_cpu_hits,
+                     cfg_prefetch_enable, PREFETCH_BUFFER_SIZE,
+                     (PREFETCH_BUFFER_SIZE > 0) ? "enabled" : "bypass",
+                     accesses, stat_cpu_hits,
                      stat_cpu_misses, stat_victim_hits, accepted_mem_reads,
                      accepted_mem_writes, stat_prefetch_useful,
                      stat_prefetch_useless, stat_prefetch_pollution,
-                     stat_prefetch_dropped, cycles_since_reset);
+                     stat_prefetch_dropped, stat_prefetch_buffer_allocated,
+                     stat_prefetch_buffer_promoted,
+                     stat_prefetch_buffer_evicted,
+                     stat_prefetch_buffer_full_drops, cycles_since_reset);
             if (stat_cpu_hits + stat_cpu_misses != accesses) begin
                 $display("FAIL workload accounting name=%s accesses=%0d hits_plus_misses=%0d",
                          workload_name, accesses,
                          stat_cpu_hits + stat_cpu_misses);
                 errors = errors + 1;
+            end
+            if (ENABLE_PREFETCH != 0) begin
+                if ((PREFETCH_BUFFER_SIZE == 0) &&
+                    (stat_prefetch_buffer_allocated != 0 ||
+                     stat_prefetch_buffer_promoted != 0 ||
+                     stat_prefetch_buffer_evicted != 0 ||
+                     stat_prefetch_buffer_full_drops != 0)) begin
+                    $display("FAIL PB-disabled workload reported non-zero PB counters");
+                    errors = errors + 1;
+                end
             end
         end
     endtask

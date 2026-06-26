@@ -7,7 +7,8 @@ module l1d_cache #(
     parameter integer NUM_SETS         = 8,
     parameter integer NUM_WAYS         = 2,
     parameter integer VICTIM_ENTRIES   = 4,
-    parameter integer ENABLE_PREFETCH  = 1
+    parameter integer ENABLE_PREFETCH  = 1,
+    parameter integer PREFETCH_BUFFER_SIZE = 4
 ) (
     input  logic                         clk,
     input  logic                         rst_n,
@@ -49,6 +50,10 @@ module l1d_cache #(
     output logic [31:0]                  stat_prefetch_useless,
     output logic [31:0]                  stat_prefetch_pollution,
     output logic [31:0]                  stat_prefetch_dropped,
+    output logic [31:0]                  stat_prefetch_buffer_allocated,
+    output logic [31:0]                  stat_prefetch_buffer_promoted,
+    output logic [31:0]                  stat_prefetch_buffer_evicted,
+    output logic [31:0]                  stat_prefetch_buffer_full_drops,
 
     output logic                         cache_idle,
     output logic                         event_cpu_access,
@@ -60,7 +65,11 @@ module l1d_cache #(
     output logic                         event_prefetch_useful,
     output logic                         event_prefetch_useless,
     output logic                         event_prefetch_pollution,
-    output logic                         event_prefetch_dropped
+    output logic                         event_prefetch_dropped,
+    output logic                         event_pb_allocated,
+    output logic                         event_pb_promoted,
+    output logic                         event_pb_evicted,
+    output logic                         event_pb_full_drop
 );
     localparam integer LINE_BITS       = LINE_BYTES * 8;
     localparam integer WORD_BYTES      = DATA_WIDTH / 8;
@@ -73,6 +82,10 @@ module l1d_cache #(
     localparam bit VICTIM_ENABLED      = (VICTIM_ENTRIES > 0);
     localparam integer VICTIM_STORAGE_ENTRIES =
         (VICTIM_ENTRIES > 0) ? VICTIM_ENTRIES : 1;
+
+    localparam integer PB_INDEX_BITS = (PREFETCH_BUFFER_SIZE > 1) ? (PREFETCH_BUFFER_SIZE) : 1;
+    localparam bit PB_ENABLED        = (ENABLE_PREFETCH != 0) &&
+                                       (PREFETCH_BUFFER_SIZE > 0);
 
     localparam logic [1:0] ACCESS_BYTE   = 2'b00;
     localparam logic [1:0] ACCESS_HALF   = 2'b01;
@@ -93,6 +106,8 @@ module l1d_cache #(
         ST_MEM_READ_REQ,
         ST_MEM_READ_WAIT,
         ST_INSTALL,
+        ST_PB_ALLOC,
+        ST_PB_FILL_WAIT,
         ST_RESP
     } state_t;
 
@@ -149,6 +164,20 @@ module l1d_cache #(
     logic next_line_candidate_ready;
     logic [ADDR_WIDTH-1:0] next_line_candidate_addr;
     logic next_line_dropped;
+
+    // Prefetch buffer interface signals
+    logic                  pb_alloc_valid;
+    logic                  pb_alloc_ready;
+    logic [ADDR_WIDTH-1:0] pb_alloc_addr;
+    logic                  pb_fill_valid;
+    logic                  pb_fill_ready;
+    logic                  pb_free_valid;
+    logic                  pb_free_ready;
+    logic                  pb_lookup_hit;
+    logic                  pb_full;
+    logic                  pb_empty;
+    logic [ADDR_WIDTH-1:0] pb_fill_addr;
+    logic next_line_candidate_accepted;
 
     integer lookup_i;
     integer reset_i;
@@ -323,9 +352,31 @@ module l1d_cache #(
         .demand_fill_valid(next_line_trigger),
         .demand_line_addr(req_line_addr_comb),
         .candidate_valid(next_line_candidate_valid),
-        .candidate_ready(next_line_candidate_ready),
+        .candidate_ready(next_line_candidate_accepted),
         .candidate_addr(next_line_candidate_addr),
         .dropped(next_line_dropped)
+    );
+
+    l1d_prefetch_buffer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .PB_SIZE(PREFETCH_BUFFER_SIZE)
+    ) prefetch_buffer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(PB_ENABLED),
+        .pb_alloc_valid(pb_alloc_valid),
+        .pb_alloc_ready(pb_alloc_ready),
+        .pb_alloc_addr(pb_alloc_addr),
+        .pb_fill_valid(pb_fill_valid),
+        .pb_fill_ready(pb_fill_ready),
+        .pb_fill_addr(pb_fill_addr),
+        .pb_free_valid(pb_free_valid),
+        .pb_free_ready(pb_free_ready),
+        .pb_free_addr(pb_fill_addr),
+        .pb_lookup_addr(req_line_addr_comb),
+        .pb_lookup_hit(pb_lookup_hit),
+        .pb_full(pb_full),
+        .pb_empty(pb_empty)
     );
 
     always_comb begin
@@ -467,6 +518,10 @@ module l1d_cache #(
             stat_prefetch_useless <= '0;
             stat_prefetch_pollution <= '0;
             stat_prefetch_dropped <= '0;
+            stat_prefetch_buffer_allocated <= '0;
+            stat_prefetch_buffer_promoted <= '0;
+            stat_prefetch_buffer_evicted <= '0;
+            stat_prefetch_buffer_full_drops <= '0;
             event_cpu_access <= 1'b0;
             event_cpu_hit <= 1'b0;
             event_cpu_miss <= 1'b0;
@@ -476,6 +531,10 @@ module l1d_cache #(
             event_prefetch_useful <= 1'b0;
             event_prefetch_useless <= 1'b0;
             event_prefetch_pollution <= 1'b0;
+            event_pb_allocated <= 1'b0;
+            event_pb_promoted <= 1'b0;
+            event_pb_evicted <= 1'b0;
+            event_pb_full_drop <= 1'b0;
 
             for (reset_i = 0; reset_i < NUM_SETS;
                  reset_i = reset_i + 1) begin
@@ -507,6 +566,10 @@ module l1d_cache #(
             event_prefetch_useful <= 1'b0;
             event_prefetch_useless <= 1'b0;
             event_prefetch_pollution <= 1'b0;
+            event_pb_allocated <= 1'b0;
+            event_pb_promoted <= 1'b0;
+            event_pb_evicted <= 1'b0;
+            event_pb_full_drop <= 1'b0;
             if (next_line_dropped) begin
                 stat_prefetch_dropped <= stat_prefetch_dropped + 1'b1;
             end
@@ -531,6 +594,18 @@ module l1d_cache #(
                         end else begin
                             state <= ST_LOOKUP;
                         end
+                    end else if ((ENABLE_PREFETCH != 0) &&
+                                 cfg_prefetch_enable &&
+                                 ext_prefetch_valid && PB_ENABLED && !pb_full) begin
+                        // Route external prefetch through PB
+                        pb_alloc_valid = 1'b1;
+                        req_addr <= line_address(ext_prefetch_addr);
+                        req_write <= 1'b0;
+                        req_size <= ACCESS_DOUBLE;
+                        req_unsigned <= 1'b0;
+                        req_wdata <= '0;
+                        req_is_prefetch <= 1'b1;
+                        state <= ST_PB_ALLOC;
                     end else if ((ENABLE_PREFETCH != 0) &&
                                  cfg_prefetch_enable &&
                                  ext_prefetch_valid) begin
@@ -659,7 +734,13 @@ module l1d_cache #(
                             evicted_prefetched <= 1'b0;
                             evicted_addr <= '0;
                             evicted_data <= '0;
-                            state <= ST_MEM_READ_REQ;
+                            // Allocate PB entry for prefetch
+                            if (PB_ENABLED && req_is_prefetch && !pb_full) begin
+                                pb_alloc_valid = 1'b1;
+                                state <= ST_PB_ALLOC;
+                            end else begin
+                                state <= ST_MEM_READ_REQ;
+                            end
                         end else begin
                             selected_way <= replacement_way[req_set_comb];
                             evicted_valid <= 1'b1;
@@ -694,9 +775,33 @@ module l1d_cache #(
                                 wb_data <= data_q[replacement_way[req_set_comb]];
                                 state <= ST_WB_REQ;
                             end else begin
-                                state <= ST_MEM_READ_REQ;
+                                // Allocate PB entry for prefetch on dirty eviction path
+                                if (PB_ENABLED && req_is_prefetch && !pb_full) begin
+                                    pb_alloc_valid = 1'b1;
+                                    state <= ST_PB_ALLOC;
+                                end else begin
+                                    state <= ST_MEM_READ_REQ;
+                                end
                             end
                         end
+                    end
+                end
+
+                ST_PB_ALLOC: begin
+                    // Allocate PB entry for prefetch miss
+                    if (PB_ENABLED && pb_alloc_ready && req_is_prefetch) begin
+                        stat_prefetch_buffer_allocated <= stat_prefetch_buffer_allocated + 1'b1;
+                        event_pb_allocated <= 1'b1;
+                        state <= ST_MEM_READ_REQ;
+                    end else begin
+                        state <= ST_MEM_READ_REQ;
+                    end
+                end
+
+                ST_PB_FILL_WAIT: begin
+                    // Waiting for memory response for PB-tracked line
+                    if (mem_req_ready) begin
+                        state <= ST_MEM_READ_WAIT;
                     end
                 end
 
@@ -767,6 +872,10 @@ module l1d_cache #(
 
                 ST_MEM_READ_WAIT: begin
                     if (mem_rsp_valid) begin
+                        // Mark PB entry as filled if tracked
+                        if (PB_ENABLED && pb_fill_ready) begin
+                            pb_fill_valid = 1'b1;
+                        end
                         if (!req_is_prefetch && req_write) begin
                             fill_line <= merge_store_data(
                                 mem_rsp_rdata, req_addr, req_wdata, req_size

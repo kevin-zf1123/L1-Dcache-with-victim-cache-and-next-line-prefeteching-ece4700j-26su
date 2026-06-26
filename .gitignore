@@ -10,12 +10,9 @@
 !src/**/*
 !docs/
 !docs/*
-!docs/**/
-!docs/**/*
+!docs/zh/*
 !scripts/
 !scripts/*
-!scripts/**/
-!scripts/**/*
 !constraints/
 !constraints/*
 !constraints/**/

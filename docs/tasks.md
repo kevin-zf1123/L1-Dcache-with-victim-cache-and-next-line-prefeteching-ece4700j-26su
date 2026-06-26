@@ -32,7 +32,7 @@
   - [x] Update workload CSV output so zero-entry runs are easy to compare against 4-entry and 8-entry runs.
   - [x] Confirm synthesis/simulation still pass for both `VICTIM_ENTRIES=0` and enabled configurations.
 - [ ] Add LRU victim replacement option.
-- [ ] Add separate prefetch-buffer placement option.
+- [x] Add separate prefetch-buffer placement option.
 - [ ] Add true pollution, timeliness, and memory-bandwidth measurements.
 - [x] Add reusable trace replay driver for SPEC CPU 2017/2026 regions.
 - [x] Run initial licensed SPEC CPU 2026 782.lbm_r trace extraction and replay validation.
