@@ -57,11 +57,16 @@ module tb_l1d_cache #(
     logic [31:0] stat_cpu_misses;
     logic [31:0] stat_victim_hits;
     logic [31:0] stat_writebacks;
+    logic [31:0] stat_prefetch_issued;
     logic [31:0] stat_prefetch_fills;
     logic [31:0] stat_prefetch_useful;
     logic [31:0] stat_prefetch_useless;
     logic [31:0] stat_prefetch_pollution;
     logic [31:0] stat_prefetch_dropped;
+    logic [31:0] stat_prefetch_issue_to_fill_cycles;
+    logic [31:0] stat_prefetch_fill_to_use_cycles;
+    logic [31:0] stat_mem_demand_reads;
+    logic [31:0] stat_mem_prefetch_reads;
     logic [31:0] stat_prefetch_buffer_allocated;
     logic [31:0] stat_prefetch_buffer_promoted;
     logic [31:0] stat_prefetch_buffer_evicted;
@@ -101,6 +106,8 @@ module tb_l1d_cache #(
     integer accepted_mem_reads;
     integer accepted_mem_writes;
     integer cycles_since_reset;
+    integer access_log_index;
+    integer access_log_enable;
     integer k;
 
     l1d_cache #(
@@ -145,11 +152,16 @@ module tb_l1d_cache #(
         .stat_cpu_misses(stat_cpu_misses),
         .stat_victim_hits(stat_victim_hits),
         .stat_writebacks(stat_writebacks),
+        .stat_prefetch_issued(stat_prefetch_issued),
         .stat_prefetch_fills(stat_prefetch_fills),
         .stat_prefetch_useful(stat_prefetch_useful),
         .stat_prefetch_useless(stat_prefetch_useless),
         .stat_prefetch_pollution(stat_prefetch_pollution),
         .stat_prefetch_dropped(stat_prefetch_dropped),
+        .stat_prefetch_issue_to_fill_cycles(stat_prefetch_issue_to_fill_cycles),
+        .stat_prefetch_fill_to_use_cycles(stat_prefetch_fill_to_use_cycles),
+        .stat_mem_demand_reads(stat_mem_demand_reads),
+        .stat_mem_prefetch_reads(stat_mem_prefetch_reads),
         .stat_prefetch_buffer_allocated(stat_prefetch_buffer_allocated),
         .stat_prefetch_buffer_promoted(stat_prefetch_buffer_promoted),
         .stat_prefetch_buffer_evicted(stat_prefetch_buffer_evicted),
@@ -205,6 +217,14 @@ module tb_l1d_cache #(
     );
         begin
             mem_index = addr % MEM_BYTES;
+        end
+    endfunction
+
+    function automatic [ADDR_WIDTH-1:0] line_address_tb(
+        input logic [ADDR_WIDTH-1:0] addr
+    );
+        begin
+            line_address_tb = {addr[ADDR_WIDTH-1:4], 4'b0000};
         end
     endfunction
 
@@ -353,8 +373,18 @@ module tb_l1d_cache #(
         output logic [1:0] rsp_error_cause
     );
         integer timeout;
+        integer hits_before;
+        integer misses_before;
+        integer victim_hits_before;
+        integer useful_before;
+        integer fills_before;
         begin
             @(negedge clk);
+            hits_before = stat_cpu_hits;
+            misses_before = stat_cpu_misses;
+            victim_hits_before = stat_victim_hits;
+            useful_before = stat_prefetch_useful;
+            fills_before = stat_prefetch_fills;
             cpu_req_valid = 1'b1;
             cpu_req_addr = addr;
             cpu_req_write = write;
@@ -383,6 +413,18 @@ module tb_l1d_cache #(
             rsp_data = cpu_rsp_rdata;
             rsp_error = cpu_rsp_error;
             rsp_error_cause = cpu_rsp_error_cause;
+            if (access_log_enable && !rsp_error) begin
+                $display("ACCESS_RESULT idx=%0d addr=%016x line=%016x write=%0d size=%0d hit=%0d miss=%0d victim_hit=%0d used_prefetch=%0d prefetch_fill_delta=%0d cum_hits=%0d cum_misses=%0d cum_victim_hits=%0d cycle=%0d",
+                         access_log_index, addr, line_address_tb(addr), write, size,
+                         stat_cpu_hits - hits_before,
+                         stat_cpu_misses - misses_before,
+                         stat_victim_hits - victim_hits_before,
+                         stat_prefetch_useful - useful_before,
+                         stat_prefetch_fills - fills_before,
+                         stat_cpu_hits, stat_cpu_misses,
+                         stat_victim_hits, cycles_since_reset);
+                access_log_index = access_log_index + 1;
+            end
             @(posedge clk);
         end
     endtask
@@ -953,17 +995,36 @@ module tb_l1d_cache #(
         input string workload_name,
         input integer accesses
     );
+        integer total_mem_bytes;
+        integer useful_prefetches;
+        integer avg_issue_to_fill_cycles;
+        integer avg_fill_to_use_cycles;
         begin
-            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d vc_mode=%s prefetch=%0d pb=%0d pb_mode=%s accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d pb_alloc=%0d pb_promote=%0d pb_evict=%0d pb_full_drop=%0d cycles=%0d",
+            total_mem_bytes =
+                (stat_mem_demand_reads + stat_mem_prefetch_reads + stat_writebacks) *
+                LINE_BYTES;
+            useful_prefetches = (stat_prefetch_useful == 0) ? 1 :
+                                stat_prefetch_useful;
+            avg_issue_to_fill_cycles = (stat_prefetch_fills == 0) ? 0 :
+                (stat_prefetch_issue_to_fill_cycles / stat_prefetch_fills);
+            avg_fill_to_use_cycles = (stat_prefetch_useful == 0) ? 0 :
+                (stat_prefetch_fill_to_use_cycles / stat_prefetch_useful);
+            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d vc_mode=%s prefetch=%0d pb=%0d pb_mode=%s accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d mem_demand_reads=%0d mem_prefetch_reads=%0d writebacks=%0d mem_total_bytes=%0d prefetch_issued=%0d prefetch_fills=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d avg_issue_to_fill=%0d avg_fill_to_use=%0d bytes_per_useful=%0d pb_alloc=%0d pb_promote=%0d pb_evict=%0d pb_full_drop=%0d cycles=%0d",
                      workload_name, NUM_WAYS, VICTIM_ENTRIES,
                      (VICTIM_ENTRIES > 0) ? "enabled" : "bypass",
                      cfg_prefetch_enable, PREFETCH_BUFFER_SIZE,
                      (PREFETCH_BUFFER_SIZE > 0) ? "enabled" : "bypass",
                      accesses, stat_cpu_hits,
                      stat_cpu_misses, stat_victim_hits, accepted_mem_reads,
-                     accepted_mem_writes, stat_prefetch_useful,
+                     accepted_mem_writes, stat_mem_demand_reads,
+                     stat_mem_prefetch_reads, stat_writebacks,
+                     total_mem_bytes, stat_prefetch_issued,
+                     stat_prefetch_fills, stat_prefetch_useful,
                      stat_prefetch_useless, stat_prefetch_pollution,
-                     stat_prefetch_dropped, stat_prefetch_buffer_allocated,
+                     stat_prefetch_dropped, avg_issue_to_fill_cycles,
+                     avg_fill_to_use_cycles,
+                     total_mem_bytes / useful_prefetches,
+                     stat_prefetch_buffer_allocated,
                      stat_prefetch_buffer_promoted,
                      stat_prefetch_buffer_evicted,
                      stat_prefetch_buffer_full_drops, cycles_since_reset);
@@ -986,6 +1047,18 @@ module tb_l1d_cache #(
         end
     endtask
 
+    task automatic begin_workload_log(
+        input string workload_name
+    );
+        begin
+            if (access_log_enable) begin
+                access_log_index = 0;
+                $display("WORKLOAD_BEGIN name=%s cycle=%0d",
+                         workload_name, cycles_since_reset);
+            end
+        end
+    endtask
+
     task automatic test_workload_boundaries;
         localparam integer STREAM_ACCESSES = 12;
         localparam integer LOOP_ACCESSES = 12;
@@ -1004,6 +1077,7 @@ module tb_l1d_cache #(
 
             initialize_memory();
             reset_cache();
+            begin_workload_log("sequential_stream");
             base = 64'h0000_0000_0000_0400;
             for (access_index = 0; access_index < STREAM_ACCESSES;
                  access_index = access_index + 1) begin
@@ -1029,6 +1103,7 @@ module tb_l1d_cache #(
 
             initialize_memory();
             reset_cache();
+            begin_workload_log("stride_two_lines");
             base = 64'h0000_0000_0000_0600;
             for (access_index = 0; access_index < STREAM_ACCESSES;
                  access_index = access_index + 1) begin
@@ -1049,6 +1124,7 @@ module tb_l1d_cache #(
 
             initialize_memory();
             reset_cache();
+            begin_workload_log("localized_two_line_loop");
             base = 64'h0000_0000_0000_0800;
             for (access_index = 0; access_index < LOOP_ACCESSES;
                  access_index = access_index + 1) begin
@@ -1070,6 +1146,7 @@ module tb_l1d_cache #(
             reset_cache();
             cfg_prefetch_enable = 1'b0;
             cfg_next_line_enable = 1'b0;
+            begin_workload_log("same_set_conflict_thrash");
             base = 64'h0000_0000_0000_0a00;
             active_lines = NUM_WAYS + 1;
             repetitions = 4;
@@ -1113,6 +1190,7 @@ module tb_l1d_cache #(
             pointer_line[11] = 14;
             initialize_memory();
             reset_cache();
+            begin_workload_log("irregular_pointer_chase");
             base = 64'h0000_0000_0000_0c00;
             for (access_index = 0; access_index < POINTER_ACCESSES;
                  access_index = access_index + 1) begin
@@ -1164,6 +1242,7 @@ module tb_l1d_cache #(
             end
             accesses = 0;
             trace_line_number = 0;
+            begin_workload_log("trace_replay");
             while (!$feof(trace_fd)) begin
                 trace_line = '0;
                 if ($fgets(trace_line, trace_fd) != 0) begin
@@ -1240,6 +1319,7 @@ module tb_l1d_cache #(
             accepted_mem_reads <= 0;
             accepted_mem_writes <= 0;
             cycles_since_reset <= 0;
+            access_log_index <= 0;
         end else begin
             mem_rsp_valid <= 1'b0;
             mem_ready_phase <= mem_ready_phase + 1'b1;
@@ -1314,6 +1394,26 @@ module tb_l1d_cache #(
                 stalled_cpu_error <= cpu_rsp_error;
                 stalled_cpu_error_cause <= cpu_rsp_error_cause;
             end
+
+            if (access_log_enable) begin
+                if (mem_req_valid && mem_req_ready && !mem_req_write &&
+                    dut.req_is_prefetch) begin
+                    $display("PREFETCH_EVENT kind=issue line=%016x cycle=%0d",
+                             mem_req_addr, cycles_since_reset);
+                end
+                if (event_prefetch_fill) begin
+                    $display("PREFETCH_EVENT kind=fill line=%016x cycle=%0d",
+                             line_address_tb(dut.req_addr), cycles_since_reset);
+                end
+                if (event_prefetch_useful) begin
+                    $display("PREFETCH_EVENT kind=use cycle=%0d",
+                             cycles_since_reset);
+                end
+                if (event_prefetch_useless) begin
+                    $display("PREFETCH_EVENT kind=useless cycle=%0d",
+                             cycles_since_reset);
+                end
+            end
         end
     end
 
@@ -1323,6 +1423,8 @@ module tb_l1d_cache #(
         rst_n = 1'b0;
         errors = 0;
         protocol_errors = 0;
+        access_log_index = 0;
+        access_log_enable = $test$plusargs("ACCESS_LOG");
         cpu_req_valid = 1'b0;
         cpu_req_addr = '0;
         cpu_req_write = 1'b0;

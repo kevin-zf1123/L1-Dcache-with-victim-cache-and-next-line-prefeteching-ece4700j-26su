@@ -47,11 +47,16 @@ module l1d_cache #(
     output logic [31:0]                  stat_cpu_misses,
     output logic [31:0]                  stat_victim_hits,
     output logic [31:0]                  stat_writebacks,
+    output logic [31:0]                  stat_prefetch_issued,
     output logic [31:0]                  stat_prefetch_fills,
     output logic [31:0]                  stat_prefetch_useful,
     output logic [31:0]                  stat_prefetch_useless,
     output logic [31:0]                  stat_prefetch_pollution,
     output logic [31:0]                  stat_prefetch_dropped,
+    output logic [31:0]                  stat_prefetch_issue_to_fill_cycles,
+    output logic [31:0]                  stat_prefetch_fill_to_use_cycles,
+    output logic [31:0]                  stat_mem_demand_reads,
+    output logic [31:0]                  stat_mem_prefetch_reads,
     output logic [31:0]                  stat_prefetch_buffer_allocated,
     output logic [31:0]                  stat_prefetch_buffer_promoted,
     output logic [31:0]                  stat_prefetch_buffer_evicted,
@@ -131,6 +136,8 @@ module l1d_cache #(
     logic valid_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic dirty_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic prefetched_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
+    logic [31:0] prefetch_issue_cycle_l1 [0:NUM_WAYS-1][0:NUM_SETS-1];
+    logic [31:0] prefetch_fill_cycle_l1 [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic [WAY_BITS-1:0] replacement_way [0:NUM_SETS-1];
     // L1 LRU recency counters: smaller value = more recently used.
     // Indexed [way][set]; NUM_WAYS==1 keeps a 1-bit dummy for elaboration.
@@ -139,6 +146,8 @@ module l1d_cache #(
     logic vc_valid [0:VICTIM_STORAGE_ENTRIES-1];
     logic vc_dirty [0:VICTIM_STORAGE_ENTRIES-1];
     logic vc_prefetched [0:VICTIM_STORAGE_ENTRIES-1];
+    logic [31:0] vc_prefetch_issue_cycle [0:VICTIM_STORAGE_ENTRIES-1];
+    logic [31:0] vc_prefetch_fill_cycle [0:VICTIM_STORAGE_ENTRIES-1];
     logic [ADDR_WIDTH-1:0] vc_addr [0:VICTIM_STORAGE_ENTRIES-1];
     logic [LINE_BITS-1:0] vc_data [0:VICTIM_STORAGE_ENTRIES-1];
     logic [VC_BITS-1:0] vc_rr;
@@ -151,6 +160,7 @@ module l1d_cache #(
     logic req_unsigned;
     logic [DATA_WIDTH-1:0] req_wdata;
     logic req_is_prefetch;
+    logic [31:0] req_prefetch_issue_cycle;
 
     logic [WAY_BITS-1:0] selected_way;
     logic [VC_BITS-1:0] selected_vc;
@@ -161,6 +171,8 @@ module l1d_cache #(
     logic evicted_valid;
     logic evicted_dirty;
     logic evicted_prefetched;
+    logic [31:0] evicted_prefetch_issue_cycle;
+    logic [31:0] evicted_prefetch_fill_cycle;
     logic [ADDR_WIDTH-1:0] evicted_addr;
     logic [LINE_BITS-1:0] evicted_data;
 
@@ -189,6 +201,7 @@ module l1d_cache #(
     logic                  pb_empty;
     logic [ADDR_WIDTH-1:0] pb_fill_addr;
     logic next_line_candidate_accepted;
+    logic [31:0] stat_cycle_counter;
 
     integer lookup_i;
     integer reset_i;
@@ -604,6 +617,7 @@ module l1d_cache #(
             req_unsigned <= 1'b0;
             req_wdata <= '0;
             req_is_prefetch <= 1'b0;
+            req_prefetch_issue_cycle <= '0;
             selected_way <= '0;
             selected_vc <= '0;
             working_line <= '0;
@@ -612,6 +626,8 @@ module l1d_cache #(
             evicted_valid <= 1'b0;
             evicted_dirty <= 1'b0;
             evicted_prefetched <= 1'b0;
+            evicted_prefetch_issue_cycle <= '0;
+            evicted_prefetch_fill_cycle <= '0;
             evicted_addr <= '0;
             evicted_data <= '0;
             wb_addr <= '0;
@@ -620,16 +636,22 @@ module l1d_cache #(
             response_error <= 1'b0;
             response_error_cause <= RSP_OK;
             vc_rr <= '0;
+            stat_cycle_counter <= '0;
 
             stat_cpu_hits <= '0;
             stat_cpu_misses <= '0;
             stat_victim_hits <= '0;
             stat_writebacks <= '0;
+            stat_prefetch_issued <= '0;
             stat_prefetch_fills <= '0;
             stat_prefetch_useful <= '0;
             stat_prefetch_useless <= '0;
             stat_prefetch_pollution <= '0;
             stat_prefetch_dropped <= '0;
+            stat_prefetch_issue_to_fill_cycles <= '0;
+            stat_prefetch_fill_to_use_cycles <= '0;
+            stat_mem_demand_reads <= '0;
+            stat_mem_prefetch_reads <= '0;
             stat_prefetch_buffer_allocated <= '0;
             stat_prefetch_buffer_promoted <= '0;
             stat_prefetch_buffer_evicted <= '0;
@@ -656,6 +678,8 @@ module l1d_cache #(
                     valid_bits[reset_j][reset_i] <= 1'b0;
                     dirty_bits[reset_j][reset_i] <= 1'b0;
                     prefetched_bits[reset_j][reset_i] <= 1'b0;
+                    prefetch_issue_cycle_l1[reset_j][reset_i] <= '0;
+                    prefetch_fill_cycle_l1[reset_j][reset_i] <= '0;
                     l1_lru[reset_j][reset_i] <= '0;
                 end
             end
@@ -665,12 +689,15 @@ module l1d_cache #(
                     vc_valid[reset_i] <= 1'b0;
                     vc_dirty[reset_i] <= 1'b0;
                     vc_prefetched[reset_i] <= 1'b0;
+                    vc_prefetch_issue_cycle[reset_i] <= '0;
+                    vc_prefetch_fill_cycle[reset_i] <= '0;
                     vc_addr[reset_i] <= '0;
                     vc_data[reset_i] <= '0;
                     vc_lru[reset_i] <= '0;
                 end
             end
         end else begin
+            stat_cycle_counter <= stat_cycle_counter + 1'b1;
             event_cpu_access <= 1'b0;
             event_cpu_hit <= 1'b0;
             event_cpu_miss <= 1'b0;
@@ -697,6 +724,7 @@ module l1d_cache #(
                         req_unsigned <= cpu_req_unsigned;
                         req_wdata <= cpu_req_wdata;
                         req_is_prefetch <= 1'b0;
+                        req_prefetch_issue_cycle <= '0;
                         response_data <= '0;
                         response_error <= access_misaligned(cpu_req_addr, cpu_req_size);
                         response_error_cause <= RSP_OK;
@@ -719,6 +747,8 @@ module l1d_cache #(
                         req_unsigned <= 1'b0;
                         req_wdata <= '0;
                         req_is_prefetch <= 1'b1;
+                        req_prefetch_issue_cycle <= stat_cycle_counter;
+                        stat_prefetch_issued <= stat_prefetch_issued + 1'b1;
                         state <= ST_PB_ALLOC;
                     end else if ((ENABLE_PREFETCH != 0) &&
                                  cfg_prefetch_enable &&
@@ -729,6 +759,8 @@ module l1d_cache #(
                         req_unsigned <= 1'b0;
                         req_wdata <= '0;
                         req_is_prefetch <= 1'b1;
+                        req_prefetch_issue_cycle <= stat_cycle_counter;
+                        stat_prefetch_issued <= stat_prefetch_issued + 1'b1;
                         state <= ST_LOOKUP;
                     end else if ((ENABLE_PREFETCH != 0) &&
                                  cfg_prefetch_enable &&
@@ -739,6 +771,8 @@ module l1d_cache #(
                         req_unsigned <= 1'b0;
                         req_wdata <= '0;
                         req_is_prefetch <= 1'b1;
+                        req_prefetch_issue_cycle <= stat_cycle_counter;
+                        stat_prefetch_issued <= stat_prefetch_issued + 1'b1;
                         state <= ST_LOOKUP;
                     end
                 end
@@ -760,6 +794,10 @@ module l1d_cache #(
                             if (prefetched_bits[hit_way_comb][req_set_comb]) begin
                                 prefetched_bits[hit_way_comb][req_set_comb] <= 1'b0;
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
+                                stat_prefetch_fill_to_use_cycles <=
+                                    stat_prefetch_fill_to_use_cycles +
+                                    (stat_cycle_counter -
+                                     prefetch_fill_cycle_l1[hit_way_comb][req_set_comb]);
                                 event_prefetch_useful <= 1'b1;
                             end
                             if (req_write) begin
@@ -796,6 +834,8 @@ module l1d_cache #(
                             if (evict_way_comb == invalid_way_comb) begin
                                 evicted_dirty <= 1'b0;
                                 evicted_prefetched <= 1'b0;
+                                evicted_prefetch_issue_cycle <= '0;
+                                evicted_prefetch_fill_cycle <= '0;
                                 evicted_addr <= '0;
                                 evicted_data <= '0;
                             end else begin
@@ -803,6 +843,10 @@ module l1d_cache #(
                                     dirty_bits[evict_way_comb][req_set_comb];
                                 evicted_prefetched <=
                                     prefetched_bits[evict_way_comb][req_set_comb];
+                                evicted_prefetch_issue_cycle <=
+                                    prefetch_issue_cycle_l1[evict_way_comb][req_set_comb];
+                                evicted_prefetch_fill_cycle <=
+                                    prefetch_fill_cycle_l1[evict_way_comb][req_set_comb];
                                 evicted_addr <= compose_line_address(
                                     tag_q[evict_way_comb],
                                     req_set_comb
@@ -832,6 +876,10 @@ module l1d_cache #(
                             end
                             if (vc_prefetched[victim_hit_comb]) begin
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
+                                stat_prefetch_fill_to_use_cycles <=
+                                    stat_prefetch_fill_to_use_cycles +
+                                    (stat_cycle_counter -
+                                     vc_prefetch_fill_cycle[victim_hit_comb]);
                                 event_prefetch_useful <= 1'b1;
                             end
                             state <= ST_VC_SWAP;
@@ -846,6 +894,8 @@ module l1d_cache #(
                             evicted_valid <= 1'b0;
                             evicted_dirty <= 1'b0;
                             evicted_prefetched <= 1'b0;
+                            evicted_prefetch_issue_cycle <= '0;
+                            evicted_prefetch_fill_cycle <= '0;
                             evicted_addr <= '0;
                             evicted_data <= '0;
                             // Allocate PB entry for prefetch
@@ -861,6 +911,10 @@ module l1d_cache #(
                                 dirty_bits[evict_way_comb][req_set_comb];
                             evicted_prefetched <=
                                 prefetched_bits[evict_way_comb][req_set_comb];
+                            evicted_prefetch_issue_cycle <=
+                                prefetch_issue_cycle_l1[evict_way_comb][req_set_comb];
+                            evicted_prefetch_fill_cycle <=
+                                prefetch_fill_cycle_l1[evict_way_comb][req_set_comb];
                             evicted_addr <= compose_line_address(
                                 tag_q[evict_way_comb], req_set_comb
                             );
@@ -928,6 +982,8 @@ module l1d_cache #(
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
+                    prefetch_issue_cycle_l1[selected_way][req_set_comb] <= '0;
+                    prefetch_fill_cycle_l1[selected_way][req_set_comb] <= '0;
                     if (L1_LRU_ENABLED) begin
                         touch_l1_way(req_set_comb, selected_way);
                     end else begin
@@ -939,6 +995,10 @@ module l1d_cache #(
                         vc_valid[selected_vc] <= 1'b1;
                         vc_dirty[selected_vc] <= evicted_dirty;
                         vc_prefetched[selected_vc] <= evicted_prefetched;
+                        vc_prefetch_issue_cycle[selected_vc] <=
+                            evicted_prefetch_issue_cycle;
+                        vc_prefetch_fill_cycle[selected_vc] <=
+                            evicted_prefetch_fill_cycle;
                         vc_addr[selected_vc] <= evicted_addr;
                         vc_data[selected_vc] <= evicted_data;
                         if (VICTIM_LRU_ENABLED) begin
@@ -948,6 +1008,8 @@ module l1d_cache #(
                         vc_valid[selected_vc] <= 1'b0;
                         vc_dirty[selected_vc] <= 1'b0;
                         vc_prefetched[selected_vc] <= 1'b0;
+                        vc_prefetch_issue_cycle[selected_vc] <= '0;
+                        vc_prefetch_fill_cycle[selected_vc] <= '0;
                     end
                     state <= ST_RESP;
                 end
@@ -973,6 +1035,10 @@ module l1d_cache #(
                         vc_valid[selected_vc] <= evicted_valid;
                         vc_dirty[selected_vc] <= evicted_dirty;
                         vc_prefetched[selected_vc] <= evicted_prefetched;
+                        vc_prefetch_issue_cycle[selected_vc] <=
+                            evicted_prefetch_issue_cycle;
+                        vc_prefetch_fill_cycle[selected_vc] <=
+                            evicted_prefetch_fill_cycle;
                         vc_addr[selected_vc] <= evicted_addr;
                         vc_data[selected_vc] <= evicted_data;
                         if (VICTIM_LRU_ENABLED) begin
@@ -990,6 +1056,11 @@ module l1d_cache #(
 
                 ST_MEM_READ_REQ: begin
                     if (mem_req_ready) begin
+                        if (req_is_prefetch) begin
+                            stat_mem_prefetch_reads <= stat_mem_prefetch_reads + 1'b1;
+                        end else begin
+                            stat_mem_demand_reads <= stat_mem_demand_reads + 1'b1;
+                        end
                         state <= ST_MEM_READ_WAIT;
                     end
                 end
@@ -1031,10 +1102,19 @@ module l1d_cache #(
                             (selected_way + 1'b1) % NUM_WAYS;
                     end
                     if (req_is_prefetch) begin
+                        stat_prefetch_issue_to_fill_cycles <=
+                            stat_prefetch_issue_to_fill_cycles +
+                            (stat_cycle_counter - req_prefetch_issue_cycle);
                         stat_prefetch_fills <= stat_prefetch_fills + 1'b1;
+                        prefetch_issue_cycle_l1[selected_way][req_set_comb] <=
+                            req_prefetch_issue_cycle;
+                        prefetch_fill_cycle_l1[selected_way][req_set_comb] <=
+                            stat_cycle_counter;
                         event_prefetch_fill <= 1'b1;
                         state <= ST_IDLE;
                     end else begin
+                        prefetch_issue_cycle_l1[selected_way][req_set_comb] <= '0;
+                        prefetch_fill_cycle_l1[selected_way][req_set_comb] <= '0;
                         state <= ST_RESP;
                     end
                 end

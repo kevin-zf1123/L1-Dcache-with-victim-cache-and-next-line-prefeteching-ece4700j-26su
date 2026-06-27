@@ -51,7 +51,7 @@ run_workload_case() {
         "${ROOT_DIR}/src/l1d_prefetch_buffer.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
         "${ROOT_DIR}/src/tb_l1d_cache.sv"
-    vvp "${output}" +WORKLOADS_ONLY | tee "${log}"
+    vvp "${output}" +WORKLOADS_ONLY +ACCESS_LOG | tee "${log}"
 }
 
 run_case direct_mapped_vc4 1 0 4
@@ -78,6 +78,9 @@ vvp "${SIM_DIR}/two_way_vc8.vvp" \
     "+TRACE=traces/test.trace" "+VCD" | \
     tee "${SIM_DIR}/spec2026_test_trace.log"
 
+vvp "${SIM_DIR}/next_line_prefetch_vc4.vvp" \
+    "+TRACE=traces/test.trace" "+VCD" | \
+    tee "${SIM_DIR}/spec2026_testprefetch_trace.log"
 # vvp "${SIM_DIR}/two_way_vc8.vvp" \
 #     "+TRACE=traces/spec2026_782_lbm_r_test_1m.trace" | \
 #     tee "${SIM_DIR}/spec2026_trace.log"
