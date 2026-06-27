@@ -4,7 +4,9 @@ module tb_l1d_cache #(
     parameter integer NUM_WAYS = 1,
     parameter integer ENABLE_PREFETCH = 0,
     parameter integer VICTIM_ENTRIES = 4,
-    parameter integer PREFETCH_BUFFER_SIZE = 4
+    parameter integer PREFETCH_BUFFER_SIZE = 4,
+    parameter integer L1_REPL_POLICY_LRU     = 1,
+    parameter integer VICTIM_REPL_POLICY_LRU = 1
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
@@ -109,7 +111,9 @@ module tb_l1d_cache #(
         .NUM_WAYS(NUM_WAYS),
         .VICTIM_ENTRIES(VICTIM_ENTRIES),
         .ENABLE_PREFETCH(ENABLE_PREFETCH),
-        .PREFETCH_BUFFER_SIZE(PREFETCH_BUFFER_SIZE)
+        .PREFETCH_BUFFER_SIZE(PREFETCH_BUFFER_SIZE),
+        .L1_REPL_POLICY_LRU(L1_REPL_POLICY_LRU),
+        .VICTIM_REPL_POLICY_LRU(VICTIM_REPL_POLICY_LRU)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

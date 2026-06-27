@@ -8,7 +8,9 @@ module l1d_cache #(
     parameter integer NUM_WAYS         = 2,
     parameter integer VICTIM_ENTRIES   = 4,
     parameter integer ENABLE_PREFETCH  = 1,
-    parameter integer PREFETCH_BUFFER_SIZE = 4
+    parameter integer PREFETCH_BUFFER_SIZE = 4,
+    parameter integer L1_REPL_POLICY_LRU     = 1,  // 1=LRU(default), 0=round-robin
+    parameter integer VICTIM_REPL_POLICY_LRU = 1   // 1=LRU(default), 0=round-robin
 ) (
     input  logic                         clk,
     input  logic                         rst_n,
@@ -79,6 +81,10 @@ module l1d_cache #(
     localparam integer SRAM_ADDR_WIDTH = (NUM_SETS > 1) ? $clog2(NUM_SETS) : 1;
     localparam integer WAY_BITS        = (NUM_WAYS > 1) ? $clog2(NUM_WAYS) : 1;
     localparam integer VC_BITS         = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES) : 1;
+    localparam bit L1_LRU_ENABLED     = (L1_REPL_POLICY_LRU != 0) && (NUM_WAYS > 1);
+    localparam bit VICTIM_LRU_ENABLED = (VICTIM_REPL_POLICY_LRU != 0) && (VICTIM_ENTRIES > 1);
+    localparam integer L1_LRU_BITS   = (NUM_WAYS > 1) ? $clog2(NUM_WAYS) : 1;
+    localparam integer VC_LRU_BITS   = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES+1) : 1;
     localparam bit VICTIM_ENABLED      = (VICTIM_ENTRIES > 0);
     localparam integer VICTIM_STORAGE_ENTRIES =
         (VICTIM_ENTRIES > 0) ? VICTIM_ENTRIES : 1;
@@ -126,6 +132,9 @@ module l1d_cache #(
     logic dirty_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic prefetched_bits [0:NUM_WAYS-1][0:NUM_SETS-1];
     logic [WAY_BITS-1:0] replacement_way [0:NUM_SETS-1];
+    // L1 LRU recency counters: smaller value = more recently used.
+    // Indexed [way][set]; NUM_WAYS==1 keeps a 1-bit dummy for elaboration.
+    logic [L1_LRU_BITS-1:0] l1_lru [0:NUM_WAYS-1][0:NUM_SETS-1];
 
     logic vc_valid [0:VICTIM_STORAGE_ENTRIES-1];
     logic vc_dirty [0:VICTIM_STORAGE_ENTRIES-1];
@@ -133,6 +142,8 @@ module l1d_cache #(
     logic [ADDR_WIDTH-1:0] vc_addr [0:VICTIM_STORAGE_ENTRIES-1];
     logic [LINE_BITS-1:0] vc_data [0:VICTIM_STORAGE_ENTRIES-1];
     logic [VC_BITS-1:0] vc_rr;
+    // Victim cache LRU recency counters: smaller = more recently used.
+    logic [VC_LRU_BITS-1:0] vc_lru [0:VICTIM_STORAGE_ENTRIES-1];
 
     logic [ADDR_WIDTH-1:0] req_addr;
     logic req_write;
@@ -187,6 +198,8 @@ module l1d_cache #(
     integer hit_way_comb;
     integer invalid_way_comb;
     integer victim_hit_comb;
+    integer evict_way_comb;     // way chosen for eviction on a miss
+    integer evict_vc_comb;       // victim cache entry chosen on a miss
     logic l1_hit_comb;
     logic victim_hit_valid_comb;
     logic [SET_BITS-1:0] req_set_comb;
@@ -310,6 +323,52 @@ module l1d_cache #(
         end
     endfunction
 
+    // Combinational helpers: pick the LRU victim way for a given set, and the
+    // LRU victim entry of the victim cache. Falls back to the round-robin
+    // pointer when the corresponding LRU policy is disabled.
+    function automatic integer l1_lru_victim_way(
+        input logic [SET_BITS-1:0] s
+    );
+        integer w;
+        integer best_way;
+        logic [L1_LRU_BITS-1:0] best_age;
+        begin
+            best_way = 0;
+            best_age = l1_lru[0][s];
+            for (w = 1; w < NUM_WAYS; w = w + 1) begin
+                // Prefer invalid ways first (free slots before eviction),
+                // then the oldest (largest counter) valid way.
+                if (!valid_bits[w][s]) begin
+                    best_way = w;
+                end else if (valid_bits[best_way][s] &&
+                             l1_lru[w][s] > best_age) begin
+                    best_way = w;
+                    best_age = l1_lru[w][s];
+                end
+            end
+            l1_lru_victim_way = best_way;
+        end
+    endfunction
+
+    function automatic integer vc_lru_victim_entry();
+        integer e;
+        integer best_e;
+        logic [VC_LRU_BITS-1:0] best_age;
+        begin
+            best_e = 0;
+            best_age = vc_lru[0];
+            for (e = 1; e < VICTIM_ENTRIES; e = e + 1) begin
+                if (!vc_valid[e]) begin
+                    best_e = e;
+                end else if (vc_valid[best_e] && vc_lru[e] > best_age) begin
+                    best_e = e;
+                    best_age = vc_lru[e];
+                end
+            end
+            vc_lru_victim_entry = best_e;
+        end
+    endfunction
+
     generate
         genvar way;
         for (way = 0; way < NUM_WAYS; way = way + 1) begin : gen_arrays
@@ -412,6 +471,26 @@ module l1d_cache #(
                 end
             end
         end
+
+        // Choose the way/entry to evict on a miss. Prefer a free (invalid)
+        // slot; otherwise use the configured policy (LRU or round-robin).
+        if (invalid_way_comb >= 0) begin
+            evict_way_comb = invalid_way_comb;
+        end else if (L1_LRU_ENABLED) begin
+            evict_way_comb = l1_lru_victim_way(req_set_comb);
+        end else begin
+            evict_way_comb = replacement_way[req_set_comb];
+        end
+
+        if (VICTIM_ENABLED) begin
+            if (VICTIM_LRU_ENABLED) begin
+                evict_vc_comb = vc_lru_victim_entry();
+            end else begin
+                evict_vc_comb = vc_rr;
+            end
+        end else begin
+            evict_vc_comb = 0;
+        end
     end
 
     always_comb begin
@@ -483,6 +562,39 @@ module l1d_cache #(
         end
     end
 
+    // Mark way in set s as most-recently-used: give it age 0 and age every
+    // other valid way in that set up by one (capped at NUM_WAYS-1). This keeps
+    // a strict recency ordering among the ways of a set.
+    task automatic touch_l1_way(
+        input logic [SET_BITS-1:0] s,
+        input integer way
+    );
+        integer w;
+        begin
+            for (w = 0; w < NUM_WAYS; w = w + 1) begin
+                if (w == way) begin
+                    l1_lru[w][s] <= '0;
+                end else if (valid_bits[w][s] && l1_lru[w][s] < (NUM_WAYS-1)) begin
+                    l1_lru[w][s] <= l1_lru[w][s] + 1'b1;
+                end
+            end
+        end
+    endtask
+
+    // Mark victim cache entry e as most-recently-used.
+    task automatic touch_vc_entry(input integer e);
+        integer i;
+        begin
+            for (i = 0; i < VICTIM_ENTRIES; i = i + 1) begin
+                if (i == e) begin
+                    vc_lru[i] <= '0;
+                end else if (vc_valid[i] && vc_lru[i] < (VICTIM_ENTRIES)) begin
+                    vc_lru[i] <= vc_lru[i] + 1'b1;
+                end
+            end
+        end
+    endtask
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
@@ -544,6 +656,7 @@ module l1d_cache #(
                     valid_bits[reset_j][reset_i] <= 1'b0;
                     dirty_bits[reset_j][reset_i] <= 1'b0;
                     prefetched_bits[reset_j][reset_i] <= 1'b0;
+                    l1_lru[reset_j][reset_i] <= '0;
                 end
             end
             if (VICTIM_ENABLED) begin
@@ -554,6 +667,7 @@ module l1d_cache #(
                     vc_prefetched[reset_i] <= 1'b0;
                     vc_addr[reset_i] <= '0;
                     vc_data[reset_i] <= '0;
+                    vc_lru[reset_i] <= '0;
                 end
             end
         end else begin
@@ -637,8 +751,12 @@ module l1d_cache #(
                         end else begin
                             stat_cpu_hits <= stat_cpu_hits + 1'b1;
                             event_cpu_hit <= 1'b1;
-                            replacement_way[req_set_comb] <=
-                                (hit_way_comb + 1) % NUM_WAYS;
+                            if (L1_LRU_ENABLED) begin
+                                touch_l1_way(req_set_comb, hit_way_comb);
+                            end else begin
+                                replacement_way[req_set_comb] <=
+                                    (hit_way_comb + 1) % NUM_WAYS;
+                            end
                             if (prefetched_bits[hit_way_comb][req_set_comb]) begin
                                 prefetched_bits[hit_way_comb][req_set_comb] <= 1'b0;
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
@@ -672,28 +790,24 @@ module l1d_cache #(
                             event_cpu_miss <= 1'b1;
                             event_victim_hit <= 1'b1;
                             selected_vc <= victim_hit_comb[VC_BITS-1:0];
-                            if (invalid_way_comb >= 0) begin
-                                selected_way <= invalid_way_comb[WAY_BITS-1:0];
-                            end else begin
-                                selected_way <= replacement_way[req_set_comb];
-                            end
+                            selected_way <= evict_way_comb[WAY_BITS-1:0];
 
-                            evicted_valid <= (invalid_way_comb < 0);
-                            if (invalid_way_comb >= 0) begin
+                            evicted_valid <= (evict_way_comb != invalid_way_comb);
+                            if (evict_way_comb == invalid_way_comb) begin
                                 evicted_dirty <= 1'b0;
                                 evicted_prefetched <= 1'b0;
                                 evicted_addr <= '0;
                                 evicted_data <= '0;
                             end else begin
                                 evicted_dirty <=
-                                    dirty_bits[replacement_way[req_set_comb]][req_set_comb];
+                                    dirty_bits[evict_way_comb][req_set_comb];
                                 evicted_prefetched <=
-                                    prefetched_bits[replacement_way[req_set_comb]][req_set_comb];
+                                    prefetched_bits[evict_way_comb][req_set_comb];
                                 evicted_addr <= compose_line_address(
-                                    tag_q[replacement_way[req_set_comb]],
+                                    tag_q[evict_way_comb],
                                     req_set_comb
                                 );
-                                evicted_data <= data_q[replacement_way[req_set_comb]];
+                                evicted_data <= data_q[evict_way_comb];
                             end
 
                             if (req_write) begin
@@ -727,8 +841,8 @@ module l1d_cache #(
                             stat_cpu_misses <= stat_cpu_misses + 1'b1;
                             event_cpu_miss <= 1'b1;
                         end
-                        if (invalid_way_comb >= 0) begin
-                            selected_way <= invalid_way_comb[WAY_BITS-1:0];
+                        selected_way <= evict_way_comb[WAY_BITS-1:0];
+                        if (evict_way_comb == invalid_way_comb) begin
                             evicted_valid <= 1'b0;
                             evicted_dirty <= 1'b0;
                             evicted_prefetched <= 1'b0;
@@ -742,37 +856,36 @@ module l1d_cache #(
                                 state <= ST_MEM_READ_REQ;
                             end
                         end else begin
-                            selected_way <= replacement_way[req_set_comb];
                             evicted_valid <= 1'b1;
                             evicted_dirty <=
-                                dirty_bits[replacement_way[req_set_comb]][req_set_comb];
+                                dirty_bits[evict_way_comb][req_set_comb];
                             evicted_prefetched <=
-                                prefetched_bits[replacement_way[req_set_comb]][req_set_comb];
+                                prefetched_bits[evict_way_comb][req_set_comb];
                             evicted_addr <= compose_line_address(
-                                tag_q[replacement_way[req_set_comb]], req_set_comb
+                                tag_q[evict_way_comb], req_set_comb
                             );
-                            evicted_data <= data_q[replacement_way[req_set_comb]];
+                            evicted_data <= data_q[evict_way_comb];
                             if (req_is_prefetch &&
-                                !prefetched_bits[replacement_way[req_set_comb]][req_set_comb]) begin
+                                !prefetched_bits[evict_way_comb][req_set_comb]) begin
                                 stat_prefetch_pollution <=
                                     stat_prefetch_pollution + 1'b1;
                                 event_prefetch_pollution <= 1'b1;
                             end
                             if (VICTIM_ENABLED) begin
-                                selected_vc <= vc_rr;
-                                if (vc_valid[vc_rr] && vc_dirty[vc_rr]) begin
-                                    wb_addr <= vc_addr[vc_rr];
-                                    wb_data <= vc_data[vc_rr];
+                                selected_vc <= evict_vc_comb[VC_BITS-1:0];
+                                if (vc_valid[evict_vc_comb] && vc_dirty[evict_vc_comb]) begin
+                                    wb_addr <= vc_addr[evict_vc_comb];
+                                    wb_data <= vc_data[evict_vc_comb];
                                     state <= ST_WB_REQ;
                                 end else begin
                                     state <= ST_VC_INSERT;
                                 end
-                            end else if (dirty_bits[replacement_way[req_set_comb]][req_set_comb]) begin
+                            end else if (dirty_bits[evict_way_comb][req_set_comb]) begin
                                 wb_addr <= compose_line_address(
-                                    tag_q[replacement_way[req_set_comb]],
+                                    tag_q[evict_way_comb],
                                     req_set_comb
                                 );
-                                wb_data <= data_q[replacement_way[req_set_comb]];
+                                wb_data <= data_q[evict_way_comb];
                                 state <= ST_WB_REQ;
                             end else begin
                                 // Allocate PB entry for prefetch on dirty eviction path
@@ -815,8 +928,12 @@ module l1d_cache #(
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
-                    replacement_way[req_set_comb] <=
-                        (selected_way + 1'b1) % NUM_WAYS;
+                    if (L1_LRU_ENABLED) begin
+                        touch_l1_way(req_set_comb, selected_way);
+                    end else begin
+                        replacement_way[req_set_comb] <=
+                            (selected_way + 1'b1) % NUM_WAYS;
+                    end
 
                     if (evicted_valid) begin
                         vc_valid[selected_vc] <= 1'b1;
@@ -824,6 +941,9 @@ module l1d_cache #(
                         vc_prefetched[selected_vc] <= evicted_prefetched;
                         vc_addr[selected_vc] <= evicted_addr;
                         vc_data[selected_vc] <= evicted_data;
+                        if (VICTIM_LRU_ENABLED) begin
+                            touch_vc_entry(selected_vc);
+                        end
                     end else begin
                         vc_valid[selected_vc] <= 1'b0;
                         vc_dirty[selected_vc] <= 1'b0;
@@ -855,10 +975,14 @@ module l1d_cache #(
                         vc_prefetched[selected_vc] <= evicted_prefetched;
                         vc_addr[selected_vc] <= evicted_addr;
                         vc_data[selected_vc] <= evicted_data;
-                        if (vc_rr == VICTIM_ENTRIES-1) begin
-                            vc_rr <= '0;
+                        if (VICTIM_LRU_ENABLED) begin
+                            touch_vc_entry(selected_vc);
                         end else begin
-                            vc_rr <= vc_rr + 1'b1;
+                            if (vc_rr == VICTIM_ENTRIES-1) begin
+                                vc_rr <= '0;
+                            end else begin
+                                vc_rr <= vc_rr + 1'b1;
+                            end
                         end
                     end
                     state <= ST_MEM_READ_REQ;
@@ -900,8 +1024,12 @@ module l1d_cache #(
                     dirty_bits[selected_way][req_set_comb] <=
                         (!req_is_prefetch && req_write);
                     prefetched_bits[selected_way][req_set_comb] <= req_is_prefetch;
-                    replacement_way[req_set_comb] <=
-                        (selected_way + 1'b1) % NUM_WAYS;
+                    if (L1_LRU_ENABLED) begin
+                        touch_l1_way(req_set_comb, selected_way);
+                    end else begin
+                        replacement_way[req_set_comb] <=
+                            (selected_way + 1'b1) % NUM_WAYS;
+                    end
                     if (req_is_prefetch) begin
                         stat_prefetch_fills <= stat_prefetch_fills + 1'b1;
                         event_prefetch_fill <= 1'b1;

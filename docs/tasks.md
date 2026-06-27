@@ -31,9 +31,19 @@
   - [x] Add directed tests for conflict misses, dirty evictions, and prefetch pollution with victim cache disabled.
   - [x] Update workload CSV output so zero-entry runs are easy to compare against 4-entry and 8-entry runs.
   - [x] Confirm synthesis/simulation still pass for both `VICTIM_ENTRIES=0` and enabled configurations.
-- [ ] Add LRU victim replacement option.
+- [x] Add LRU victim replacement option.
 - [x] Add separate prefetch-buffer placement option.
 - [ ] Add true pollution, timeliness, and memory-bandwidth measurements.
+  - [ ] Define proxy metrics versus trace-derived ground truth for prefetch pollution.
+  - [ ] Add per-prefetch timestamps for issue, fill, first use, and eviction.
+  - [ ] Add lower-memory request classification for demand reads, prefetch reads, and writebacks.
+  - [ ] Run paired prefetch-off and prefetch-on traces for every workload.
+  - [ ] Compute true pollution from the delta in demand misses between paired runs.
+  - [ ] Compute timeliness from fill-to-use latency and classify late versus on-time prefetches.
+  - [ ] Compute memory bandwidth from accepted lower-memory reads, writes, bytes, and cycles.
+  - [ ] Extend workload CSV output with the new derived metrics.
+  - [ ] Validate the metrics on sequential, stride, conflict-thrash, and pointer-chase workloads.
+  - [ ] Document the final interpretation in the thesis and baseline notes.
 - [x] Add reusable trace replay driver for SPEC CPU 2017/2026 regions.
 - [x] Run initial licensed SPEC CPU 2026 782.lbm_r trace extraction and replay validation.
 - [ ] Classify additional licensed SPEC workload regions.
