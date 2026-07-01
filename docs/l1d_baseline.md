@@ -232,16 +232,22 @@ The monitor exports:
 
 | Counter | Meaning |
 | --- | --- |
+| `stat_prefetch_issued` | Prefetch memory requests launched |
 | `stat_prefetch_fills` | Prefetch lines installed in L1 |
 | `stat_prefetch_useful` | Prefetched lines later consumed by a CPU request |
 | `stat_prefetch_useless` | Unused prefetched lines finally overwritten in the victim cache |
 | `stat_prefetch_pollution` | Prefetch allocations that displace a demand L1 line |
 | `stat_prefetch_dropped` | Built-in candidates dropped because its one-entry queue was full |
+| `stat_prefetch_issue_to_fill_cycles` | Accumulated issue-to-fill latency for prefetched lines |
+| `stat_prefetch_fill_to_use_cycles` | Accumulated fill-to-use latency for useful prefetches |
+| `stat_mem_demand_reads` | Lower-memory reads caused by demand misses |
+| `stat_mem_prefetch_reads` | Lower-memory reads caused by prefetches |
 
 `stat_prefetch_pollution` is a hardware proxy for pressure, not proof of a
 performance loss: the displaced line may still be rescued by the victim cache.
-Final workload analysis must correlate it with miss count, memory traffic, and
-AMAT.
+Final workload analysis therefore pairs it with trace-derived true pollution,
+memory traffic, and cycle-level comparisons from matched prefetch-off and
+prefetch-on runs.
 
 ### Adaptation interface
 
@@ -292,8 +298,28 @@ all self-checking tests complete successfully.
 Each workload emits one machine-readable `WORKLOAD_RESULT` line.
 `scripts/summarize_workloads.sh` collects these records into the ignored
 `sim/workload_results.csv`. The recorded fields include accesses, hits,
-misses, victim hits, accepted lower-memory reads and writes, prefetch events,
-and elapsed testbench cycles.
+misses, victim hits, accepted lower-memory reads and writes, demand versus
+prefetch lower-memory reads, writebacks, total transferred bytes, prefetch
+issue/fill/use counters, average issue-to-fill and fill-to-use latency, and
+elapsed testbench cycles.
+
+For workload-mode runs, the testbench also emits:
+
+- `WORKLOAD_BEGIN` markers;
+- one `ACCESS_RESULT` line per completed CPU access; and
+- `PREFETCH_EVENT` lines for prefetch issue, fill, use, and useless-eviction
+  events.
+
+`scripts/analyze_prefetch_metrics.py` consumes the CSV plus workload logs and
+derives:
+
+- true pollution from the delta in demand misses between matched prefetch-off
+  and prefetch-on rows;
+- miss reduction and bandwidth overhead;
+- prefetch accuracy from useful fills;
+- `late_prefetch_misses`, where a line had a prior prefetch issue but still
+  missed before the prefetch filled; and
+- `on_time_uses`, where a demand hit consumed prefetched data.
 
 ## Vivado Verification
 
@@ -550,7 +576,7 @@ vvp sim/two_way_vc4_trace.vvp \
 The replay passed and produced:
 
 ```text
-WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
+WORKLOAD_RESULT name=trace_replay ways=2 vc=4 vc_mode=enabled prefetch=0 pb=4 pb_mode=enabled accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 mem_demand_reads=649490 mem_prefetch_reads=0 writebacks=380607 mem_total_bytes=16481552 prefetch_issued=0 prefetch_fills=0 useful=0 useless=0 pollution=0 dropped=0 avg_issue_to_fill=0 avg_fill_to_use=0 bytes_per_useful=16481552 pb_alloc=0 pb_promote=0 pb_evict=0 pb_full_drop=0 cycles=9175526
 ```
 
 ### Workload classes
@@ -609,23 +635,31 @@ miss. The victim cache retains the three-line, single-set working set for the
 For each trace region, record:
 
 - CPU accesses, L1 hits, demand misses, and victim hits;
-- lower-memory reads and write-backs;
-- useful, useless, and pollution prefetch events;
-- cycles, stall cycles, and measured AMAT;
+- lower-memory demand reads, prefetch reads, write-backs, and total bytes;
+- useful, useless, proxy-pollution, and dropped prefetch events;
+- average prefetch issue-to-fill and fill-to-use latency;
+- paired-run true pollution, miss reduction, bandwidth overhead, and
+  prefetch accuracy;
+- offline timeliness metrics such as `late_prefetch_misses` and
+  `on_time_uses`;
+- elapsed cycles and cycle delta between prefetch-off and prefetch-on runs;
 - working-set size, load/store ratio, stride histogram, and reuse-distance
   summary; and
 - the full cache configuration and random/trace seed.
 
 The key boundary plots should sweep associativity, victim entries (0/4/8 in
 the final comparison), prefetch enable, cache capacity, line size, and lower
-memory latency. The present RTL requires at least one victim entry; a true
-zero-entry bypass configuration is future work.
+memory latency. The RTL now supports a true `VICTIM_ENTRIES=0` bypass baseline,
+so the final comparison can include zero-entry, 4-entry, and 8-entry victim
+configurations directly.
 
 ## Current Limitations and Next Steps
 
 - One CPU request can be outstanding; there are no MSHRs or hit-under-miss.
 - The lower memory interface has no error response and no write acknowledgment.
-- Replacement is round-robin rather than true LRU.
+- Some timeliness metrics, especially `late_prefetch_misses`, are currently
+  classified offline from workload logs rather than counted directly in
+  hardware.
 - Prefetching is best-effort and can starve under continuous demand traffic.
 - Counter overflow is modulo 32 bits.
 - Misaligned CPU requests return load/store-address-misaligned errors; the
