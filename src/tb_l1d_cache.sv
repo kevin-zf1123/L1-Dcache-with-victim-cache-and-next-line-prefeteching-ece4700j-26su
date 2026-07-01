@@ -82,6 +82,8 @@ module tb_l1d_cache #(
     logic event_prefetch_useless;
     logic event_prefetch_pollution;
     logic event_prefetch_dropped;
+    logic [3:0] debug_state;
+    logic debug_req_is_prefetch;
     logic event_pb_allocated;
     logic event_pb_promoted;
     logic event_pb_evicted;
@@ -177,6 +179,8 @@ module tb_l1d_cache #(
         .event_prefetch_useless(event_prefetch_useless),
         .event_prefetch_pollution(event_prefetch_pollution),
         .event_prefetch_dropped(event_prefetch_dropped),
+        .debug_state(debug_state),
+        .debug_req_is_prefetch(debug_req_is_prefetch),
         .event_pb_allocated(event_pb_allocated),
         .event_pb_promoted(event_pb_promoted),
         .event_pb_evicted(event_pb_evicted),

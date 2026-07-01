@@ -73,6 +73,10 @@ module l1d_cache #(
     output logic                         event_prefetch_useless,
     output logic                         event_prefetch_pollution,
     output logic                         event_prefetch_dropped,
+
+    output logic [3:0]                   debug_state,
+    output logic                         debug_req_is_prefetch,
+    output logic                         event_prefetch_dropped,
     output logic                         event_pb_allocated,
     output logic                         event_pb_promoted,
     output logic                         event_pb_evicted,
@@ -160,6 +164,9 @@ module l1d_cache #(
     logic req_unsigned;
     logic [DATA_WIDTH-1:0] req_wdata;
     logic req_is_prefetch;
+
+    assign debug_state = state;
+    assign debug_req_is_prefetch = req_is_prefetch;
     logic [31:0] req_prefetch_issue_cycle;
 
     logic [WAY_BITS-1:0] selected_way;
@@ -1041,6 +1048,9 @@ module l1d_cache #(
                             evicted_prefetch_fill_cycle;
                         vc_addr[selected_vc] <= evicted_addr;
                         vc_data[selected_vc] <= evicted_data;
+                    valid_bits[selected_way][req_set_comb] <= 1'b0;
+                    dirty_bits[selected_way][req_set_comb] <= 1'b0;
+                    prefetched_bits[selected_way][req_set_comb] <= 1'b0;
                         if (VICTIM_LRU_ENABLED) begin
                             touch_vc_entry(selected_vc);
                         end else begin
