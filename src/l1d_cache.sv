@@ -72,7 +72,6 @@ module l1d_cache #(
     output logic                         event_prefetch_useful,
     output logic                         event_prefetch_useless,
     output logic                         event_prefetch_pollution,
-    output logic                         event_prefetch_dropped,
 
     output logic [3:0]                   debug_state,
     output logic                         debug_req_is_prefetch,
