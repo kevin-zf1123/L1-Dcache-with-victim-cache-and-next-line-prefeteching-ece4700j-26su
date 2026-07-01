@@ -30,9 +30,9 @@ module l1d_prefetch_buffer #(
     integer alloc_index_comb;
     integer fill_index_comb;
     integer free_index_comb;
-    integer slot_index;
 
-    always_comb begin
+    always_comb begin : lookup_comb
+        integer slot_index;
         pb_lookup_hit = 1'b0;
         for (slot_index = 0; slot_index < PB_SIZE; slot_index = slot_index + 1) begin
             if (pb_valid[slot_index] &&
@@ -42,7 +42,8 @@ module l1d_prefetch_buffer #(
         end
     end
 
-    always_comb begin
+    always_comb begin : occupancy_comb
+        integer slot_index;
         pb_empty = 1'b1;
         pb_full = 1'b1;
         for (slot_index = 0; slot_index < PB_SIZE; slot_index = slot_index + 1) begin
@@ -54,7 +55,8 @@ module l1d_prefetch_buffer #(
         end
     end
 
-    always_comb begin
+    always_comb begin : alloc_comb
+        integer slot_index;
         alloc_index_comb = -1;
         if (enable) begin
             for (slot_index = 0; slot_index < PB_SIZE; slot_index = slot_index + 1) begin
@@ -65,7 +67,8 @@ module l1d_prefetch_buffer #(
         end
     end
 
-    always_comb begin
+    always_comb begin : fill_comb
+        integer slot_index;
         pb_fill_ready = 1'b0;
         fill_index_comb = -1;
         if (enable) begin
@@ -81,7 +84,8 @@ module l1d_prefetch_buffer #(
         end
     end
 
-    always_comb begin
+    always_comb begin : free_comb
+        integer slot_index;
         pb_free_ready = 1'b0;
         free_index_comb = -1;
         if (enable) begin
@@ -98,7 +102,8 @@ module l1d_prefetch_buffer #(
 
     assign pb_alloc_ready = enable && (alloc_index_comb >= 0);
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk or negedge rst_n) begin : storage_seq
+        integer slot_index;
         if (!rst_n) begin
             for (slot_index = 0; slot_index < PB_SIZE; slot_index = slot_index + 1) begin
                 pb_valid[slot_index] <= 1'b0;

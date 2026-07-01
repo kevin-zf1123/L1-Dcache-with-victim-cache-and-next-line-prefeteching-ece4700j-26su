@@ -1319,7 +1319,6 @@ module tb_l1d_cache #(
             accepted_mem_reads <= 0;
             accepted_mem_writes <= 0;
             cycles_since_reset <= 0;
-            access_log_index <= 0;
         end else begin
             mem_rsp_valid <= 1'b0;
             mem_ready_phase <= mem_ready_phase + 1'b1;
@@ -1450,7 +1449,7 @@ module tb_l1d_cache #(
             test_workload_boundaries();
         end else if (ENABLE_PREFETCH != 0) begin
             test_prefetch();
-        end else begin
+        end
             test_baseline();
             test_rv64_alignment_faults();
             if (VICTIM_ENTRIES == 0) begin
@@ -1461,7 +1460,6 @@ module tb_l1d_cache #(
             end
             test_response_backpressure();
             test_randomized_scoreboard();
-        end
 
         if (errors == 0 && protocol_errors == 0) begin
             $display("ALL TESTS PASSED ways=%0d prefetch=%0d",
