@@ -30,11 +30,16 @@ simulation and synthesis are the final project verification targets.
 | `src/l1d_next_line_prefetch.sv` | Replaceable one-entry next-line candidate generator |
 | `src/l1d_cache.sv` | Cache datapath, FSM, victim cache, prefetcher, counters |
 | `src/tb_l1d_cache.sv` | Self-checking testbench and line-memory model |
+| `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
 | `scripts/run_vivado.tcl` | Vivado simulation, synthesis, utilization, timing, power |
+| `scripts/run_remote_vivado.py` | Paramiko remote Vivado runner for the Windows host |
+| `scripts/generate_phase3_traces.py` | Deterministic Phase 3 trace generator |
 | `constraints/l1d_baseline.xdc` | Default 100 MHz synthesis clock constraint |
 | `traces/smoke.trace` | Redistributable trace-replay format smoke test |
+| `traces/generated/MANIFEST.md` | Generated Phase 3 trace hashes |
+| `docs/phase3_vivado_report.md` | Current Vivado Phase 3 evidence and remaining gaps |
 
 All SystemVerilog files remain under `src/` as required by the repository
 layout.
@@ -297,57 +302,43 @@ and elapsed testbench cycles.
 
 ## Vivado Verification
 
-The local macOS host uses Icarus for preliminary regression. Final XSim and
-synthesis should be rerun after the RV64 interface change on a machine with
-Vivado available. The most recent Vivado run in this document is a historical
-pre-RV64 baseline run from June 10, 2026 using Vivado 2024.2.1 targeting
-`xc7a35tcpg236-1`; do not treat those area, timing, or power numbers as
-current sign-off data for the RV64 RTL.
+The current RV64 Vivado evidence is recorded in
+`docs/phase3_vivado_report.md`. The final Phase 3 run on 2026-07-01 used
+remote Vivado 2024.2.1, staged the project under
+`C:/Users/kevin/l1d_codex_ascii_20260701_r10`, and passed log scanning after
+downloading the reports.
 
-That historical pre-RV64 run completed these seven XSim configurations with
-`ALL TESTS PASSED`:
-
-| XSim configuration | Result |
-| --- | --- |
-| Direct-mapped, VC4, prefetch off | PASS |
-| 2-way, VC4, prefetch off | PASS |
-| 2-way, VC8, prefetch off | PASS |
-| 2-way, VC4, next-line prefetch on | PASS |
-| Direct-mapped, VC4 synthetic workloads | PASS |
-| 2-way, VC4 synthetic workloads | PASS |
-| 2-way, VC4 prefetch synthetic workloads | PASS |
-
-Run the same flow on a machine with Vivado in `PATH` using:
+Run the local Vivado entry point on a machine with Vivado in `PATH` using:
 
 ```tcl
 vivado -mode batch -source scripts/run_vivado.tcl
 ```
 
-The script defaults to `xc7a35tcpg236-1`; set environment variable
-`L1D_PART` to override the FPGA part. It runs the four functional simulations
-plus the three synthetic-workload simulations, then synthesizes the four
-hardware configurations with the 10 ns clock constraint. Reports are
-generated under
-`build/vivado/reports/<configuration>/`:
+The script defaults to `xc7a35tcpg236-1`; set environment variable `L1D_PART`
+to override the FPGA part. It runs the class-based OOP XSim matrix, trace
+replay, low/high latency next-line prefetch cases, and synthesis for the four
+major hardware configurations with the 10 ns clock constraint. Reports are
+generated under `build/vivado/reports/<configuration>/`:
 
 - `utilization.rpt`;
 - `timing_summary.rpt`;
 - `power.rpt`.
 
-Simulation logs are copied to `build/vivado/reports/`. The historical June 10
-pre-RV64 synthesis results were:
+Simulation logs and the representative VCD are copied to
+`build/vivado/reports/`. The current Phase 3 synthesis results are:
 
 | Configuration | LUTs | FFs | RAMB36 | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Direct-mapped, VC4, prefetch off | 1,502 | 1,493 | 2 | 1.876 ns | 123.1 MHz | 0.100 W |
-| 2-way, VC4, prefetch off | 1,839 | 1,621 | 4 | 1.525 ns | 118.0 MHz | 0.099 W |
-| 2-way, VC8, prefetch off | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
-| 2-way, VC4, prefetch on | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
+| Direct-mapped, VC4, prefetch off | 5,178 | 1,853 | 2 | -1.291 ns | 88.6 MHz | 0.117 W |
+| 2-way, VC4, prefetch off | 4,721 | 2,008 | 4 | -0.417 ns | 96.0 MHz | 0.107 W |
+| 2-way, VC8, prefetch off | 5,395 | 2,767 | 4 | -1.462 ns | 87.2 MHz | 0.117 W |
+| 2-way, VC4, prefetch on | 5,789 | 2,168 | 4 | -1.981 ns | 83.5 MHz | 0.117 W |
 
-Those pre-RV64 configurations met the 100 MHz synthesis constraint. The data
-arrays were inferred as block RAM; tag arrays were inferred as distributed
-RAM. The Fmax column is calculated as `1000 / (10 - WNS)` and is only a
-post-synthesis STA estimate. Routing and implementation can reduce it.
+These current RV64 configurations do not meet the 100 MHz synthesis
+constraint. The data arrays were inferred as block RAM; tag arrays were
+inferred as distributed RAM. The Fmax column is calculated as
+`1000 / (10 - WNS)` and is only a post-synthesis STA estimate. Routing and
+implementation can reduce it.
 
 The power values use Vivado vectorless activity propagation, with no SAIF/VCD
 activity file, default operating conditions, and `Low` confidence. They are
@@ -361,7 +352,8 @@ project when its path contained non-ASCII characters.
 Before final project sign-off, inspect XSim waveforms for every FSM path and
 run implementation/post-route timing. For meaningful power comparison, rerun
 `report_power` with representative switching activity from the workload
-traces.
+traces. The current representative passing VCD is
+`build/vivado/reports/next_line_prefetch_vc4.vcd`.
 
 ## Workload-Driven Boundary Analysis
 

@@ -60,7 +60,10 @@ module l1d_cache #(
     output logic                         event_prefetch_useful,
     output logic                         event_prefetch_useless,
     output logic                         event_prefetch_pollution,
-    output logic                         event_prefetch_dropped
+    output logic                         event_prefetch_dropped,
+
+    output logic [3:0]                   debug_state,
+    output logic                         debug_req_is_prefetch
 );
     localparam integer LINE_BITS       = LINE_BYTES * 8;
     localparam integer WORD_BYTES      = DATA_WIDTH / 8;
@@ -122,6 +125,9 @@ module l1d_cache #(
     logic req_unsigned;
     logic [DATA_WIDTH-1:0] req_wdata;
     logic req_is_prefetch;
+
+    assign debug_state = state;
+    assign debug_req_is_prefetch = req_is_prefetch;
 
     logic [WAY_BITS-1:0] selected_way;
     logic [VC_BITS-1:0] selected_vc;
@@ -729,6 +735,9 @@ module l1d_cache #(
                     vc_prefetched[selected_vc] <= evicted_prefetched;
                     vc_addr[selected_vc] <= evicted_addr;
                     vc_data[selected_vc] <= evicted_data;
+                    valid_bits[selected_way][req_set_comb] <= 1'b0;
+                    dirty_bits[selected_way][req_set_comb] <= 1'b0;
+                    prefetched_bits[selected_way][req_set_comb] <= 1'b0;
                     if (vc_rr == VICTIM_ENTRIES-1) begin
                         vc_rr <= '0;
                     end else begin
