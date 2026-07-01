@@ -26,21 +26,27 @@
 - [x] 增加 handshake stability 和 line uniqueness 仿真检查。
 - [x] 验证 4-entry 和 8-entry victim cache 配置。
 - [x] 增加确定性 synthetic workload boundary 回归和 CSV 输出。
+- [x] 增加用于 Phase 3 workload 的 class-based Vivado OOP harness。
+- [x] 增加确定性生成的 Phase 3 matrix 和 pointer trace。
+- [x] 增加带 read/write byte 与 latency summary 的 Phase 3 workload record。
+- [x] 为 Vivado workload 增加 watchdog、protocol 和 duplicate-line failure 报告。
 - [ ] 增加零 entry victim cache bypass 配置。
 - [ ] 增加 LRU victim replacement 选项。
 - [ ] 增加独立 prefetch buffer 放置方案。
 - [ ] 增加真实 pollution、timeliness 和内存带宽测量。
 - [x] 增加 SPEC CPU 2017/2026 区间 trace replay driver。
 - [x] 运行初始获许可 SPEC CPU 2026 782.lbm_r trace extraction 和 replay 验证。
-- [ ] 对更多获许可 SPEC workload 区间进行分类。
+- [x] 对更多获许可 SPEC workload 区间进行分类。
 
 ## Vivado 与 PPA
 
-- [ ] 对 direct-mapped 和 2-way 配置运行 RV64 Vivado 仿真。
+- [x] 对 direct-mapped 和 2-way 配置运行 RV64 Vivado 仿真。
+- [x] 对 VC4、VC8、next-line prefetch 和 trace replay 运行 Vivado OOP workload 矩阵。
 - [ ] 检查所有 hit、miss、swap、fill 和 write-back 波形。
-- [ ] 对 RV64 RTL 综合并记录 LUT、FF、推断存储和时序报告。
+- [x] 捕获代表性的通过 next-line prefetch VCD artifact。
+- [x] 对 RV64 RTL 综合并记录 LUT、FF、推断存储和时序报告。
 - [x] 添加基线 10 ns 时钟约束。
-- [ ] 根据 RV64 Vivado STA 报告计算近似综合后 Fmax。
-- [ ] 运行 RV64 vectorless FPGA power estimation 并记录其假设。
+- [x] 根据 RV64 Vivado STA 报告计算近似综合后 Fmax。
+- [x] 运行 RV64 vectorless FPGA power estimation 并记录其假设。
 - [ ] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
-- [ ] 比较 baseline、victim cache、prefetch 和组合配置。
+- [x] 比较 baseline、victim cache、prefetch 和组合配置。

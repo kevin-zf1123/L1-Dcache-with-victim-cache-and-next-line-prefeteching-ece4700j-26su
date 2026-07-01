@@ -29,11 +29,16 @@ Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真
 | `src/l1d_next_line_prefetch.sv` | 可替换的单 entry next-line candidate generator |
 | `src/l1d_cache.sv` | 缓存 datapath、FSM、victim cache、prefetcher 和计数器 |
 | `src/tb_l1d_cache.sv` | 自检 testbench 和缓存行内存模型 |
+| `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | 功能与 synthetic workload 初步回归 |
 | `scripts/summarize_workloads.sh` | 将 workload 日志记录转换为 CSV |
 | `scripts/run_vivado.tcl` | Vivado 仿真、综合、资源、时序与功耗报告 |
+| `scripts/run_remote_vivado.py` | 用于 Windows host 的 Paramiko 远程 Vivado runner |
+| `scripts/generate_phase3_traces.py` | 确定性 Phase 3 trace generator |
 | `constraints/l1d_baseline.xdc` | 默认 100 MHz 综合时钟约束 |
 | `traces/smoke.trace` | 可重新分发的 trace replay 格式 smoke test |
+| `traces/generated/MANIFEST.md` | Generated Phase 3 trace hash |
+| `docs/phase3_vivado_report.md` | 当前 Vivado Phase 3 证据和剩余缺口 |
 
 所有 SystemVerilog 文件均位于 `src/` 下。
 
@@ -270,52 +275,39 @@ select 的提示信息，但编译和全部自检均成功。
 
 ## Vivado 验证
 
-本地 macOS 使用 Icarus 进行初步回归。RV64 接口改造后，最终 XSim 和
-综合应在有 Vivado 的机器上重新运行。本文档目前保留的最近一次 Vivado
-结果，是 2026 年 6 月 10 日使用 Vivado 2024.2.1、目标器件
-`xc7a35tcpg236-1` 的历史 pre-RV64 baseline 结果；这些面积、时序和功耗
-数据不能作为当前 RV64 RTL 的签核数据。
+当前 RV64 Vivado 证据记录在 `docs/phase3_vivado_report.md` 中。最终
+Phase 3 运行在 2026-07-01 使用远程 Vivado 2024.2.1，将工程暂存到
+`C:/Users/kevin/l1d_codex_ascii_20260701_r10`，并在下载报告后通过日志
+扫描。
 
-该历史 pre-RV64 运行中，七种 XSim 配置均输出 `ALL TESTS PASSED`：
-
-| XSim 配置 | 结果 |
-| --- | --- |
-| 直接映射，VC4，关闭 prefetch | PASS |
-| 2 路，VC4，关闭 prefetch | PASS |
-| 2 路，VC8，关闭 prefetch | PASS |
-| 2 路，VC4，开启 next-line prefetch | PASS |
-| 直接映射，VC4，synthetic workload | PASS |
-| 2 路，VC4，synthetic workload | PASS |
-| 2 路，VC4，prefetch synthetic workload | PASS |
-
-在 Vivado 已加入 `PATH` 的机器上，可用以下命令重复该流程：
+在 Vivado 已加入 `PATH` 的机器上，可用以下命令运行本地 Vivado 入口：
 
 ```tcl
 vivado -mode batch -source scripts/run_vivado.tcl
 ```
 
 脚本默认目标器件为 `xc7a35tcpg236-1`，可用环境变量 `L1D_PART` 覆盖。
-脚本运行四种功能仿真和三种 synthetic workload 仿真，然后使用 10 ns
-时钟约束综合四种硬件配置，在
-`build/vivado/reports/<configuration>/` 生成：
+脚本运行 class-based OOP XSim 矩阵、trace replay、低/高 latency next-line
+prefetch case，并使用 10 ns 时钟约束综合四种主要硬件配置，在
+`build/vivado/reports/<configuration>/` 下生成：
 
 - `utilization.rpt`；
 - `timing_summary.rpt`；
 - `power.rpt`。
 
-仿真日志复制到 `build/vivado/reports/`。历史 6 月 10 日 pre-RV64 综合
+仿真日志和代表性 VCD 会复制到 `build/vivado/reports/`。当前 Phase 3 综合
 结果如下：
 
 | 配置 | LUT | FF | RAMB36 | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 直接映射，VC4，关闭 prefetch | 1,502 | 1,493 | 2 | 1.876 ns | 123.1 MHz | 0.100 W |
-| 2 路，VC4，关闭 prefetch | 1,839 | 1,621 | 4 | 1.525 ns | 118.0 MHz | 0.099 W |
-| 2 路，VC8，关闭 prefetch | 2,081 | 2,262 | 4 | 1.366 ns | 115.8 MHz | 0.103 W |
-| 2 路，VC4，开启 prefetch | 1,900 | 1,750 | 4 | 2.112 ns | 126.8 MHz | 0.104 W |
+| 直接映射，VC4，关闭 prefetch | 5,178 | 1,853 | 2 | -1.291 ns | 88.6 MHz | 0.117 W |
+| 2 路，VC4，关闭 prefetch | 4,721 | 2,008 | 4 | -0.417 ns | 96.0 MHz | 0.107 W |
+| 2 路，VC8，关闭 prefetch | 5,395 | 2,767 | 4 | -1.462 ns | 87.2 MHz | 0.117 W |
+| 2 路，VC4，开启 prefetch | 5,789 | 2,168 | 4 | -1.981 ns | 83.5 MHz | 0.117 W |
 
-这些 pre-RV64 配置均满足 100 MHz 综合约束。data array 被推断为 block
-RAM，tag array 被推断为 distributed RAM。Fmax 按
-`1000 / (10 - WNS)` 计算，只是综合后 STA 估算；布局布线后结果可能下降。
+这些当前 RV64 配置均未满足 100 MHz 综合约束。data array 被推断为 block
+RAM，tag array 被推断为 distributed RAM。Fmax 按 `1000 / (10 - WNS)`
+计算，只是综合后 STA 估算；布局布线后结果可能下降。
 
 功耗值使用 Vivado vectorless activity propagation，没有 SAIF/VCD activity
 文件，采用默认 operating condition，且置信度为 `Low`。这些数据只能作为
@@ -326,7 +318,8 @@ Windows 上应使用纯 ASCII 工程路径。Vivado 仿真可以在中文用户�
 
 最终签核前仍需检查所有 FSM 路径的 XSim 波形，并执行 implementation/
 post-route timing。为了获得有意义的功耗比较，还应使用 workload trace
-产生的代表性 switching activity 重新运行 `report_power`。
+产生的代表性 switching activity 重新运行 `report_power`。当前代表性通过
+VCD 为 `build/vivado/reports/next_line_prefetch_vc4.vcd`。
 
 ## Workload-Driven Boundary Analysis
 

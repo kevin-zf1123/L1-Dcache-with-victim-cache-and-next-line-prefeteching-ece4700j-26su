@@ -18,44 +18,88 @@ add_files -norecurse [list \
     [file join $src_dir l1d_sram.sv] \
     [file join $src_dir l1d_next_line_prefetch.sv] \
     [file join $src_dir l1d_cache.sv]]
-add_files -fileset sim_1 -norecurse [file join $src_dir tb_l1d_cache.sv]
+add_files -fileset sim_1 -norecurse [list \
+    [file join $src_dir tb_l1d_cache.sv] \
+    [file join $src_dir tb_l1d_cache_oop.sv]]
 add_files -fileset constrs_1 -norecurse \
     [file join $constraints_dir l1d_baseline.xdc]
 
 set_property top l1d_cache [get_filesets sources_1]
-set_property top tb_l1d_cache [get_filesets sim_1]
+set_property top tb_l1d_cache_oop [get_filesets sim_1]
 update_compile_order -fileset sources_1
 update_compile_order -fileset sim_1
 
+proc write_run_all_tcl {path} {
+    set fp [open $path w]
+    puts $fp "run all"
+    close $fp
+}
+
+proc write_vcd_run_tcl {path vcd_path} {
+    set fp [open $path w]
+    puts $fp [format {open_vcd {%s}} $vcd_path]
+    foreach pattern [list \
+        /tb_l1d_cache_oop/clk \
+        /tb_l1d_cache_oop/bus/rst_n \
+        /tb_l1d_cache_oop/bus/cfg_* \
+        /tb_l1d_cache_oop/bus/cpu_* \
+        /tb_l1d_cache_oop/bus/mem_* \
+        /tb_l1d_cache_oop/bus/stat_* \
+        /tb_l1d_cache_oop/bus/event_* \
+        /tb_l1d_cache_oop/bus/cache_idle \
+        /tb_l1d_cache_oop/bus/debug_*] {
+        puts $fp [format {set objs [get_objects -quiet {%s}]} $pattern]
+        puts $fp {if {[llength $objs] > 0} {log_vcd $objs}}
+    }
+    puts $fp "run all"
+    puts $fp "close_vcd"
+    close $fp
+}
+
+set smoke_trace [file normalize [file join $root_dir traces smoke.trace]]
+set generated_pointer_trace [file normalize \
+    [file join $root_dir traces generated phase3_pointer_permutation.trace]]
+set run_all_tcl [file join $build_dir xsim_run_all.tcl]
+write_run_all_tcl $run_all_tcl
+
 set simulation_configurations [list \
     [list direct_mapped_vc4 \
-        "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" ""] \
+        "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
     [list two_way_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" ""] \
+        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
     [list two_way_vc8 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8" ""] \
+        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
     [list next_line_prefetch_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4" ""] \
-    [list workload_direct_mapped_vc4 \
-        "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" \
-        "-testplusarg WORKLOADS_ONLY"] \
-    [list workload_two_way_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4" \
-        "-testplusarg WORKLOADS_ONLY"] \
-    [list workload_next_line_prefetch_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4" \
-        "-testplusarg WORKLOADS_ONLY"]]
+        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
+    [list trace_replay_smoke_two_way_vc4 \
+        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "-testplusarg TRACE=$smoke_trace"] \
+    [list trace_replay_generated_pointer_prefetch_vc4 \
+        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "-testplusarg TRACE=$generated_pointer_trace"] \
+    [list next_line_prefetch_vc4_low_latency \
+        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=0 MEM_BACKPRESSURE_MODE=0 CPU_BACKPRESSURE_MODE=0" ""] \
+    [list next_line_prefetch_vc4_high_latency_random_bp \
+        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" ""]]
 
 foreach configuration $simulation_configurations {
     lassign $configuration name generics more_options
     puts "Running Vivado behavioral simulation: $name"
     set_property generic $generics [get_filesets sim_1]
+    set custom_tcl $run_all_tcl
+    set run_more_options $more_options
+    if {$name eq "next_line_prefetch_vc4"} {
+        set vcd_path [file join $report_root "${name}.vcd"]
+        set run_more_options [string trim \
+            "$run_more_options -testplusarg DUMP_VCD=$vcd_path"]
+    }
     set_property -dict [list \
-        xsim.simulate.xsim.more_options $more_options] \
+        xsim.simulate.xsim.more_options $run_more_options \
+        xsim.simulate.custom_tcl $custom_tcl \
+        xsim.simulate.log_all_signals false] \
         [get_filesets sim_1]
     launch_simulation -simset sim_1 -mode behavioral
-    run all
-    close_sim
+    catch {close_sim}
 
     set sim_log [file join $build_dir l1d_baseline.sim sim_1 behav xsim simulate.log]
     if {[file exists $sim_log]} {

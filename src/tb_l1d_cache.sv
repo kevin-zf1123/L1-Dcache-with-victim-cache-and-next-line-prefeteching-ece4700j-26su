@@ -70,6 +70,8 @@ module tb_l1d_cache #(
     logic event_prefetch_useless;
     logic event_prefetch_pollution;
     logic event_prefetch_dropped;
+    logic [3:0] debug_state;
+    logic debug_req_is_prefetch;
 
     byte unsigned memory [0:MEM_BYTES-1];
     byte unsigned golden_memory [0:MEM_BYTES-1];
@@ -146,7 +148,9 @@ module tb_l1d_cache #(
         .event_prefetch_useful(event_prefetch_useful),
         .event_prefetch_useless(event_prefetch_useless),
         .event_prefetch_pollution(event_prefetch_pollution),
-        .event_prefetch_dropped(event_prefetch_dropped)
+        .event_prefetch_dropped(event_prefetch_dropped),
+        .debug_state(debug_state),
+        .debug_req_is_prefetch(debug_req_is_prefetch)
     );
 
     always #5 clk = ~clk;
