@@ -47,8 +47,10 @@
 - [x] 输出统一 workload schema 并实现严格 paired-run 分析。
 - [x] 通过 paired replay sidecar 增加逐 demand true-pollution 归因。
 - [ ] 增加独立的逐 demand prefetch timeliness 分析。
-- [ ] 使用验证后的 process-scoped 流程重新捕获获许可 SPEC 区间。
-- [ ] 对有效窗口分类并发布 paired metrics 与图表。
+- [x] 使用验证后的 process-scoped 流程 capture 并 replay 获许可
+  SPEC 区间。
+- [x] 对有效 window 分类，并在 `docs/evidence/2026-07-13/` 发布
+  paired metric 与图表。
 
 ## Vivado 与 PPA
 

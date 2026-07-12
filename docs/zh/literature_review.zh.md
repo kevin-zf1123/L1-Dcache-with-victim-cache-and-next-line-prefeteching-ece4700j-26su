@@ -46,7 +46,8 @@ miss 会减少。因此 workload 计划直接比较 direct-mapped 和 2-way 设�
 
 ## Next-Line 与 Stream Prefetch
 
-文献中的关键设计选择是 prefetch 数据放置位置：
+Jouppi 的工作也研究了 prefetch buffer 和 stream buffer。其中的关键
+设计选择是 prefetch 数据放置位置：
 
 - 独立 prefetch/stream buffer 减少直接污染 L1，但需要第二次查询和提升路径；
 - 直接安装到 L1 在预测正确时延迟低，但可能驱逐有用 demand 数据。

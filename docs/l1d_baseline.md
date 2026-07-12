@@ -519,11 +519,44 @@ In this blocking model,
 `timely_useful=useful` is structural and `late_useful=0` is not an independent
 latency observation; real issue/fill/accept timeliness remains future work.
 
-As of July 13, 2026, a real RV64 dynamic-ELF count/capture/split smoke passed
-with matching totals, vCPU 0, U mode, non-Bare `satp`, physical addresses, and
-zero violations. Historical mixed-system SPEC traces are not valid benchmark
-evidence; no new SPEC performance claim is authoritative until its complete
-private campaign passes this workflow.
+#### Authoritative July 13, 2026 result
+
+The private campaign passed for `708.sqlite_r`, `721.gcc_r`, `767.nest_r`, and
+`777.zstd_r`. Five command units produced 25 sampled windows with matching
+count/capture totals, valid process identity, physical addresses, and zero
+violations.
+
+The five ROIs contained 11,726,347,548 source events. Cross-line expansion
+added 11,104,621 accesses, giving 11,737,452,169 canonical accesses. The
+250,000 sampled source rows became 250,971 replay payload records.
+
+Manifest-driven replay completed 100 runs: four configurations for each of 25
+windows. This yielded 25 exact `2w_s4_vc4_pf0`/`2w_s4_vc4_pf1` pairs and 50
+standalone direct-mapped or VC8 runs. Analyzer validation reported `PASS`.
+
+| Pairs | Accuracy | L1 coverage | Lower coverage | Bandwidth overhead | Bytes on-off | Service cycles on-off | Harmful / neutral / helpful |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 25 | 0.215690268 | 0.049647522 | 0.067245888 | 0.537997464 | 672,032 | 328,996 | 25 / 0 / 0 |
+
+Paired sidecars found 8,079 true L1 helps versus 4,776 true L1 pollution
+events, and 9,018 lower-memory helps versus 5,032 lower-memory pollution
+events. Prefetch reads and fills both totaled 44,193; 9,532 were useful.
+
+Every pair increased serialized replay service cycles. This classification is
+specific to the sampled windows, fixed blocking memory model, and current
+next-line policy; it is not a whole-program CPU performance result.
+
+Public, address-free artifacts are the [aggregate CSV](evidence/2026-07-13/aggregate.csv),
+[pair CSV](evidence/2026-07-13/pairs.csv),
+[classification CSV](evidence/2026-07-13/classification.csv), and
+[cycle-delta SVG](evidence/2026-07-13/cycles-on-minus-off.svg).
+Their hashes, private exclusions, and final Vivado evidence anchor are recorded
+in the [public provenance index](evidence/2026-07-13/provenance.json).
+
+The private capture and replay campaign SHA-256 values are respectively
+`057965ff31234bac274ce81fc719780dbd2e7d60a59ccceb359b3b7ac64a7f9f`
+and `e593bd279361036e4cb75c4cf9d1b959afb2071fb0d7c4ca1e425323a8f9cc78`.
+Historical mixed-system SPEC traces remain non-authoritative.
 
 ### Historical `782.lbm_r` capture (non-authoritative)
 
@@ -704,19 +737,22 @@ it doubles lower-memory reads and increases cycles without removing a demand
 miss. The victim cache retains the three-line, single-set working set for the
 2-way configuration, so only the first three accesses reach lower memory.
 
-For each trace region, the current validated replay records:
+For each trace region, `WORKLOAD_RESULT schema=2` records `sets`, `ways`,
+`line_bytes`, `l1_bytes`, `victim_entries`, `victim_bytes`, `total_bytes`,
+`prefetch`, `accesses`, `hits`, `misses`, `victim_hits`,
+`demand_mem_reads`, and `prefetch_mem_reads`.
 
-- CPU accesses, L1 hits, demand misses, and victim hits;
-- lower-memory reads and write-backs;
-- useful, useless, and pollution prefetch events;
-- replay service cycles;
-- working-set size, load/store ratio, stride histogram, and reuse-distance
-  summary; and
-- the full cache configuration and random/trace seed.
+Its remaining traffic fields are `mem_reads`, `mem_writes`, `read_bytes`,
+`write_bytes`, `writebacks`, and `replay_service_cycles`. Prefetch lifecycle
+fields are `fills`, `useful`, `useless_evicted`, and `unused_resident`.
 
-It does not yet report architectural CPU stall cycles or measured AMAT. Replay
-service cycles describe the serialized cache model and must not be presented as
-whole-program CPU execution time; those two measurements remain future work.
+The schema also exposes `pollution_proxy`, `dropped`, `timely_useful`,
+`late_useful`, `watchdogs`, `protocol`, and `duplicate_lines`. Paired analysis
+adds coverage, bandwidth, classification, true help/pollution, and locality.
+
+Schema 2 has no `stall_cycles` or `amat` field. `replay_service_cycles`
+describes the serialized cache model and is not whole-program CPU execution
+time. Architectural stall-cycle and measured-AMAT outputs remain future work.
 
 The current boundary plots can sweep associativity, victim entries 4/8,
 prefetch enable, cache capacity, line size, and lower-memory latency. The

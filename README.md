@@ -25,6 +25,22 @@ scripts/run_spec_trace_replay.sh \
   build/spec2026/replay/logs
 ```
 
+The authoritative July 13 run completed five command captures, 25 sampled
+windows, 100 four-configuration replays, and 25 exact prefetch off/on pairs.
+The capture campaign, replay campaign, and analyzer all reported `PASS`.
+
+All 25 pairs had positive `cycles_on_minus_off` in the blocking service-cycle
+model. This is a replay-model result, not a whole-program CPU timing claim.
+
+Address-free public results are the [aggregate metrics](docs/evidence/2026-07-13/aggregate.csv),
+[per-pair metrics](docs/evidence/2026-07-13/pairs.csv),
+[classification](docs/evidence/2026-07-13/classification.csv), and
+[cycle-delta plot](docs/evidence/2026-07-13/cycles-on-minus-off.svg).
+Licensed traces, addresses, logs, sidecars, and private manifests remain ignored.
+The [public provenance index](docs/evidence/2026-07-13/provenance.json) records
+their hashes and exclusions; the [redacted Vivado manifest](docs/evidence/vivado-2026-07-13.json)
+records the final eight-simulation/four-synthesis evidence matrix.
+
 The capture contract, private manifest chain, geometry matrix, and validity
 limits are documented in `docs/l1d_baseline.md` and
 `docs/spec2026_trace_campaign.md`.

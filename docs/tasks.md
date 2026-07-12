@@ -45,8 +45,10 @@
 - [x] Emit the canonical workload schema and strict paired-run analysis.
 - [x] Add per-demand true-pollution attribution through paired replay sidecars.
 - [ ] Add independent per-demand prefetch timeliness analysis.
-- [ ] Recapture licensed SPEC regions with the validated process-scoped flow.
-- [ ] Classify validated windows and publish paired metrics and plots.
+- [x] Capture and replay licensed SPEC regions with the validated process-scoped
+  flow.
+- [x] Classify validated windows and publish paired metrics and plots under
+  `docs/evidence/2026-07-13/`.
 
 ## Vivado and PPA
 

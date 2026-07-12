@@ -468,10 +468,43 @@ harmful。当前 blocking model 中
 `timely_useful=useful`、`late_useful=0` 是结构性口径，不是独立 latency
 measurement；真正的 issue/fill/accept timeliness 仍属于 future work。
 
-截至 2026-07-13，真实 RV64 dynamic-ELF count/capture/split smoke 已通过：
-总事件数一致、vCPU 0、U mode、non-Bare `satp`、物理地址、零 violation。
-历史 mixed-system SPEC trace 不是有效 benchmark 证据；只有完整私有 campaign
-通过该流程后，新的 SPEC 性能结论才可视为 authoritative。
+#### 2026 年 7 月 13 日权威结果
+
+私有 campaign 已在 `708.sqlite_r`、`721.gcc_r`、`767.nest_r` 和
+`777.zstd_r` 上通过。5 个 command unit 生成 25 个采样 window，
+count/capture 总数一致，进程身份有效，物理地址合法，且零 violation。
+
+5 个 ROI 包含 11,726,347,548 个 source event。Cross-line 展开增加
+11,104,621 个 access，得到 11,737,452,169 个 canonical access。
+250,000 个采样 source row 展开为 250,971 个 replay payload record。
+
+Manifest-driven replay 完成 100 次运行：25 个 window 各有 4 种配置。
+这得到 25 对严格的 `2w_s4_vc4_pf0`/`2w_s4_vc4_pf1` pair，
+以及 50 次独立 direct-mapped 或 VC8 运行。Analyzer 验证为 `PASS`。
+
+| Pair | Accuracy | L1 coverage | 下级 coverage | 带宽开销 | Bytes on-off | Service cycles on-off | Harmful / neutral / helpful |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 25 | 0.215690268 | 0.049647522 | 0.067245888 | 0.537997464 | 672,032 | 328,996 | 25 / 0 / 0 |
+
+Paired sidecar 识别出 8,079 次真实 L1 help 和 4,776 次真实 L1
+pollution，以及 9,018 次下级内存 help 和 5,032 次下级内存
+pollution。Prefetch read 与 fill 均为 44,193，其中 9,532 次 useful。
+
+每个 pair 都增加了串行 replay service cycle。该分类仅适用于这些
+采样 window、固定 blocking memory model 和当前 next-line policy，
+不是整程序 CPU 性能结论。
+
+公开且不含地址的 artifact 包括 [aggregate CSV](../evidence/2026-07-13/aggregate.csv)、
+[pair CSV](../evidence/2026-07-13/pairs.csv)、
+[classification CSV](../evidence/2026-07-13/classification.csv) 和
+[cycle-delta SVG](../evidence/2026-07-13/cycles-on-minus-off.svg)。
+这些文件的哈希、未公开私有证据及最终 Vivado 证据锚点记录在
+[公开 provenance 索引](../evidence/2026-07-13/provenance.json)中。
+
+私有 capture 与 replay campaign 的 SHA-256 分别为
+`057965ff31234bac274ce81fc719780dbd2e7d60a59ccceb359b3b7ac64a7f9f`
+和 `e593bd279361036e4cb75c4cf9d1b959afb2071fb0d7c4ca1e425323a8f9cc78`。
+历史 mixed-system SPEC trace 仍非权威证据。
 
 ### 历史 `782.lbm_r` 抓取（非 authoritative）
 
@@ -641,19 +674,22 @@ off/on 逐 demand replay sidecar 计算。
 配置，victim cache 能保留三个 line 的单 set working set，因此只有最初
 三个 access 到达下级内存。
 
-对每个 trace 区间，当前已验证 replay 会记录：
+对每个 trace 区间，`WORKLOAD_RESULT schema=2` 记录 `sets`、`ways`、
+`line_bytes`、`l1_bytes`、`victim_entries`、`victim_bytes`、`total_bytes`、
+`prefetch`、`accesses`、`hits`、`misses`、`victim_hits`、
+`demand_mem_reads` 和 `prefetch_mem_reads`。
 
-- CPU access、L1 hit、demand miss 和 victim hit；
-- 下级内存读取和 write-back；
-- useful、useless 和 pollution prefetch 事件；
-- replay service cycle；
-- working-set size、load/store ratio、stride histogram 和 reuse-distance
-  摘要；
-- 完整缓存配置及 random/trace seed。
+其余 traffic 字段为 `mem_reads`、`mem_writes`、`read_bytes`、
+`write_bytes`、`writebacks` 和 `replay_service_cycles`。Prefetch lifecycle
+字段为 `fills`、`useful`、`useless_evicted` 和 `unused_resident`。
 
-它尚未报告架构级 CPU stall cycle 或实测 AMAT。Replay service cycle
-描述的是串行 cache 模型，不能表述为整程序 CPU 执行时间；这两项
-测量仍属于后续工作。
+Schema 还提供 `pollution_proxy`、`dropped`、`timely_useful`、
+`late_useful`、`watchdogs`、`protocol` 和 `duplicate_lines`。Paired analysis
+增加 coverage、bandwidth、分类、真实 help/pollution 和 locality 指标。
+
+Schema 2 中没有 `stall_cycles` 或 `amat` 字段。`replay_service_cycles`
+描述串行 cache 模型，不是整程序 CPU 执行时间。架构级 stall-cycle
+和实测 AMAT 输出仍属于后续工作。
 
 当前边界图可扫描 associativity、victim entry 数量 4/8、prefetch 开关、
 cache capacity、line size 和下级内存延迟。当前 RTL 至少需要一个 victim

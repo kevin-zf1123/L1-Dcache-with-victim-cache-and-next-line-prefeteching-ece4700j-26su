@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1370" viewBox="0 0 1280 1370" role="img" aria-labelledby="title description">
+  <title id="title">Prefetch cycle delta by validated replay window</title>
+  <desc id="description">Cycles with prefetch on minus cycles with prefetch off; negative is helpful, zero neutral, and positive harmful.</desc>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="24" y="32" font-family="sans-serif" font-size="20" font-weight="bold" fill="#17202a">Prefetch cycle delta by window</text>
+  <text x="24" y="56" font-family="sans-serif" font-size="12" fill="#566573">cycles_on_minus_off (negative is helpful)</text>
+  <rect x="850" y="21" width="12" height="12" fill="#2e8b57"/>
+  <text x="868" y="32" font-family="sans-serif" font-size="12">helpful</text>
+  <rect x="940" y="21" width="12" height="12" fill="#7f8c8d"/>
+  <text x="958" y="32" font-family="sans-serif" font-size="12">neutral</text>
+  <rect x="1024" y="21" width="12" height="12" fill="#c0392b"/>
+  <text x="1042" y="32" font-family="sans-serif" font-size="12">harmful</text>
+  <line x1="907.5" y1="78" x2="907.5" y2="1304" stroke="#34495e" stroke-width="1"/>
+  <text x="575" y="91" font-family="sans-serif" font-size="11" text-anchor="start" fill="#566573">-23977</text>
+  <text x="907.5" y="91" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#566573">0</text>
+  <text x="1240" y="91" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">+23977</text>
+  <g data-classification="harmful" data-delta="12076">
+    <title>708.sqlite_r / cmd 0 / window 0 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 12076 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="121" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">708.sqlite_r / cmd 0 / window 0</text>
+    <text class="pair-geometry" x="540" y="138" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="120" width="161.42" height="16" rx="2" fill="#c0392b"/>
+    <text x="1075.92" y="133" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">12076</text>
+  </g>
+  <g data-classification="harmful" data-delta="12196">
+    <title>708.sqlite_r / cmd 0 / window 1 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 12196 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="169" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">708.sqlite_r / cmd 0 / window 1</text>
+    <text class="pair-geometry" x="540" y="186" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="168" width="163.02" height="16" rx="2" fill="#c0392b"/>
+    <text x="1077.52" y="181" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">12196</text>
+  </g>
+  <g data-classification="harmful" data-delta="14042">
+    <title>708.sqlite_r / cmd 0 / window 2 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 14042 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="217" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">708.sqlite_r / cmd 0 / window 2</text>
+    <text class="pair-geometry" x="540" y="234" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="216" width="187.70" height="16" rx="2" fill="#c0392b"/>
+    <text x="1102.20" y="229" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">14042</text>
+  </g>
+  <g data-classification="harmful" data-delta="13445">
+    <title>708.sqlite_r / cmd 0 / window 3 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13445 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="265" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">708.sqlite_r / cmd 0 / window 3</text>
+    <text class="pair-geometry" x="540" y="282" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="264" width="179.72" height="16" rx="2" fill="#c0392b"/>
+    <text x="1094.22" y="277" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13445</text>
+  </g>
+  <g data-classification="harmful" data-delta="9795">
+    <title>708.sqlite_r / cmd 0 / window 4 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 9795 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="313" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">708.sqlite_r / cmd 0 / window 4</text>
+    <text class="pair-geometry" x="540" y="330" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="312" width="130.93" height="16" rx="2" fill="#c0392b"/>
+    <text x="1045.43" y="325" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">9795</text>
+  </g>
+  <g data-classification="harmful" data-delta="14798">
+    <title>721.gcc_r / cmd 0 / window 0 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 14798 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="361" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">721.gcc_r / cmd 0 / window 0</text>
+    <text class="pair-geometry" x="540" y="378" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="360" width="197.80" height="16" rx="2" fill="#c0392b"/>
+    <text x="1112.30" y="373" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">14798</text>
+  </g>
+  <g data-classification="harmful" data-delta="19240">
+    <title>721.gcc_r / cmd 0 / window 1 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 19240 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="409" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">721.gcc_r / cmd 0 / window 1</text>
+    <text class="pair-geometry" x="540" y="426" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="408" width="257.18" height="16" rx="2" fill="#c0392b"/>
+    <text x="1171.68" y="421" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">19240</text>
+  </g>
+  <g data-classification="harmful" data-delta="20429">
+    <title>721.gcc_r / cmd 0 / window 2 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 20429 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="457" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">721.gcc_r / cmd 0 / window 2</text>
+    <text class="pair-geometry" x="540" y="474" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="456" width="273.07" height="16" rx="2" fill="#c0392b"/>
+    <text x="1187.57" y="469" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">20429</text>
+  </g>
+  <g data-classification="harmful" data-delta="10278">
+    <title>721.gcc_r / cmd 0 / window 3 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 10278 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="505" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">721.gcc_r / cmd 0 / window 3</text>
+    <text class="pair-geometry" x="540" y="522" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="504" width="137.39" height="16" rx="2" fill="#c0392b"/>
+    <text x="1051.89" y="517" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">10278</text>
+  </g>
+  <g data-classification="harmful" data-delta="16039">
+    <title>721.gcc_r / cmd 0 / window 4 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 16039 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="553" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">721.gcc_r / cmd 0 / window 4</text>
+    <text class="pair-geometry" x="540" y="570" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="552" width="214.39" height="16" rx="2" fill="#c0392b"/>
+    <text x="1128.89" y="565" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">16039</text>
+  </g>
+  <g data-classification="harmful" data-delta="3553">
+    <title>767.nest_r / cmd 0 / window 0 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 3553 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="601" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 0 / window 0</text>
+    <text class="pair-geometry" x="540" y="618" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="600" width="47.49" height="16" rx="2" fill="#c0392b"/>
+    <text x="961.99" y="613" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">3553</text>
+  </g>
+  <g data-classification="harmful" data-delta="22907">
+    <title>767.nest_r / cmd 0 / window 1 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 22907 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="649" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 0 / window 1</text>
+    <text class="pair-geometry" x="540" y="666" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="648" width="306.20" height="16" rx="2" fill="#c0392b"/>
+    <text x="1220.70" y="661" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">22907</text>
+  </g>
+  <g data-classification="harmful" data-delta="23977">
+    <title>767.nest_r / cmd 0 / window 2 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 23977 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="697" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 0 / window 2</text>
+    <text class="pair-geometry" x="540" y="714" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="696" width="320.50" height="16" rx="2" fill="#c0392b"/>
+    <text x="1235.00" y="709" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">23977</text>
+  </g>
+  <g data-classification="harmful" data-delta="22769">
+    <title>767.nest_r / cmd 0 / window 3 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 22769 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="745" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 0 / window 3</text>
+    <text class="pair-geometry" x="540" y="762" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="744" width="304.35" height="16" rx="2" fill="#c0392b"/>
+    <text x="1218.85" y="757" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">22769</text>
+  </g>
+  <g data-classification="harmful" data-delta="16678">
+    <title>767.nest_r / cmd 0 / window 4 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 16678 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="793" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 0 / window 4</text>
+    <text class="pair-geometry" x="540" y="810" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="792" width="222.93" height="16" rx="2" fill="#c0392b"/>
+    <text x="1137.43" y="805" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">16678</text>
+  </g>
+  <g data-classification="harmful" data-delta="13001">
+    <title>767.nest_r / cmd 1 / window 0 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13001 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="841" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 1 / window 0</text>
+    <text class="pair-geometry" x="540" y="858" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="840" width="173.78" height="16" rx="2" fill="#c0392b"/>
+    <text x="1088.28" y="853" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13001</text>
+  </g>
+  <g data-classification="harmful" data-delta="13823">
+    <title>767.nest_r / cmd 1 / window 1 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13823 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="889" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 1 / window 1</text>
+    <text class="pair-geometry" x="540" y="906" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="888" width="184.77" height="16" rx="2" fill="#c0392b"/>
+    <text x="1099.27" y="901" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13823</text>
+  </g>
+  <g data-classification="harmful" data-delta="13231">
+    <title>767.nest_r / cmd 1 / window 2 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13231 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="937" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 1 / window 2</text>
+    <text class="pair-geometry" x="540" y="954" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="936" width="176.86" height="16" rx="2" fill="#c0392b"/>
+    <text x="1091.36" y="949" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13231</text>
+  </g>
+  <g data-classification="harmful" data-delta="13443">
+    <title>767.nest_r / cmd 1 / window 3 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13443 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="985" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 1 / window 3</text>
+    <text class="pair-geometry" x="540" y="1002" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="984" width="179.69" height="16" rx="2" fill="#c0392b"/>
+    <text x="1094.19" y="997" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13443</text>
+  </g>
+  <g data-classification="harmful" data-delta="13257">
+    <title>767.nest_r / cmd 1 / window 4 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 13257 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1033" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">767.nest_r / cmd 1 / window 4</text>
+    <text class="pair-geometry" x="540" y="1050" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1032" width="177.21" height="16" rx="2" fill="#c0392b"/>
+    <text x="1091.71" y="1045" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">13257</text>
+  </g>
+  <g data-classification="harmful" data-delta="12625">
+    <title>777.zstd_r / cmd 0 / window 0 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 12625 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1081" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">777.zstd_r / cmd 0 / window 0</text>
+    <text class="pair-geometry" x="540" y="1098" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1080" width="168.76" height="16" rx="2" fill="#c0392b"/>
+    <text x="1083.26" y="1093" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">12625</text>
+  </g>
+  <g data-classification="harmful" data-delta="4258">
+    <title>777.zstd_r / cmd 0 / window 1 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 4258 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1129" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">777.zstd_r / cmd 0 / window 1</text>
+    <text class="pair-geometry" x="540" y="1146" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1128" width="56.92" height="16" rx="2" fill="#c0392b"/>
+    <text x="971.42" y="1141" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">4258</text>
+  </g>
+  <g data-classification="harmful" data-delta="4326">
+    <title>777.zstd_r / cmd 0 / window 2 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 4326 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1177" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">777.zstd_r / cmd 0 / window 2</text>
+    <text class="pair-geometry" x="540" y="1194" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1176" width="57.83" height="16" rx="2" fill="#c0392b"/>
+    <text x="972.33" y="1189" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">4326</text>
+  </g>
+  <g data-classification="harmful" data-delta="4306">
+    <title>777.zstd_r / cmd 0 / window 3 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 4306 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1225" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">777.zstd_r / cmd 0 / window 3</text>
+    <text class="pair-geometry" x="540" y="1242" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1224" width="57.56" height="16" rx="2" fill="#c0392b"/>
+    <text x="972.06" y="1237" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">4306</text>
+  </g>
+  <g data-classification="harmful" data-delta="4504">
+    <title>777.zstd_r / cmd 0 / window 4 / sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready: 4504 cycles (harmful)</title>
+    <text class="pair-identity" x="540" y="1273" font-family="sans-serif" font-size="12" text-anchor="end" fill="#17202a">777.zstd_r / cmd 0 / window 4</text>
+    <text class="pair-geometry" x="540" y="1290" font-family="sans-serif" font-size="11" text-anchor="end" fill="#566573">sets 4 / ways 2 / line 16 / VC 4 / timing blocking-fixed-latency2-periodic-ready</text>
+    <rect x="907.50" y="1272" width="60.20" height="16" rx="2" fill="#c0392b"/>
+    <text x="974.70" y="1285" font-family="sans-serif" font-size="11" text-anchor="start" fill="#17202a">4504</text>
+  </g>
+  <text x="640.0" y="1348" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#566573">Validated paired windows; bar scale uses maximum absolute delta.</text>
+</svg>

@@ -11,6 +11,10 @@ associativity, benchmark, or final PPA claims. Replacement evidence must use a
 single explicit geometry record shared by Icarus, XSim, synthesis, timing, and
 power.
 
+The current replacement now meets that rule. The stale-free Vivado run and the
+private process-attributable SPEC capture/replay/analyzer chain all report
+`PASS`. The historical tables remain invalid and are retained only as history.
+
 ## Current Replacement Evidence (2026-07-13)
 
 The replacement flow uses remote Vivado 2024.2.1, part
@@ -28,6 +32,16 @@ exactly 22 log/report files: eight simulation logs, twelve synthesis reports,
 the Vivado log, and the Vivado journal. The representative VCD was validated
 and hashed separately. Validation found no stale or missing report and wrote a
 `PASS` manifest whose parsed clock period is 10.0 ns.
+
+The tracked [redacted Vivado manifest](evidence/vivado-2026-07-13.json) has
+SHA-256
+`3182fe968485c01dcbafd6e82a08dfc5e1c2ec0869f440a230af7f493ce44bab`.
+It preserves all input, simulation, synthesis, report, and artifact hashes;
+only the remote execution command and absolute launcher path are redacted. Its
+private source manifest has SHA-256
+`879d61773f47ebdd06c2971d29da99d975d93d5ca6c76afb7dc7f918711d328b`.
+The [public provenance index](evidence/2026-07-13/provenance.json) records the
+privacy audit and private-artifact exclusions.
 
 The eight simulation points are:
 
@@ -63,9 +77,24 @@ associativity. A physically matched experiment would need an explicit common
 RAM style or primitive mapping.
 
 The representative current waveform is
-`build/vivado/reports/2w_s4_vc4_pf1.vcd`. Licensed SPEC performance remains
-unvalidated until the new private, attributable capture campaign passes; the
-historical SPEC tables below are not part of this replacement evidence.
+`build/vivado/reports/2w_s4_vc4_pf1.vcd`.
+
+The attributable private SPEC campaign also passed on 2026-07-13. It covered
+four benchmarks, five timed commands, 25 sampled windows, and 100 four-point
+replays. Analyzer validation accepted 25 exact prefetch off/on pairs.
+
+| Accuracy | L1 coverage | Lower coverage | Bandwidth overhead | Bytes on-off | Service cycles on-off | Harmful / neutral / helpful |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.215690268 | 0.049647522 | 0.067245888 | 0.537997464 | 672,032 | 328,996 | 25 / 0 / 0 |
+
+These are sampled blocking-model results, not whole-program CPU timing. The
+address-free outputs are the [aggregate CSV](evidence/2026-07-13/aggregate.csv),
+[pair CSV](evidence/2026-07-13/pairs.csv),
+[classification CSV](evidence/2026-07-13/classification.csv), and
+[cycle-delta SVG](evidence/2026-07-13/cycles-on-minus-off.svg).
+
+Licensed traces and private manifests remain outside Git. The historical SPEC
+tables below are not part of the replacement evidence.
 
 ## Historical 2026-07-01 Evidence
 
@@ -274,6 +303,6 @@ design gap:
 - no post-route timing or activity-based power analysis.
 
 The historical invalid campaign covered labels `708`, `721`, `767`, and
-`777`; it is not benchmark-attributable. The replacement private campaign for
-those four labels remains a required execution step. `723` stays outside the
-requested set.
+`777`; it is not benchmark-attributable. The process-attributable replacement
+campaign for those four benchmarks completed and passed on 2026-07-13. `723`
+stays outside the requested set.

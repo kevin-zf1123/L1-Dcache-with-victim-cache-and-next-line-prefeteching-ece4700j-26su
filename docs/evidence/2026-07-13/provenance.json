@@ -1,0 +1,240 @@
+{
+  "schema": "l1d-public-evidence-provenance-v1",
+  "publication_date": "2026-07-13",
+  "status": "PASS",
+  "evidence": {
+    "capture": {
+      "campaign": {
+        "path": "build/spec2026/qemu-private/campaign_manifest.json",
+        "sha256": "057965ff31234bac274ce81fc719780dbd2e7d60a59ccceb359b3b7ac64a7f9f",
+        "schema": "l1d-qemu-capture-campaign-v2",
+        "status": "PASS",
+        "valid": true
+      },
+      "replay_list": {
+        "path": "build/spec2026/qemu-private/replay-list.json",
+        "sha256": "3eaf06a196b7eb6a34db814ae0815de0eb424a3dfd96e511684a25026642cb98",
+        "schema": "l1d-qemu-replay-list-v2",
+        "status": "PASS"
+      },
+      "counts": {
+        "benchmarks": 4,
+        "capture_units": 5,
+        "sampled_windows": 25,
+        "sampled_source_events": 250000,
+        "canonical_replay_payload_records": 250971
+      },
+      "repository": {
+        "commit": "2d144658ae69a80333ef7e94411b6cad924f49cf",
+        "dirty": true
+      }
+    },
+    "replay": {
+      "campaign": {
+        "path": "build/spec2026/replay/campaign_manifest.json",
+        "sha256": "e593bd279361036e4cb75c4cf9d1b959afb2071fb0d7c4ca1e425323a8f9cc78",
+        "schema": "l1d-replay-campaign-v2",
+        "status": "PASS"
+      },
+      "validation": {
+        "path": "build/spec2026/replay/analysis/validation.json",
+        "sha256": "fbb16bcdb37ab14ca21d11eea8ec2f0d28f91624e956d1395b0de904616ee7dc",
+        "status": "PASS",
+        "warnings": 0,
+        "checks_passed": 7
+      },
+      "counts": {
+        "configurations": 4,
+        "trace_groups": 25,
+        "runs": 100,
+        "exact_prefetch_pairs": 25,
+        "standalone_capacity_control_runs": 50,
+        "logs": 100,
+        "sidecars": 100
+      },
+      "repository": {
+        "commit": "d2c3a8d977135ded40c1bc9067cd0a5987e45888",
+        "dirty": true
+      }
+    },
+    "public_analysis": {
+      "source": "build/spec2026/replay/analysis",
+      "published_file_count": 4,
+      "files": [
+        {
+          "path": "docs/evidence/2026-07-13/aggregate.csv",
+          "sha256": "5cc709794c1e5d2b03e267f87df308a758d9bae34c1edf9c6a831d90776f1d5a",
+          "bytes": 1732,
+          "data_rows": 1
+        },
+        {
+          "path": "docs/evidence/2026-07-13/classification.csv",
+          "sha256": "a25012f292b50ffc4143e261660c5d458bf439f8cc0f4033a182d597565b23b5",
+          "bytes": 3125,
+          "data_rows": 25
+        },
+        {
+          "path": "docs/evidence/2026-07-13/pairs.csv",
+          "sha256": "f33ef79f760baaa1351df79349aa659c0a703fbdb9332da750a4c5e186f45c11",
+          "bytes": 21814,
+          "data_rows": 25
+        },
+        {
+          "path": "docs/evidence/2026-07-13/cycles-on-minus-off.svg",
+          "sha256": "8475251a909a609c384ac53f0bf8268b7bf12ad60b01d7bafeb0246bcf585ac6",
+          "bytes": 21317,
+          "charts": 1,
+          "plotted_pairs": 25
+        }
+      ],
+      "source_hash_equality": true
+    },
+    "vivado": {
+      "source_manifest": {
+        "path": "build/vivado/evidence_manifest.json",
+        "sha256": "879d61773f47ebdd06c2971d29da99d975d93d5ca6c76afb7dc7f918711d328b",
+        "schema": "l1d-vivado-evidence-v2",
+        "status": "PASS"
+      },
+      "public_manifest": {
+        "path": "docs/evidence/vivado-2026-07-13.json",
+        "sha256": "3182fe968485c01dcbafd6e82a08dfc5e1c2ec0869f440a230af7f493ce44bab",
+        "redacted": true,
+        "redacted_fields": 2
+      },
+      "execution": {
+        "remote_exit_status": 0,
+        "download_failures": 0,
+        "findings": 0,
+        "log_scan_skipped": false
+      },
+      "counts": {
+        "hashed_inputs": 14,
+        "simulation_configurations": 8,
+        "workload_results": 83,
+        "synthesis_configurations": 4,
+        "synthesis_reports": 12,
+        "top_level_artifacts": 3
+      },
+      "repository": {
+        "commit": "d2c3a8d977135ded40c1bc9067cd0a5987e45888",
+        "dirty": true
+      }
+    }
+  },
+  "repository_state_semantics": {
+    "dirty_true": "Uncommitted changes existed when the evidence was produced, so the commit alone is not a complete source identity.",
+    "traceability_rule": "Use the recorded artifact, input, tool and command hashes as the authoritative identity; the commit is supporting context.",
+    "publication_base_commit": "d2c3a8d977135ded40c1bc9067cd0a5987e45888",
+    "publication_workspace_dirty": true,
+    "publication_note": "This provenance was generated before the public evidence commit; its eventual tracked commit is determined by repository history."
+  },
+  "privacy_audit": {
+    "status": "PASS",
+    "published_artifact_count_excluding_this_provenance": 5,
+    "audited_files": [
+      "docs/evidence/2026-07-13/aggregate.csv",
+      "docs/evidence/2026-07-13/classification.csv",
+      "docs/evidence/2026-07-13/pairs.csv",
+      "docs/evidence/2026-07-13/cycles-on-minus-off.svg",
+      "docs/evidence/vivado-2026-07-13.json",
+      "docs/evidence/2026-07-13/provenance.json"
+    ],
+    "checks": [
+      "No local Unix home or absolute workspace path",
+      "No Windows user-directory or Cygwin absolute path",
+      "No remote host, account name, password field or credential literal",
+      "No SPEC trace, physical address stream, replay sidecar or raw workload log"
+    ],
+    "vivado_redactions": [
+      {
+        "field": "execution.command",
+        "reason": "The private value contained a remote account name and absolute workspace/tool paths."
+      },
+      {
+        "field": "tool.launcher",
+        "reason": "The private value contained an absolute installation path."
+      }
+    ],
+    "not_published_absolute_path_evidence": [
+      {
+        "path": "build/spec2026/qemu-private/campaign_manifest.json",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/qemu-private/{708_sqlite_r/cmd000,721_gcc_r/cmd000,767_nest_r/cmd000,767_nest_r/cmd001,777_zstd_r/cmd000}/manifest.json",
+        "files": 5
+      },
+      {
+        "path": "build/spec2026/qemu-private/replay-list.json",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/campaign_manifest.json",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/capture_replay_list.json",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/run_rows.tsv",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/analysis/runs.csv",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/analysis/validation.json",
+        "files": 1
+      },
+      {
+        "path": "build/spec2026/replay/logs/*.log",
+        "files": 100
+      },
+      {
+        "path": "build/vivado/evidence_manifest.json",
+        "files": 1
+      },
+      {
+        "path": "build/vivado/reports/*_simulation.log",
+        "files": 8
+      },
+      {
+        "path": "build/vivado/reports/*/{power.rpt,timing_summary.rpt,utilization.rpt}",
+        "files": 12
+      },
+      {
+        "path": "vivado.jou",
+        "files": 1
+      },
+      {
+        "path": "vivado.log",
+        "files": 1
+      }
+    ],
+    "not_published_other_private_evidence": [
+      {
+        "path": "build/spec2026/qemu-private/**/replay/*.trace",
+        "files": 25,
+        "reason": "SPEC-derived physical address streams are licensed-private capture material."
+      },
+      {
+        "path": "build/spec2026/qemu-private/**/capture.raw.tsv",
+        "files": 5,
+        "reason": "Raw physical-address capture data is private."
+      },
+      {
+        "path": "build/spec2026/replay/sidecars/*.tsv",
+        "files": 100,
+        "reason": "Per-access replay identities and addresses are private."
+      },
+      {
+        "path": "build/vivado/reports/2w_s4_vc4_pf1.vcd",
+        "files": 1,
+        "reason": "The full waveform is not part of the minimal public evidence set; its hash remains in the public Vivado manifest."
+      }
+    ]
+  }
+}

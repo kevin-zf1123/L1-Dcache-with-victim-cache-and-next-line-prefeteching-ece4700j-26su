@@ -4,8 +4,8 @@
 
 ## 有效性状态（2026-07-13）
 
-下文 campaign 仅作为旧版 replay 流程的历史证据保留，**不能作为可归因到
-benchmark 的有效证据**：
+后文置于历史标题下的 campaign 仅作为旧版 replay 流程的证据
+保留，**不能作为可归因到 benchmark 的有效证据**：
 
 - QEMU 使用四个 vCPU，plugin 把所有 vCPU callback 串接后送入单 cache 流；
 - tracing 由另一个进程开启，没有过滤 privilege 或 address-space context；
@@ -113,9 +113,96 @@ trace/sidecar demand identity、零 protocol/watchdog/duplicate-line error，并
 neutral，大于零为 harmful。其他指标仍保留在 paired 与 aggregate 表中，不会
 暗中改变该标签。
 
-当前执行状态：真实 snapshot RV64 dynamic-ELF count/capture/split smoke 已以
-相同总事件数和零 violation 通过。四个许可 benchmark 仍须生成完整私有
-`PASS` campaign，之后才能接受新的 benchmark-labelled 结果。
+## 当前权威结果（2026-07-13）
+
+完整的替代流程已通过。4 个 benchmark plan 包含 5 个 timed-command
+capture unit 和 25 个采样 window。每个 count/capture snapshot 与 SPEC
+comparison 都已通过，top-level campaign 也在其 `PASS` manifest 原子发布
+前完成验证。25 个 window 全部使用 `demand-warm-measure`：在 ROI
+10%、30%、50%、70% 和 90% 分位点，先执行 5,000 条关闭 prefetch 的
+warmup source event，再执行 5,000 条 measurement source event。本次
+campaign 中没有 `whole-roi-short` window。跨 line canonicalization 将
+250,000 条采样 source event 展开为 250,971 条 replay access。
+
+| benchmark | command | ROI source event | misaligned | cross-line | canonical access | sampled source→replay | 选中的 compare ID | 完整 compare-plan SHA-256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `708.sqlite_r` | 0 | 568,742,855 | 6,684,478 | 3,232,848 | 571,975,703 | 50,000→50,259 | `[0]` | `3600fe4088d3967d4de7c1da062fd2534baf859c8a50d8a87b310f768b833f59` |
+| `721.gcc_r` | 0 | 15,001,579 | 11,283 | 2,889 | 15,004,468 | 50,000→50,000 | `[0]` | `b9169d2aeee7689a5e5183a8a580665dd067a11b01a169821b83d27d3314af68` |
+| `767.nest_r` | 0 | 1,109,373,742 | 167,455 | 14,757 | 1,109,388,499 | 50,000→50,000 | `[0,2]` | `30eeb5b41f4fa3f3491b3b29fc1018bd399cf3043ad20ff014177ab86a6ea4a4` |
+| `767.nest_r` | 1 | 9,370,927,478 | 14,557 | 4,518 | 9,370,931,996 | 50,000→50,000 | `[1]` | `30eeb5b41f4fa3f3491b3b29fc1018bd399cf3043ad20ff014177ab86a6ea4a4` |
+| `777.zstd_r` | 0 | 662,301,894 | 19,893,851 | 7,849,609 | 670,151,503 | 50,000→50,712 | `[0]` | `e7dbd4b27675c86bde1f74add3fdb88fc6cf3567c98c4fbb34ca91841cab8144` |
+
+对于 `767.nest_r`，command 0 选择 compare command `[0,2]`，command 1 选择
+`[1]`；这些子集互不重叠，且恰好完整覆盖其由 3 个 command 组成的
+完整 comparison plan。其余 3 个 benchmark 均只有 1 个 timed command 和
+1 个 comparison。
+
+随后，replay 完成了精确的四配置矩阵：100/100 个 run 与 25/25 个
+prefetch off/on pair 全部通过，其中 50 个 run 是独立的 direct-mapped
+或 VC8 control。所有已哈希 log 和 sidecar 都完整存在；watchdog、protocol
+和 duplicate-line 计数均为零。严格 analyzer 的 artifact、matrix、
+geometry/timing、counter-conservation、status、trace/sidecar identity 和 true-
+pollution delta 检查全部通过。
+
+在全部 125,511 次被测 demand access 中，受控配置的汇总结果为：
+
+| config ID | hit rate | victim hit / access | demand read / access | all read / access | replay cycle / access |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 0.4528 | 0.0713 | 0.4759 | 0.4759 | 7.8261 |
+| `2w_s4_vc4_pf0` | 0.4699 | 0.0578 | 0.4723 | 0.4723 | 7.7873 |
+| `2w_s4_vc8_pf0` | 0.4699 | 0.0982 | 0.4319 | 0.4319 | 7.5258 |
+| `2w_s4_vc4_pf1` | 0.4963 | 0.0632 | 0.4405 | 0.7926 | 10.4086 |
+
+因此，在这些采样区间中，等 128-byte L1 容量的 direct-mapped/2-way
+对比中 hit rate 和 replay cost 变化都不大。VC8 不改变 L1 hit rate，但会
+增加 victim rescue 并减少 demand read。Next-line prefetch 整体上提高 hit rate
+且减少 demand read，但其额外 prefetch read 主导了总流量与串行 replay
+cycle。
+
+| benchmark | pair | accuracy | L1 coverage | lower coverage | bandwidth overhead | cycles on−off | harmful / neutral / helpful |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `708.sqlite_r` | 5 | 25.70% | +5.49% | +7.32% | +45.98% | +61,554 | 5 / 0 / 0 |
+| `721.gcc_r` | 5 | 13.62% | −0.63% | −2.64% | +62.39% | +80,784 | 5 / 0 / 0 |
+| `767.nest_r` | 10 | 21.83% | +8.27% | +11.14% | +52.72% | +156,639 | 10 / 0 / 0 |
+| `777.zstd_r` | 5 | 31.31% | −1.28% | +0.55% | +57.94% | +30,019 | 5 / 0 / 0 |
+| **all** | **25** | **21.57%** | **+4.96%** | **+6.72%** | **+53.80%** | **+328,996** | **25 / 0 / 0** |
+
+Paired sidecar 识别出 8,079 个 true L1-help event 和 4,776 个 true L1-
+pollution event，以及 9,018 个 lower-memory-help event 和 5,032 个 true lower-
+memory-pollution event。因此，net miss coverage 整体为正，但按已记录的
+blocking replay-cycle 分类标准，每个采样 pair 都是 harmful。这是 policy
+与 model 结果，不是整程序 CPU time：当前 single-miss FSM 会串行化
+demand、prefetch 和 write-back 流量。
+
+公开的 [paired metrics](../evidence/2026-07-13/pairs.csv) 包含逐 window 的
+load/store mix、stride、reuse distance、footprint 和 set-pressure feature。在 25 个
+window 中，next-line stride fraction 的范围为 0.0062 到 0.3793，
+reuse-distance p90 为 8 到 156 个 unique line，set-access imbalance 为
+1.059 到 2.354。[Classification 表](../evidence/2026-07-13/classification.csv)
+和 [cycle-delta 图](../evidence/2026-07-13/cycles-on-minus-off.svg) 在不公开地址的
+前提下发布了完整的 helpful/neutral/harmful 结果。
+
+Provenance anchor：
+
+- 公开证据及未公开项索引：
+  [provenance.json](../evidence/2026-07-13/provenance.json)；
+- capture implementation commit：`2d144658ae69a80333ef7e94411b6cad924f49cf`；
+- replay/parser commit：`d2c3a8d977135ded40c1bc9067cd0a5987e45888`；
+- capture campaign SHA-256：`057965ff31234bac274ce81fc719780dbd2e7d60a59ccceb359b3b7ac64a7f9f`；
+- capture replay-list SHA-256：`3eaf06a196b7eb6a34db814ae0815de0eb424a3dfd96e511684a25026642cb98`；
+- replay campaign SHA-256：`e593bd279361036e4cb75c4cf9d1b959afb2071fb0d7c4ca1e425323a8f9cc78`；
+- 公开 pairs / aggregate / classification / SVG SHA-256：
+  `f33ef79f760baaa1351df79349aa659c0a703fbdb9332da750a4c5e186f45c11`、
+  `5cc709794c1e5d2b03e267f87df308a758d9bae34c1edf9c6a831d90776f1d5a`、
+  `a25012f292b50ffc4143e261660c5d458bf439f8cc0f4033a182d597565b23b5`
+  和 `8475251a909a609c384ac53f0bf8268b7bf12ad60b01d7bafeb0246bcf585ac6`。
+
+Capture manifest 记录 `dirty=true`，原因是 working tree 中存在与本次执行
+无关的文档 artifact。11 个可执行 capture input 分别记录了哈希，它们的
+aggregate 为
+`409764c38342f3693e301f91e7ccda45ddc4eb9bbd09e770f6217a42baa3f161`。Raw
+capture、地址、command text、log 和逐 demand sidecar 仍保留在被忽略的
+私有 build directory 中，不属于公开证据。
 
 ## 历史命令（禁止作为当前流程使用）
 

@@ -11,6 +11,10 @@ two-way replay 还同时改变了 L1 capacity。SPEC trace 是全系统多 vCPU 
 最终 PPA 结论。替代证据必须由 Icarus、XSim、synthesis、timing 和 power 共用
 一份显式完整 geometry record。
 
+当前替代证据已满足该规则。无旧报告混入的 Vivado 运行，以及私有、
+可归因到进程的 SPEC capture/replay/analyzer 证据链均为 `PASS`。
+历史表格仍然无效，仅作历史记录。
+
 ## 当前替代证据（2026-07-13）
 
 替代流程使用远程 Vivado 2024.2.1、器件 `xc7a35tcpg236-1` 和 10 ns
@@ -27,6 +31,15 @@ log/report：8 份 simulation log、12 份 synthesis report、Vivado log 和
 Vivado journal。代表性 VCD 另行验证并记录哈希。验证未发现旧报告
 或缺失报告，并生成了状态为 `PASS`、解析时钟周期为 10.0 ns 的
 manifest。
+
+被跟踪的[脱敏 Vivado manifest](../evidence/vivado-2026-07-13.json) 的
+SHA-256 为
+`3182fe968485c01dcbafd6e82a08dfc5e1c2ec0869f440a230af7f493ce44bab`。
+它保留全部 input、simulation、synthesis、report 和 artifact 哈希；仅脱敏
+远程执行 command 与 launcher 绝对路径。其私有 source manifest 的 SHA-256 为
+`879d61773f47ebdd06c2971d29da99d975d93d5ca6c76afb7dc7f918711d328b`。
+[公开 provenance 索引](../evidence/2026-07-13/provenance.json)记录了隐私审计
+与未公开的私有 artifact。
 
 八个 simulation point 为：
 
@@ -59,9 +72,24 @@ capacity 已受控，但 FPGA primitive mapping 并未匹配；LUT/FF/timing 差
 只归因于 associativity。若要进行物理实现等价实验，需要显式统一 RAM style
 或 primitive mapping。
 
-当前代表性 waveform 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。在新的
-私有、可归因 capture campaign 通过前，许可 SPEC 性能仍未验证；下方历史
-SPEC 表不属于替代证据。
+当前代表性 waveform 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。
+
+可归因的私有 SPEC campaign 也在 2026-07-13 通过。它覆盖 4 个
+benchmark、5 个 timed command、25 个采样 window 和 100 次四配置 replay。
+Analyzer 验证接受了 25 对严格 prefetch off/on pair。
+
+| Accuracy | L1 coverage | 下级 coverage | 带宽开销 | Bytes on-off | Service cycles on-off | Harmful / neutral / helpful |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.215690268 | 0.049647522 | 0.067245888 | 0.537997464 | 672,032 | 328,996 | 25 / 0 / 0 |
+
+这些是采样 blocking model 结果，不是整程序 CPU 时序。不含地址的输出包括
+[aggregate CSV](../evidence/2026-07-13/aggregate.csv)、
+[pair CSV](../evidence/2026-07-13/pairs.csv)、
+[classification CSV](../evidence/2026-07-13/classification.csv) 和
+[cycle-delta SVG](../evidence/2026-07-13/cycles-on-minus-off.svg)。
+
+许可 trace 和私有 manifest 仍保留在 Git 之外。下方历史 SPEC 表不属于
+替代证据。
 
 ## 历史 2026-07-01 证据
 
@@ -255,5 +283,5 @@ injection。Phase 2 中更大的 policy matrix 仍是设计缺口：
 - 没有 post-route timing 或 activity-based power analysis。
 
 历史无效 campaign 覆盖了 `708`、`721`、`767` 和 `777` 标签，但不能
-归因到 benchmark。这四个标签的替代私有 campaign 仍是必须执行的
-步骤；`723` 保持在请求范围之外。
+归因到 benchmark。这四个 benchmark 的可归因替代私有 campaign 已于
+2026-07-13 完成并通过；`723` 保持在请求范围之外。

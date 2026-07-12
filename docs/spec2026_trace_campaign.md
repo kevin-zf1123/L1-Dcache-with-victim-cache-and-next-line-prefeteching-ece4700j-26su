@@ -2,8 +2,9 @@
 
 ## Validity Status (2026-07-13)
 
-The campaign recorded below is retained only as historical evidence of the
-legacy replay flow. It is **not valid benchmark-attributable evidence**:
+The campaign recorded later under the historical headings is retained only as
+evidence of the legacy replay flow. It is **not valid benchmark-attributable
+evidence**:
 
 - QEMU ran four vCPUs and the plugin serialized all vCPU callbacks into one
   single-cache stream;
@@ -126,10 +127,97 @@ Every validated pair also produces `classification.csv` and
 harmful. Other metrics remain visible in the paired and aggregate tables and
 do not silently change that label.
 
-Current execution status: a real snapshot RV64 dynamic-ELF count/capture/split
-smoke passed with matching totals and zero violations. The four licensed
-benchmarks must still produce a complete private `PASS` campaign before any
-new benchmark-labelled result is accepted.
+## Current Authoritative Results (2026-07-13)
+
+The complete replacement flow passed. Four benchmark plans contain five timed-
+command capture units and 25 sampled windows. Every count/capture snapshot and
+SPEC comparison passed, and the top-level campaign validated before its PASS
+manifest was atomically published. All 25 windows use `demand-warm-measure`:
+5,000 prefetch-disabled warmup source events followed by 5,000 measurement
+source events at the 10th, 30th, 50th, 70th, and 90th ROI percentiles. There
+are no `whole-roi-short` windows in this campaign. Cross-line canonicalization
+expands the 250,000 sampled source events to 250,971 replay accesses.
+
+| benchmark | command | ROI source events | misaligned | cross-line | canonical accesses | sampled source→replay | selected compare IDs | full compare-plan SHA-256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `708.sqlite_r` | 0 | 568,742,855 | 6,684,478 | 3,232,848 | 571,975,703 | 50,000→50,259 | `[0]` | `3600fe4088d3967d4de7c1da062fd2534baf859c8a50d8a87b310f768b833f59` |
+| `721.gcc_r` | 0 | 15,001,579 | 11,283 | 2,889 | 15,004,468 | 50,000→50,000 | `[0]` | `b9169d2aeee7689a5e5183a8a580665dd067a11b01a169821b83d27d3314af68` |
+| `767.nest_r` | 0 | 1,109,373,742 | 167,455 | 14,757 | 1,109,388,499 | 50,000→50,000 | `[0,2]` | `30eeb5b41f4fa3f3491b3b29fc1018bd399cf3043ad20ff014177ab86a6ea4a4` |
+| `767.nest_r` | 1 | 9,370,927,478 | 14,557 | 4,518 | 9,370,931,996 | 50,000→50,000 | `[1]` | `30eeb5b41f4fa3f3491b3b29fc1018bd399cf3043ad20ff014177ab86a6ea4a4` |
+| `777.zstd_r` | 0 | 662,301,894 | 19,893,851 | 7,849,609 | 670,151,503 | 50,000→50,712 | `[0]` | `e7dbd4b27675c86bde1f74add3fdb88fc6cf3567c98c4fbb34ca91841cab8144` |
+
+For `767.nest_r`, command 0 selects compare commands `[0,2]` and command 1
+selects `[1]`; these subsets are disjoint and exactly cover its three-command
+full comparison plan. The other three benchmarks each have one timed command
+and one comparison.
+
+Replay then completed the exact four-configuration matrix: 100/100 runs and
+25/25 prefetch off/on pairs passed, with 50 of the runs serving as standalone
+direct-mapped or VC8 controls. All hashed logs and sidecars were present;
+watchdog, protocol, and duplicate-line counts were zero. The strict analyzer's
+artifact, matrix, geometry/timing, counter-conservation, status, trace/sidecar
+identity, and true-pollution delta checks all passed.
+
+Across all 125,511 measured demand accesses, the controlled configuration
+totals are:
+
+| config ID | hit rate | victim-hit / access | demand reads / access | all reads / access | replay cycles / access |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 0.4528 | 0.0713 | 0.4759 | 0.4759 | 7.8261 |
+| `2w_s4_vc4_pf0` | 0.4699 | 0.0578 | 0.4723 | 0.4723 | 7.7873 |
+| `2w_s4_vc8_pf0` | 0.4699 | 0.0982 | 0.4319 | 0.4319 | 7.5258 |
+| `2w_s4_vc4_pf1` | 0.4963 | 0.0632 | 0.4405 | 0.7926 | 10.4086 |
+
+The equal-128-byte-L1 direct-mapped/2-way comparison therefore changes both
+hit rate and replay cost only modestly in these sampled regions. VC8 leaves L1
+hit rate unchanged while increasing victim rescues and reducing demand reads.
+Next-line prefetch raises hit rate and reduces demand reads overall, but its
+extra prefetch reads dominate total traffic and serialized replay cycles.
+
+| benchmark | pairs | accuracy | L1 coverage | lower coverage | bandwidth overhead | cycles on−off | harmful / neutral / helpful |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `708.sqlite_r` | 5 | 25.70% | +5.49% | +7.32% | +45.98% | +61,554 | 5 / 0 / 0 |
+| `721.gcc_r` | 5 | 13.62% | −0.63% | −2.64% | +62.39% | +80,784 | 5 / 0 / 0 |
+| `767.nest_r` | 10 | 21.83% | +8.27% | +11.14% | +52.72% | +156,639 | 10 / 0 / 0 |
+| `777.zstd_r` | 5 | 31.31% | −1.28% | +0.55% | +57.94% | +30,019 | 5 / 0 / 0 |
+| **all** | **25** | **21.57%** | **+4.96%** | **+6.72%** | **+53.80%** | **+328,996** | **25 / 0 / 0** |
+
+The paired sidecars identify 8,079 true L1-help events versus 4,776 true L1-
+pollution events, and 9,018 lower-memory-help events versus 5,032 true lower-
+memory-pollution events. Thus net miss coverage is positive overall, but every
+sampled pair is harmful under the documented blocking replay-cycle criterion.
+This is a policy-and-model result, not whole-program CPU time: the current
+single-miss FSM serializes demand, prefetch, and write-back traffic.
+
+The public [paired metrics](evidence/2026-07-13/pairs.csv) include per-window
+load/store mix, stride, reuse distance, footprint, and set-pressure features.
+Across the 25 windows, next-line stride fraction ranges from 0.0062 to 0.3793,
+reuse-distance p90 from 8 to 156 unique lines, and set-access imbalance from
+1.059 to 2.354. The [classification table](evidence/2026-07-13/classification.csv)
+and [cycle-delta plot](evidence/2026-07-13/cycles-on-minus-off.svg) publish the
+complete helpful/neutral/harmful result without exposing addresses.
+
+Provenance anchors:
+
+- public evidence and exclusion index:
+  [provenance.json](evidence/2026-07-13/provenance.json);
+- capture implementation commit: `2d144658ae69a80333ef7e94411b6cad924f49cf`;
+- replay/parser commit: `d2c3a8d977135ded40c1bc9067cd0a5987e45888`;
+- capture campaign SHA-256: `057965ff31234bac274ce81fc719780dbd2e7d60a59ccceb359b3b7ac64a7f9f`;
+- capture replay-list SHA-256: `3eaf06a196b7eb6a34db814ae0815de0eb424a3dfd96e511684a25026642cb98`;
+- replay campaign SHA-256: `e593bd279361036e4cb75c4cf9d1b959afb2071fb0d7c4ca1e425323a8f9cc78`;
+- public pairs / aggregate / classification / SVG SHA-256:
+  `f33ef79f760baaa1351df79349aa659c0a703fbdb9332da750a4c5e186f45c11`,
+  `5cc709794c1e5d2b03e267f87df308a758d9bae34c1edf9c6a831d90776f1d5a`,
+  `a25012f292b50ffc4143e261660c5d458bf439f8cc0f4033a182d597565b23b5`,
+  and `8475251a909a609c384ac53f0bf8268b7bf12ad60b01d7bafeb0246bcf585ac6`.
+
+The capture manifest records `dirty=true` because unrelated documentation
+artifacts existed in the working tree. Every one of the 11 executable capture
+inputs is individually hashed; their aggregate is
+`409764c38342f3693e301f91e7ccda45ddc4eb9bbd09e770f6217a42baa3f161`.
+Raw captures, addresses, command text, logs, and per-demand sidecars remain in
+ignored private build directories and are not public evidence.
 
 ## Historical Commands (Do Not Use)
 

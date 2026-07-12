@@ -1,0 +1,2 @@
+# Analyzer CSV outputs use RFC-style CRLF records; accept CR at end of line.
+docs/evidence/2026-07-13/*.csv whitespace=cr-at-eol
