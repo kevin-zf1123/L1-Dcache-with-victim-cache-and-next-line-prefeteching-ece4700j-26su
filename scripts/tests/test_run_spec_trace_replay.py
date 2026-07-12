@@ -110,10 +110,17 @@ class ReplayRunnerTests(unittest.TestCase):
             )
             parsed_commands = parse_speccmds(speccmds.read_text(encoding="utf-8"))
             replay = replay_dir / "spec2026_708_sqlite_r_cmd000_w00_whole_n12.trace"
+            long_summary = (
+                "# summary status=PASS "
+                + " ".join(f"counter_{index}=123456789" for index in range(32))
+                + "\n"
+            )
+            self.assertGreater(len(long_summary.encode("utf-8")), 256)
             replay.write_text(
                 "# PHASE warmup\n"
                 "# PHASE measure\n"
-                + (REPO / "traces" / "smoke.trace").read_text(encoding="utf-8"),
+                + (REPO / "traces" / "smoke.trace").read_text(encoding="utf-8")
+                + long_summary,
                 encoding="utf-8",
             )
             raw = unit / "capture.raw.tsv"

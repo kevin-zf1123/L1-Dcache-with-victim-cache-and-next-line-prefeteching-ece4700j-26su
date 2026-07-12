@@ -11,6 +11,7 @@ module tb_l1d_cache #(
     localparam integer DATA_WIDTH = 64;
     localparam integer LINE_BITS = LINE_BYTES * 8;
     localparam integer MEM_BYTES = 4096;
+    localparam integer TRACE_LINE_BYTES = 4096;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
     localparam logic [1:0] SIZE_BYTE   = 2'b00;
     localparam logic [1:0] SIZE_HALF   = 2'b01;
@@ -324,7 +325,7 @@ module tb_l1d_cache #(
     endfunction
 
     function automatic integer trace_phase_code(
-        input reg [8*256-1:0] line
+        input reg [8*TRACE_LINE_BYTES-1:0] line
     );
         integer c0;
         integer c1;
@@ -364,6 +365,17 @@ module tb_l1d_cache #(
                          c14 == 8'h65) begin
                 trace_phase_code = 2;
             end
+        end
+    endfunction
+
+    function automatic integer trace_is_comment(
+        input reg [8*TRACE_LINE_BYTES-1:0] line
+    );
+        integer first_character;
+        integer count;
+        begin
+            count = $sscanf(line, "%c", first_character);
+            trace_is_comment = (count == 1 && first_character == 8'h23);
         end
     endfunction
 
@@ -1399,7 +1411,7 @@ module tb_l1d_cache #(
         integer accept_cycle;
         integer is_phase_line;
         integer phase_code;
-        reg [8*256-1:0] trace_line;
+        reg [8*TRACE_LINE_BYTES-1:0] trace_line;
         logic [ADDR_WIDTH-1:0] addr;
         logic [DATA_WIDTH-1:0] data;
         logic [DATA_WIDTH-1:0] actual;
@@ -1479,6 +1491,8 @@ module tb_l1d_cache #(
                             measurement_active = 1'b1;
                             cfg_prefetch_enable = (ENABLE_PREFETCH != 0);
                             cfg_next_line_enable = (ENABLE_PREFETCH != 0);
+                    end else if (trace_is_comment(trace_line)) begin
+                        is_phase_line = 1;
                     end else begin
                         scan_count = $sscanf(trace_line, "%d %d %d %h %h",
                                              operation, trace_size,

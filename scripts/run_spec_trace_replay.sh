@@ -13,6 +13,7 @@ CAPTURE_REPLAY_LIST="${REPLAY_ROOT}/capture_replay_list.json"
 RUN_ROWS="${REPLAY_ROOT}/run_rows.tsv"
 REPLAY_MANIFEST="${REPLAY_ROOT}/campaign_manifest.json"
 ANALYSIS_DIR="${REPLAY_ROOT}/analysis"
+readonly TRACE_LINE_BYTES=4096
 
 mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${DECOMPRESS_DIR}" "${SIDECAR_DIR}"
 
@@ -106,6 +107,20 @@ run_replay() {
         stem="$(basename "${trace}" .trace)"
         replay_trace="${trace}"
     fi
+    python3 - "${replay_trace}" "${TRACE_LINE_BYTES}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+capacity = int(sys.argv[2])
+with path.open("rb") as handle:
+    for line_number, line in enumerate(handle, 1):
+        if len(line) >= capacity:
+            raise SystemExit(
+                f"{path}:{line_number}: trace line is {len(line)} bytes; "
+                f"testbench capacity is {capacity - 1} bytes"
+            )
+PY
     log="${LOG_DIR}/${stem}_${config}.log"
     sidecar="${SIDECAR_DIR}/${stem}_${config}.tsv"
     trace_arg="${replay_trace}"
