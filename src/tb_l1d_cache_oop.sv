@@ -66,14 +66,14 @@ module tb_l1d_cache_oop #(
     parameter integer NUM_WAYS = 1,
     parameter integer ENABLE_PREFETCH = 0,
     parameter integer VICTIM_ENTRIES = 4,
+    parameter integer NUM_SETS = 8,
+    parameter integer LINE_BYTES = 16,
     parameter integer MEM_LATENCY = 2,
     parameter integer MEM_BACKPRESSURE_MODE = 1,
     parameter integer CPU_BACKPRESSURE_MODE = 0
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
-    localparam integer LINE_BYTES = 16;
-    localparam integer NUM_SETS = 4;
     localparam integer LINE_BITS = LINE_BYTES * 8;
     localparam integer OFFSET_BITS = $clog2(LINE_BYTES);
     localparam integer SET_BITS = $clog2(NUM_SETS);
@@ -90,6 +90,8 @@ module tb_l1d_cache_oop #(
     localparam logic [3:0] ST_VC_SWAP = 4'd3;
 
     logic clk;
+    string run_config_id;
+    string run_trace_id;
     l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) bus(clk);
 
     l1d_cache #(
@@ -153,6 +155,27 @@ module tb_l1d_cache_oop #(
 
     string dump_vcd_path;
     initial begin
+        run_trace_id = "synthetic";
+        if (!$value$plusargs("CONFIG_ID=%s", run_config_id)) begin
+            if (NUM_WAYS == 1 && NUM_SETS == 8 &&
+                VICTIM_ENTRIES == 4 && ENABLE_PREFETCH == 0) begin
+                run_config_id = "dm_s8_vc4_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 4 && ENABLE_PREFETCH == 0) begin
+                run_config_id = "2w_s4_vc4_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 8 && ENABLE_PREFETCH == 0) begin
+                run_config_id = "2w_s4_vc8_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 4 && ENABLE_PREFETCH != 0) begin
+                run_config_id = "2w_s4_vc4_pf1";
+            end else begin
+                run_config_id = $sformatf("%0dw_s%0d_vc%0d_pf%0d",
+                                          NUM_WAYS, NUM_SETS,
+                                          VICTIM_ENTRIES, ENABLE_PREFETCH);
+            end
+        end
+        void'($value$plusargs("TRACE_ID=%s", run_trace_id));
         if ($value$plusargs("DUMP_VCD=%s", dump_vcd_path)) begin
             $dumpfile(dump_vcd_path);
             $dumpvars(0, clk);
@@ -171,6 +194,76 @@ module tb_l1d_cache_oop #(
             set_bits = set_index[SET_BITS-1:0];
             compose_debug_line_address =
                 {tag, set_bits, {OFFSET_BITS{1'b0}}};
+        end
+    endfunction
+
+    function automatic integer count_unused_resident;
+        integer way_index;
+        integer set_index;
+        integer victim_index;
+        begin
+            count_unused_resident = 0;
+            for (way_index = 0; way_index < NUM_WAYS;
+                 way_index = way_index + 1) begin
+                for (set_index = 0; set_index < NUM_SETS;
+                     set_index = set_index + 1) begin
+                    if (dut.valid_bits[way_index][set_index] &&
+                        dut.prefetched_bits[way_index][set_index]) begin
+                        count_unused_resident = count_unused_resident + 1;
+                    end
+                end
+            end
+            for (victim_index = 0; victim_index < VICTIM_ENTRIES;
+                 victim_index = victim_index + 1) begin
+                if (dut.vc_valid[victim_index] &&
+                    dut.vc_prefetched[victim_index]) begin
+                    count_unused_resident = count_unused_resident + 1;
+                end
+            end
+        end
+    endfunction
+
+    function automatic integer trace_phase_code(
+        input reg [8*256-1:0] line
+    );
+        integer c0;
+        integer c1;
+        integer c2;
+        integer c3;
+        integer c4;
+        integer c5;
+        integer c6;
+        integer c7;
+        integer c8;
+        integer c9;
+        integer c10;
+        integer c11;
+        integer c12;
+        integer c13;
+        integer c14;
+        integer count;
+        begin
+            count = $sscanf(line,
+                            "%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c",
+                            c0, c1, c2, c3, c4, c5, c6, c7,
+                            c8, c9, c10, c11, c12, c13, c14);
+            trace_phase_code = 0;
+            if (count >= 14 &&
+                c0 == 8'h23 && c1 == 8'h20 &&
+                c2 == 8'h50 && c3 == 8'h48 && c4 == 8'h41 &&
+                c5 == 8'h53 && c6 == 8'h45 && c7 == 8'h20 &&
+                c8 == 8'h77 && c9 == 8'h61 && c10 == 8'h72 &&
+                c11 == 8'h6d && c12 == 8'h75 && c13 == 8'h70) begin
+                trace_phase_code = 1;
+            end else if (count >= 15 &&
+                         c0 == 8'h23 && c1 == 8'h20 &&
+                         c2 == 8'h50 && c3 == 8'h48 && c4 == 8'h41 &&
+                         c5 == 8'h53 && c6 == 8'h45 && c7 == 8'h20 &&
+                         c8 == 8'h6d && c9 == 8'h65 && c10 == 8'h61 &&
+                         c11 == 8'h73 && c12 == 8'h75 && c13 == 8'h72 &&
+                         c14 == 8'h65) begin
+                trace_phase_code = 2;
+            end
         end
     endfunction
 
@@ -391,6 +484,8 @@ module tb_l1d_cache_oop #(
         virtual l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) vif;
         l1d_scoreboard sb;
         integer accepted_reads;
+        integer accepted_demand_reads;
+        integer accepted_prefetch_reads;
         integer accepted_writes;
         integer cycles;
         integer latency;
@@ -414,6 +509,8 @@ module tb_l1d_cache_oop #(
 
         function void reset_state();
             accepted_reads = 0;
+            accepted_demand_reads = 0;
+            accepted_prefetch_reads = 0;
             accepted_writes = 0;
             cycles = 0;
             ready_phase = 0;
@@ -476,6 +573,13 @@ module tb_l1d_cache_oop #(
                                                    vif.mem_req_wdata);
                             end else begin
                                 accepted_reads = accepted_reads + 1;
+                                if (vif.debug_req_is_prefetch) begin
+                                    accepted_prefetch_reads =
+                                        accepted_prefetch_reads + 1;
+                                end else begin
+                                    accepted_demand_reads =
+                                        accepted_demand_reads + 1;
+                                end
                                 read_pending = 1'b1;
                                 read_addr = vif.mem_req_addr;
                                 read_countdown = (latency < 0) ? 0 : latency;
@@ -774,6 +878,19 @@ module tb_l1d_cache_oop #(
         integer errors_base;
         logic case_prefetch_enable;
         logic case_next_line_enable;
+        integer metric_hits_base;
+        integer metric_misses_base;
+        integer metric_victim_hits_base;
+        integer metric_writebacks_base;
+        integer metric_fills_base;
+        integer metric_useful_base;
+        integer metric_useless_base;
+        integer metric_pollution_base;
+        integer metric_dropped_base;
+        integer metric_demand_reads_base;
+        integer metric_prefetch_reads_base;
+        integer metric_writes_base;
+        integer metric_cycles_base;
 
         function new(
             virtual l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) vif_i,
@@ -809,6 +926,25 @@ module tb_l1d_cache_oop #(
                 case_next_line_enable = next_line_enable;
                 monitor.reset_metrics();
                 driver.reset_cache(enable_prefetch, next_line_enable);
+                snapshot_measurement_counters();
+            end
+        endtask
+
+        task snapshot_measurement_counters();
+            begin
+                metric_hits_base = vif.stat_cpu_hits;
+                metric_misses_base = vif.stat_cpu_misses;
+                metric_victim_hits_base = vif.stat_victim_hits;
+                metric_writebacks_base = vif.stat_writebacks;
+                metric_fills_base = vif.stat_prefetch_fills;
+                metric_useful_base = vif.stat_prefetch_useful;
+                metric_useless_base = vif.stat_prefetch_useless;
+                metric_pollution_base = vif.stat_prefetch_pollution;
+                metric_dropped_base = vif.stat_prefetch_dropped;
+                metric_demand_reads_base = mem.accepted_demand_reads;
+                metric_prefetch_reads_base = mem.accepted_prefetch_reads;
+                metric_writes_base = mem.accepted_writes;
+                metric_cycles_base = mem.cycles;
             end
         endtask
 
@@ -830,46 +966,90 @@ module tb_l1d_cache_oop #(
         task report_workload(input string workload_name, input integer accesses);
             string status;
             integer failed;
-            integer useful;
+            integer unused_resident;
+            integer hits;
+            integer misses;
+            integer victim_hits;
+            integer demand_reads;
+            integer prefetch_reads;
+            integer writes;
+            integer writebacks;
             integer fills;
-            integer accuracy_x100;
-            integer coverage_x100;
+            integer useful;
+            integer useless;
+            integer pollution;
+            integer dropped;
+            integer service_cycles;
             begin
                 wait_for_quiescence();
-                if (vif.stat_cpu_hits + vif.stat_cpu_misses != accesses) begin
+                hits = vif.stat_cpu_hits - metric_hits_base;
+                misses = vif.stat_cpu_misses - metric_misses_base;
+                victim_hits = vif.stat_victim_hits - metric_victim_hits_base;
+                demand_reads = mem.accepted_demand_reads -
+                               metric_demand_reads_base;
+                prefetch_reads = mem.accepted_prefetch_reads -
+                                 metric_prefetch_reads_base;
+                writes = mem.accepted_writes - metric_writes_base;
+                writebacks = vif.stat_writebacks - metric_writebacks_base;
+                fills = vif.stat_prefetch_fills - metric_fills_base;
+                useful = vif.stat_prefetch_useful - metric_useful_base;
+                useless = vif.stat_prefetch_useless - metric_useless_base;
+                pollution = vif.stat_prefetch_pollution - metric_pollution_base;
+                dropped = vif.stat_prefetch_dropped - metric_dropped_base;
+                service_cycles = mem.cycles - metric_cycles_base;
+                if (hits + misses != accesses) begin
                     $display("FAIL workload accounting name=%s accesses=%0d hits_plus_misses=%0d",
-                             workload_name, accesses,
-                             vif.stat_cpu_hits + vif.stat_cpu_misses);
+                             workload_name, accesses, hits + misses);
                     errors = errors + 1;
                 end
-                useful = vif.stat_prefetch_useful;
-                fills = vif.stat_prefetch_fills;
-                accuracy_x100 = (fills == 0) ? 0 : (useful * 10000) / fills;
-                coverage_x100 = (accesses == 0) ? 0 : (useful * 10000) / accesses;
+                if (demand_reads != misses - victim_hits) begin
+                    $display("FAIL demand read accounting name=%s demand_reads=%0d misses_minus_victim=%0d",
+                             workload_name, demand_reads,
+                             misses - victim_hits);
+                    errors = errors + 1;
+                end
+                if (prefetch_reads != fills) begin
+                    $display("FAIL prefetch read/fill accounting name=%s prefetch_reads=%0d fills=%0d",
+                             workload_name, prefetch_reads, fills);
+                    errors = errors + 1;
+                end
+                unused_resident = count_unused_resident();
+                if (fills != useful + useless + unused_resident) begin
+                    $display("FAIL prefetch conservation name=%s fills=%0d useful=%0d useless=%0d resident=%0d",
+                             workload_name, fills, useful, useless,
+                             unused_resident);
+                    errors = errors + 1;
+                end
+                if (writes != writebacks) begin
+                    $display("FAIL writeback accounting name=%s mem_writes=%0d writebacks=%0d",
+                             workload_name, writes, writebacks);
+                    errors = errors + 1;
+                end
                 failed = (errors != errors_base) ||
                          (monitor.protocol_errors != protocol_base) ||
                          (monitor.watchdog_errors != watchdog_base) ||
                          (vif.duplicate_line_errors != duplicate_base);
                 status = failed ? "FAIL" : "PASS";
-                $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d prefetch=%0d next_line=%0d mem_latency=%0d mem_bp=%0d cpu_bp=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d fills=%0d accuracy_x100=%0d coverage_x100=%0d latency_min=%0d latency_max=%0d latency_avg_x100=%0d cycles=%0d watchdogs=%0d protocol=%0d duplicate_lines=%0d status=%s",
-                         workload_name, NUM_WAYS, VICTIM_ENTRIES,
-                         case_prefetch_enable, case_next_line_enable,
-                         MEM_LATENCY, MEM_BACKPRESSURE_MODE,
-                         CPU_BACKPRESSURE_MODE, accesses, vif.stat_cpu_hits,
-                         vif.stat_cpu_misses, vif.stat_victim_hits,
-                         mem.accepted_reads, mem.accepted_writes,
-                         mem.accepted_reads * LINE_BYTES,
-                         mem.accepted_writes * LINE_BYTES,
-                         vif.stat_writebacks, vif.stat_prefetch_useful,
-                         vif.stat_prefetch_useless, vif.stat_prefetch_pollution,
-                         vif.stat_prefetch_dropped, vif.stat_prefetch_fills,
-                         accuracy_x100, coverage_x100,
-                         (monitor.latency_count == 0) ? 0 : monitor.latency_min,
-                         monitor.latency_max, monitor.latency_avg_x100(),
-                         mem.cycles,
+                $display("WORKLOAD_RESULT schema=2 name=%s config_id=%s trace_id=%s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=%0d protocol=%0d duplicate_lines=%0d status=%s next_line=%0d mem_latency=%0d mem_bp=%0d cpu_bp=%0d latency_min=%0d latency_max=%0d latency_avg_x100=%0d",
+                         workload_name, run_config_id, run_trace_id,
+                         NUM_SETS, NUM_WAYS, LINE_BYTES,
+                         NUM_SETS*NUM_WAYS*LINE_BYTES, VICTIM_ENTRIES,
+                         VICTIM_ENTRIES*LINE_BYTES,
+                         (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                         case_prefetch_enable, accesses, hits, misses,
+                         victim_hits, demand_reads, prefetch_reads,
+                         demand_reads + prefetch_reads, writes,
+                         (demand_reads + prefetch_reads) * LINE_BYTES,
+                         writes * LINE_BYTES, writebacks, fills, useful,
+                         useless, unused_resident, pollution, dropped,
+                         useful, service_cycles,
                          monitor.watchdog_errors - watchdog_base,
                          monitor.protocol_errors - protocol_base,
-                         vif.duplicate_line_errors - duplicate_base, status);
+                         vif.duplicate_line_errors - duplicate_base, status,
+                         case_next_line_enable, MEM_LATENCY,
+                         MEM_BACKPRESSURE_MODE, CPU_BACKPRESSURE_MODE,
+                         (monitor.latency_count == 0) ? 0 : monitor.latency_min,
+                         monitor.latency_max, monitor.latency_avg_x100());
             end
         endtask
 
@@ -1248,6 +1428,11 @@ module tb_l1d_cache_oop #(
             integer trace_unsigned;
             integer accesses;
             integer check_load_data;
+            integer has_phase_markers;
+            integer saw_measure_phase;
+            integer phase_code;
+            integer is_phase_line;
+            integer measurement_active;
             reg [8*256-1:0] trace_line;
             logic [ADDR_WIDTH-1:0] addr;
             logic [DATA_WIDTH-1:0] data;
@@ -1259,14 +1444,31 @@ module tb_l1d_cache_oop #(
             logic unsigned_load;
             l1d_transaction tr;
             begin
-                start_case("trace_replay", ENABLE_PREFETCH != 0,
-                           ENABLE_PREFETCH != 0);
                 trace_fd = $fopen(trace_path, "r");
                 if (trace_fd == 0) begin
                     $fatal(1, "cannot open trace file: %s", trace_path);
                 end
+                has_phase_markers = 0;
+                while (!$feof(trace_fd)) begin
+                    trace_line = '0;
+                    if ($fgets(trace_line, trace_fd) != 0 &&
+                        trace_phase_code(trace_line) != 0) begin
+                        has_phase_markers = 1;
+                    end
+                end
+                $fclose(trace_fd);
+
+                start_case("trace_replay",
+                           (!has_phase_markers) && (ENABLE_PREFETCH != 0),
+                           (!has_phase_markers) && (ENABLE_PREFETCH != 0));
+                trace_fd = $fopen(trace_path, "r");
+                if (trace_fd == 0) begin
+                    $fatal(1, "cannot reopen trace file: %s", trace_path);
+                end
                 check_load_data = !$test$plusargs("TRACE_SKIP_LOAD_CHECKS");
                 accesses = 0;
+                saw_measure_phase = 0;
+                measurement_active = !has_phase_markers;
                 trace_line_number = 0;
                 while (!$feof(trace_fd)) begin
                     trace_line = '0;
@@ -1277,10 +1479,40 @@ module tb_l1d_cache_oop #(
                         trace_unsigned = 0;
                         addr = '0;
                         data = '0;
-                        scan_count = $sscanf(trace_line, "%d %d %d %h %h",
-                                             operation, trace_size,
-                                             trace_unsigned, addr, data);
-                        if (scan_count >= 1) begin
+                        scan_count = 0;
+                        is_phase_line = 0;
+                        phase_code = trace_phase_code(trace_line);
+                        if (phase_code == 1) begin
+                            is_phase_line = 1;
+                            if (saw_measure_phase) begin
+                                $fatal(1, "warmup phase follows measure at line %0d",
+                                       trace_line_number);
+                            end
+                            measurement_active = 0;
+                            vif.cfg_prefetch_enable = 1'b0;
+                            vif.cfg_next_line_enable = 1'b0;
+                        end else if (phase_code == 2) begin
+                            is_phase_line = 1;
+                            if (saw_measure_phase) begin
+                                $fatal(1, "duplicate measure phase at line %0d",
+                                       trace_line_number);
+                            end
+                            wait_for_quiescence();
+                            snapshot_measurement_counters();
+                            monitor.reset_metrics();
+                            accesses = 0;
+                            saw_measure_phase = 1;
+                            measurement_active = 1;
+                            case_prefetch_enable = (ENABLE_PREFETCH != 0);
+                            case_next_line_enable = (ENABLE_PREFETCH != 0);
+                            vif.cfg_prefetch_enable = (ENABLE_PREFETCH != 0);
+                            vif.cfg_next_line_enable = (ENABLE_PREFETCH != 0);
+                        end else begin
+                            scan_count = $sscanf(trace_line, "%d %d %d %h %h",
+                                                 operation, trace_size,
+                                                 trace_unsigned, addr, data);
+                        end
+                        if (!is_phase_line && scan_count >= 1) begin
                             case (operation)
                                 0: begin
                                     if (scan_count != 4 ||
@@ -1303,7 +1535,9 @@ module tb_l1d_cache_oop #(
                                                  cause, expected, actual);
                                         errors = errors + 1;
                                     end
-                                    accesses = accesses + 1;
+                                    if (measurement_active) begin
+                                        accesses = accesses + 1;
+                                    end
                                 end
                                 1: begin
                                     if (scan_count != 5 ||
@@ -1322,7 +1556,9 @@ module tb_l1d_cache_oop #(
                                     end else begin
                                         sb.update_golden_store(addr, data, size);
                                     end
-                                    accesses = accesses + 1;
+                                    if (measurement_active) begin
+                                        accesses = accesses + 1;
+                                    end
                                 end
                                 default: begin
                                     $fatal(1, "invalid trace opcode line=%0d",
@@ -1333,6 +1569,9 @@ module tb_l1d_cache_oop #(
                     end
                 end
                 $fclose(trace_fd);
+                if (has_phase_markers && !saw_measure_phase) begin
+                    $fatal(1, "phased trace does not contain a measure phase");
+                end
                 report_workload("trace_replay", accesses);
             end
         endtask

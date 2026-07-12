@@ -33,9 +33,16 @@ simulation and synthesis are the final project verification targets.
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
+| `scripts/validate_workload_results.py` | Fail-closed schema-2 field and counter-conservation validator |
 | `scripts/run_vivado.tcl` | Vivado simulation, synthesis, utilization, timing, power |
 | `scripts/run_remote_vivado.py` | Paramiko remote Vivado runner for the Windows host |
 | `scripts/generate_phase3_traces.py` | Deterministic Phase 3 trace generator |
+| `scripts/capture_spec_qemu_windows.py` | Fail-closed per-command RV64 QEMU capture and private manifests |
+| `scripts/split_qemu_memtrace_windows.py` | Validate schema-v3 raw captures and emit canonical phased replay windows |
+| `scripts/run_spec_trace_replay.sh` | Manifest-driven four-configuration replay and paired analysis |
+| `scripts/summarize_spec_replay.py` | Strict artifact, counter, sidecar, and off/on pair validator |
+| `scripts/render_spec_replay_plots.py` | Deterministic helpful/neutral/harmful classification CSV and cycle-delta SVG |
+| `scripts/analyze_trace_windows.py` | Locality, stride, reuse-distance, and set-pressure analysis |
 | `constraints/l1d_baseline.xdc` | Default 100 MHz synthesis clock constraint |
 | `traces/smoke.trace` | Redistributable trace-replay format smoke test |
 | `traces/generated/MANIFEST.md` | Generated Phase 3 trace hashes |
@@ -46,8 +53,8 @@ layout.
 
 ## Architecture and Block-Diagram
 
-
-The following corrections are required for it to represent the current RTL:
+The team-drawn original diagram contains the right high-level components, but
+the following corrections are required for it to represent the current RTL:
 
 - the CPU request and response channels each have their own ready/valid
   handshake; `cpu_req_ready` belongs to the request channel and
@@ -114,11 +121,11 @@ module instances in the present baseline.
 | --- | ---: | --- |
 | `ADDR_WIDTH` | 64 | RV64 byte-address width |
 | `DATA_WIDTH` | 64 | RV64 XLEN data width |
-| `LINE_BYTES` | 16 | Power-of-two cache-line size |
+| `LINE_BYTES` | 16 | Power-of-two multiple of `DATA_WIDTH/8` |
 | `NUM_SETS` | 8 | Power of two, at least 2 |
 | `NUM_WAYS` | 2 | `1` for direct-mapped, `2` for 2-way |
 | `VICTIM_ENTRIES` | 4 | Non-zero power of two; intended range is 4 to 8 |
-| `ENABLE_PREFETCH` | 1 | Enables idle-cycle next-line prefetch requests |
+| `ENABLE_PREFETCH` | 1 | Elaboration-time enable for built-in and external prefetch acceptance; runtime enables still apply |
 
 The current replacement policy is round-robin per set. With two ways this is
 equivalent to selecting the way after the most recently selected way. Invalid
@@ -178,8 +185,9 @@ it. There is no separate write-response or error channel.
 
 The main states are:
 
-1. `ST_IDLE`: accept a CPU request, or launch a pending prefetch when the CPU
-   has no request.
+1. `ST_IDLE`: select exactly one request in the order CPU (including a
+   misaligned request), external prefetch, then pending built-in next-line
+   prefetch.
 2. `ST_LOOKUP`: consume synchronous SRAM outputs and compare all active ways
    and victim entries.
 3. `ST_HIT_WRITE`: commit a byte-enabled store hit.
@@ -229,9 +237,12 @@ memory after victim-cache replacement pressure.
 
 ## Next-Line Prefetch and Monitoring
 
-After a demand fill, the cache queues the next aligned line. The prefetch runs
-only when `ST_IDLE` sees no CPU request, so demand traffic has priority. A line
-already present in L1 or the victim cache is not fetched again.
+After a demand fill, the cache queues the next aligned line. In `ST_IDLE`, the
+acceptance order is CPU demand, external prefetch, then the pending built-in
+next-line candidate. Any asserted CPU request reserves the cycle, including a
+misaligned request that will receive an architectural error; therefore two
+producers can never observe a handshake for the same slot. A line already
+present in L1 or the victim cache is not fetched again.
 
 The monitor exports:
 
@@ -243,10 +254,12 @@ The monitor exports:
 | `stat_prefetch_pollution` | Prefetch allocations that displace a demand L1 line |
 | `stat_prefetch_dropped` | Built-in candidates dropped because its one-entry queue was full |
 
-`stat_prefetch_pollution` is a hardware proxy for pressure, not proof of a
+`stat_prefetch_pollution` is a displacement-pressure proxy, not proof of a
 performance loss: the displaced line may still be rescued by the victim cache.
-Final workload analysis must correlate it with miss count, memory traffic, and
-AMAT.
+The replay sidecars record every demand outcome. Exact off/on pairing compares
+identical `(sequence, address, operation, size)` identities to count true L1
+and lower-memory help and pollution; aggregate miss deltas alone are only net
+effects.
 
 ### Adaptation interface
 
@@ -276,37 +289,40 @@ Run:
 
 The script compiles and runs deterministic directed tests, memory-interface
 backpressure, CPU-response backpressure, handshake payload stability checks,
-a 160-operation randomized golden-memory scoreboard, and three
-synthetic-workload configurations:
+a 160-operation randomized golden-memory scoreboard, misaligned-demand versus
+external/pending-prefetch arbitration, continuous-demand drop accounting, and
+four geometry/workload configurations:
 
 | Configuration | Covered behavior | Current Icarus result |
 | --- | --- | --- |
-| Direct-mapped, VC4, prefetch off | RV64 load/store sizes, sign/zero extension, misaligned errors, 64-bit high-address tags, victim hit, dirty preservation, randomized traffic | PASS |
-| 2-way, VC4, prefetch off | same checks with way replacement and backpressure | PASS |
-| 2-way, VC8, prefetch off | same RV64 checks with 8-entry victim replacement and dirty preservation | PASS |
-| 2-way, VC4, prefetch on | next-line fill, victim rescue of prefetched data, external injection, usefulness accounting | PASS |
-| Direct-mapped, VC4, prefetch off | five synthetic boundary profiles | PASS |
-| 2-way, VC4, prefetch off | five synthetic boundary profiles | PASS |
-| 2-way, VC4, prefetch on | five synthetic boundary profiles and prefetch boundary assertions | PASS |
-| 2-way, VC4, prefetch off | RV64 text trace replay, load signedness, store sizes, golden-memory checking | PASS |
+| Direct-mapped, 8 sets, VC4, prefetch off | RV64 load/store sizes, equal 128-byte L1 capacity, misaligned errors, victim hit, dirty preservation, randomized traffic | PASS |
+| 2-way, 4 sets, VC4, prefetch off | equal 128-byte L1 capacity, way replacement, backpressure, five boundary profiles, trace smoke | PASS |
+| 2-way, 4 sets, VC8, prefetch off | independent victim-capacity comparison and dirty preservation | PASS |
+| 2-way, 4 sets, VC4, prefetch on | next-line/victim/external behavior, arbitration regressions, fill/use/resident/drop conservation | PASS |
 
 Generated `.vvp` files and logs are written under `sim/`. Icarus emits a known
 informational message about constant selects in `always_*`; compilation and
 all self-checking tests complete successfully.
 
-Each workload emits one machine-readable `WORKLOAD_RESULT` line.
+Each workload emits one machine-readable `WORKLOAD_RESULT schema=2` line.
 `scripts/summarize_workloads.sh` collects these records into the ignored
 `sim/workload_results.csv`. The recorded fields include accesses, hits,
-misses, victim hits, accepted lower-memory reads and writes, prefetch events,
-and elapsed testbench cycles.
+misses, victim hits, complete geometry and capacities, separate demand and
+prefetch lower-memory reads, read/write bytes, true prefetch fills,
+useful/useless-evicted/unused-resident conservation, drop/protocol counters,
+and replay service cycles.
 
 ## Vivado Verification
 
 The current RV64 Vivado evidence is recorded in
-`docs/phase3_vivado_report.md`. The final Phase 3 run on 2026-07-01 used
-remote Vivado 2024.2.1, staged the project under
-`C:/Users/kevin/l1d_codex_ascii_20260701_r10`, and passed log scanning after
-downloading the reports.
+`docs/phase3_vivado_report.md`. A stale-report-free replacement run on
+2026-07-13 used
+remote Vivado 2024.2.1 and the explicit geometry shared by XSim and
+synthesis. It exited successfully and scanned exactly 22 log/report files:
+eight simulation logs, twelve synthesis reports, the Vivado log, and the
+Vivado journal. The representative waveform was validated separately. The
+run produced a `PASS` evidence manifest with a 10.0 ns clock and SHA-256
+values for every input and evidence artifact.
 
 Run the local Vivado entry point on a machine with Vivado in `PATH` using:
 
@@ -327,18 +343,21 @@ generated under `build/vivado/reports/<configuration>/`:
 Simulation logs and the representative VCD are copied to
 `build/vivado/reports/`. The current Phase 3 synthesis results are:
 
-| Configuration | LUTs | FFs | RAMB36 | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
+| Configuration | LUTs | FFs | Block RAM tiles | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Direct-mapped, VC4, prefetch off | 5,178 | 1,853 | 2 | -1.291 ns | 88.6 MHz | 0.117 W |
-| 2-way, VC4, prefetch off | 4,721 | 2,008 | 4 | -0.417 ns | 96.0 MHz | 0.107 W |
-| 2-way, VC8, prefetch off | 5,395 | 2,767 | 4 | -1.462 ns | 87.2 MHz | 0.117 W |
-| 2-way, VC4, prefetch on | 5,789 | 2,168 | 4 | -1.981 ns | 83.5 MHz | 0.117 W |
+| Direct-mapped, 8 sets, VC4, prefetch off | 5,189 | 1,852 | 2 | -1.581 ns | 86.3 MHz | 0.114 W |
+| 2-way, 4 sets/way, VC4, prefetch off | 5,699 | 2,246 | 0 | -2.068 ns | 82.9 MHz | 0.106 W |
+| 2-way, 4 sets/way, VC8, prefetch off | 5,783 | 3,004 | 0 | -1.516 ns | 86.8 MHz | 0.106 W |
+| 2-way, 4 sets/way, VC4, prefetch on | 6,222 | 2,407 | 0 | -1.626 ns | 86.0 MHz | 0.111 W |
 
-These current RV64 configurations do not meet the 100 MHz synthesis
-constraint. The data arrays were inferred as block RAM; tag arrays were
-inferred as distributed RAM. The Fmax column is calculated as
-`1000 / (10 - WNS)` and is only a post-synthesis STA estimate. Routing and
-implementation can reduce it.
+These current RV64 configurations all contain 128 bytes of logical L1 data
+and do not meet the 100 MHz synthesis constraint. Vivado inferred two block
+RAM tiles for the direct-mapped arrays, but mapped the shallower per-way
+arrays of every 2-way configuration into distributed logic and registers.
+Logical capacity is controlled, but physical memory mapping is not; the
+LUT/FF/timing deltas therefore cannot be attributed solely to associativity.
+The Fmax column is calculated as `1000 / (10 - WNS)` and is only a
+post-synthesis STA estimate. Routing and implementation can reduce it.
 
 The power values use Vivado vectorless activity propagation, with no SAIF/VCD
 activity file, default operating conditions, and `Low` confidence. They are
@@ -353,7 +372,8 @@ Before final project sign-off, inspect XSim waveforms for every FSM path and
 run implementation/post-route timing. For meaningful power comparison, rerun
 `report_power` with representative switching activity from the workload
 traces. The current representative passing VCD is
-`build/vivado/reports/next_line_prefetch_vc4.vcd`.
+`build/vivado/reports/2w_s4_vc4_pf1.vcd`. The machine-readable validation
+record is `build/vivado/evidence_manifest.json`.
 
 ## Workload-Driven Boundary Analysis
 
@@ -374,26 +394,27 @@ license to eligible accredited institutions, requested by a professor or
 full-time staff member. Benchmark source or proprietary input data must never
 be committed to this repository.
 
-Current local status: this workflow assumes a licensed local SPEC CPU 2026 tree
-provided through `SPEC_DIR` and a Debian RV64 QEMU VM provided through
-`RV64_VM_DIR`. These paths are intentionally kept out of the repository. The
-repository includes a bounded `782.lbm_r` test-workload trace slice for local
-licensed analysis. Do not publish the SPEC-derived trace outside the licensed
-project context without a separate redistribution review.
+Current local status: the capture expects the licensed SPEC CPU 2026 tree at
+`/home/debian/spec2026` inside the guest. The Debian RV64 VM defaults to the
+project-local `debian-rv64/` directory and can be overridden with
+`L1D_QEMU_VM_DIR`. Licensed raw traces, replay windows, logs, sidecars, and
+manifests stay below the ignored `build/` tree. No SPEC-derived trace is
+tracked in the public repository.
 
 ### Trace-based RTL method
 
 Running complete SPEC programs directly in an RTL testbench is impractical.
-The planned method is:
+The implemented method is:
 
 1. build and run licensed SPEC workloads on a host or architectural simulator;
-2. capture committed load/store traces with address, size, write data where
-   allowed, and instruction count or timestamp;
-3. anonymize addresses to preserve set/index/offset behavior while removing
-   proprietary data;
-4. replay bounded regions through the cache CPU interface;
-5. compare configurations with victim cache and prefetch independently on and
-   off; and
+2. capture only a selected timed command's U-mode memory operations, using
+   physical addresses and redacting all store data;
+3. select bounded warmup/measurement windows from a count pass and reproduce
+   the same total event count in a fresh snapshot capture pass;
+4. replay the private windows through the cache CPU interface;
+5. compare the equal-capacity `dm_s8_vc4_pf0` and `2w_s4_vc4_pf0` points,
+   the standalone `2w_s4_vc8_pf0` victim-capacity point, and the only strict
+   prefetch pair, `2w_s4_vc4_pf0` versus `2w_s4_vc4_pf1`; and
 6. publish only derived statistics and legally redistributable trace metadata.
 
 The reusable replay driver is selected with `+TRACE=<path>`. Its line format
@@ -411,31 +432,105 @@ and used only by loads. Addresses and data are hexadecimal without a `0x`
 prefix. Loads are checked against the testbench golden memory with the
 requested sign or zero extension; stores update the golden memory after cache
 completion. Blank and comment lines are ignored.
-For example:
+For example, after `scripts/run_iverilog.sh` builds the canonical matrix:
 
 ```bash
-vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
+vvp sim/2w_s4_vc4_pf0.vvp \
+  +TRACE=traces/smoke.trace \
+  +TRACE_ID=smoke +CONFIG_ID=2w_s4_vc4_pf0
 ```
 
 Run this command from the repository root. Relative ASCII paths avoid a known
 Icarus plusarg limitation when an absolute workspace path contains non-ASCII
-characters. A SPEC extraction tool must convert committed accesses into this
-cache-interface format, preserve naturally aligned RV64 access sizes, and
-record or filter misaligned accesses according to the experiment policy.
-Licensed data values must be omitted when redistribution is not permitted.
+characters. The current extraction flow converts committed accesses into this
+cache-interface format. Naturally aligned accesses retain their RV64 size. An
+unaligned access contained in one 16-byte cache line becomes one byte-sized
+line touch; a cross-line access becomes two byte-sized touches and uses an
+independent translation for the last byte. Source-event and expanded replay-
+access counts are both recorded, so no access is silently filtered. Licensed
+data values are omitted.
 
-When replaying traces captured from a real program rather than from the
-testbench golden-memory generator, pass `+TRACE_SKIP_LOAD_CHECKS`. This keeps
-all load/store addresses in the cache-performance stream but disables load
-data comparison against the synthetic golden memory image:
+When replaying a real-program trace, `+TRACE_SKIP_LOAD_CHECKS` retains every
+load/store address but disables comparison with the synthetic golden-memory
+image. The manifest-driven runner supplies this option and should be preferred
+to a hand-written `vvp` command.
+
+### Current attributable capture and replay workflow
+
+The host plugin requires QEMU 11.0.1, Plugin API 6, `riscv64` system
+emulation, and exactly one vCPU. The VM runs with `-snapshot`; the base disk
+and UEFI variables are not modified. A dynamically linked timed command is
+wrapped with `libl1d_roi.so`, which emits a versioned marker ABI in `a0..a5`:
+magic/version, random nonce, start/stop event, command index, PID, and TID.
+The plugin locks vCPU 0, U privilege, and the marker's non-Bare `satp`.
+Kernel accesses and foreign U-mode address spaces are ignored and counted;
+only the bound SATP contributes source events. It records physical addresses
+and fails closed on malformed or mismatched markers, target IO, unsupported
+sizes, missing physical addresses (including the independently translated end
+of a cross-line access), incomplete windows, or count/capture disagreement.
+`trace_exec` also sets and verifies `ADDR_NO_RANDOMIZE` before target `exec`;
+failure to disable ASLR aborts the unit. The splitter independently checks the
+context/start/stop/summary identity chain and binds every payload row to the
+ROI's SATP, vCPU, and privilege.
+
+For an ROI with at least 50,000 supported events, five non-overlapping windows
+are centered at the 10th, 30th, 50th, 70th, and 90th percentiles in the source
+event stream. Each source window contains 5,000 demand-only warmup events
+followed by 5,000 measurement events. Its manifest separately records source
+events and canonical replay accesses after any cross-line expansion. A shorter
+ROI is replayed whole and is labeled `whole-roi-short`; it must not be
+described as demand-warmed.
+
+Run from the repository root:
 
 ```bash
-vvp sim/two_way_vc4_trace.vvp \
-  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
-  +TRACE_SKIP_LOAD_CHECKS
+scripts/build_qemu_memtrace_plugin.sh
+python3 scripts/capture_spec_qemu_windows.py \
+  --out-dir build/spec2026/qemu-private \
+  --size test --label codexrv64 \
+  708.sqlite_r 721.gcc_r 767.nest_r 777.zstd_r
+scripts/run_spec_trace_replay.sh \
+  build/spec2026/qemu-private/campaign_manifest.json \
+  build/spec2026/replay/logs
 ```
 
-### Reproduced SPEC CPU 2026 `782.lbm_r` capture
+The capture campaign and every unit manifest must be `PASS`, `valid=true`, and
+hash-complete. Each count/capture snapshot also clears all outputs named by
+SPEC's `compare.cmd`, runs one timed command, then requires the exact comparison
+subset for the outputs that command actually generated to pass after ROI stop.
+Both passes must select the same subset, and both subset files and logs are
+hashed. Per-benchmark plans bind the original timed-command file, dense command
+indices, and an exact disjoint partition of the full comparison plan. Campaign
+provenance hashes the executing QEMU binary, immutable VM/firmware inputs,
+target ELF, plugin, and every host capture source; a temporary complete graph
+must validate before PASS publication. The replay runner consumes only those manifests, rejects stale
+or extra traces, compiles four explicit geometries, records binary/simulator/
+command/cwd hashes and identity, writes schema-2 sidecars with every demand
+outcome plus prefetch issue/fill events, creates a strict replay campaign, and
+invokes `summarize_spec_replay.py`. The analyzer validates artifact and command
+path binding, exact trace/sidecar demand identity, geometry, timing identity,
+schema-2 counters and sidecar event conservation, the one exact off/on pair,
+and true L1/lower-memory help and pollution. The direct-mapped and VC8
+configurations are standalone comparison points, not prefetch pairs.
+Validated pairs also produce `classification.csv` and
+`cycles-on-minus-off.svg`; the sign of `cycles_on_minus_off` alone defines
+helpful (negative), neutral (zero), or harmful (positive).
+In this blocking model,
+`timely_useful=useful` is structural and `late_useful=0` is not an independent
+latency observation; real issue/fill/accept timeliness remains future work.
+
+As of July 13, 2026, a real RV64 dynamic-ELF count/capture/split smoke passed
+with matching totals, vCPU 0, U mode, non-Bare `satp`, physical addresses, and
+zero violations. Historical mixed-system SPEC traces are not valid benchmark
+evidence; no new SPEC performance claim is authoritative until its complete
+private campaign passes this workflow.
+
+### Historical `782.lbm_r` capture (non-authoritative)
+
+The remainder of this subsection records an earlier local experiment only.
+Its trace files are no longer tracked, its old plugin options and marker ABI
+have been replaced, and its aggregate result must not be used as current SPEC
+or prefetch evidence.
 
 The RV64 Debian VM is started from the VM directory:
 
@@ -446,13 +541,14 @@ cd "$RV64_VM_DIR"
 ./ssh.sh
 ```
 
-The host-side QEMU memory-trace plugin is built from the repository root:
+The historical host-side QEMU memory-trace plugin was built from the
+repository root:
 
 ```bash
 scripts/build_qemu_memtrace_plugin.sh
 ```
 
-The plugin writes the trace-replay text format directly. It supports
+That retired plugin wrote the trace-replay text format directly and supported
 `out=...`, `limit=...`, `start=on|off`, `phys=on|off`, `noio=on|off`, and
 `aligned=on|off`. For benchmark isolation, the VM is launched with
 `start=off`, and an instrumented `lbm_r_trace` binary uses two RISC-V HINT
@@ -507,7 +603,7 @@ Validation passed on Debian GNU/Linux 13 riscv64 with GCC 14.2.0. The run
 used about 1.6 GiB maximum resident memory. The instrumented `lbm_r_trace`
 binary produced identical output before plugin-based capture.
 
-The committed trace artifacts are:
+The historical local artifacts were the following; none is tracked now:
 
 | File | Purpose |
 | --- | --- |
@@ -528,6 +624,8 @@ configuration with load-data checks disabled:
 iverilog -g2012 -Wall \
   -s tb_l1d_cache \
   -P tb_l1d_cache.NUM_WAYS=2 \
+  -P tb_l1d_cache.NUM_SETS=4 \
+  -P tb_l1d_cache.LINE_BYTES=16 \
   -P tb_l1d_cache.ENABLE_PREFETCH=0 \
   -P tb_l1d_cache.VICTIM_ENTRIES=4 \
   -o sim/two_way_vc4_trace.vvp \
@@ -536,10 +634,12 @@ iverilog -g2012 -Wall \
 
 vvp sim/two_way_vc4_trace.vvp \
   +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
-  +TRACE_SKIP_LOAD_CHECKS
+  +TRACE_SKIP_LOAD_CHECKS \
+  +TRACE_ID=historical_782_lbm_r +CONFIG_ID=2w_s4_vc4_pf0
 ```
 
-The replay passed and produced:
+The original run passed and produced the following legacy schema-1 record;
+the current testbench emits a wider schema-2 record instead:
 
 ```text
 WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
@@ -576,19 +676,25 @@ next-line usefulness or non-usefulness, stable localized hits, and victim
 retention of the complete conflict working set. They are synthetic
 microbenchmarks, not substitutes for SPEC traces.
 
-The 2-way VC4 preliminary results on June 10, 2026 were:
+The current schema-2 results for the strict 2-way, four-set, VC4 off/on pair
+on July 13, 2026 are:
 
-| Profile | Prefetch | Hits | Misses | Victim hits | Memory reads | Useful | Useless | Cycles |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Sequential stream | Off | 0 | 12 | 0 | 12 | 0 | 0 | 128 |
-| Sequential stream | On | 6 | 6 | 0 | 12 | 6 | 0 | 129 |
-| Two-line stride | Off | 0 | 12 | 0 | 12 | 0 | 0 | 133 |
-| Two-line stride | On | 0 | 12 | 0 | 24 | 0 | 6 | 227 |
-| Localized loop | Off | 10 | 2 | 0 | 2 | 0 | 0 | 63 |
-| Localized loop | On | 11 | 1 | 0 | 2 | 1 | 0 | 63 |
-| Same-set conflict | Off | 0 | 12 | 9 | 3 | 0 | 0 | 79 |
-| Irregular pointer chase | Off | 0 | 12 | 0 | 12 | 0 | 0 | 133 |
-| Irregular pointer chase | On | 0 | 12 | 0 | 24 | 0 | 6 | 227 |
+| Profile | Prefetch | Hits | Misses | Victim hits | Demand reads | Prefetch reads | Fills | Useful | Useless evicted | Unused resident | Pollution proxy | Service cycles |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sequential stream | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 127 |
+| Sequential stream | On | 6 | 6 | 0 | 6 | 6 | 6 | 6 | 0 | 0 | 2 | 128 |
+| Two-line stride | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 132 |
+| Two-line stride | On | 0 | 12 | 0 | 12 | 12 | 12 | 0 | 6 | 6 | 0 | 226 |
+| Localized loop | Off | 10 | 2 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 62 |
+| Localized loop | On | 11 | 1 | 0 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 62 |
+| Same-set conflict | Off | 0 | 12 | 9 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 78 |
+| Irregular pointer chase | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 132 |
+| Irregular pointer chase | On | 0 | 12 | 0 | 12 | 12 | 12 | 0 | 6 | 6 | 0 | 226 |
+
+`fills = useful + useless_evicted + unused_resident`, so accuracy uses actual
+fills rather than reconstructing a denominator from evictions. The RTL
+`pollution_proxy` is displacement pressure only; true baseline-hit/prefetch-
+miss pollution is computed from the strict off/on per-demand replay sidecars.
 
 These results demonstrate the intended boundary rather than a general
 performance claim. With this blocking implementation, next-line prefetching
@@ -598,20 +704,24 @@ it doubles lower-memory reads and increases cycles without removing a demand
 miss. The victim cache retains the three-line, single-set working set for the
 2-way configuration, so only the first three accesses reach lower memory.
 
-For each trace region, record:
+For each trace region, the current validated replay records:
 
 - CPU accesses, L1 hits, demand misses, and victim hits;
 - lower-memory reads and write-backs;
 - useful, useless, and pollution prefetch events;
-- cycles, stall cycles, and measured AMAT;
+- replay service cycles;
 - working-set size, load/store ratio, stride histogram, and reuse-distance
   summary; and
 - the full cache configuration and random/trace seed.
 
-The key boundary plots should sweep associativity, victim entries (0/4/8 in
-the final comparison), prefetch enable, cache capacity, line size, and lower
-memory latency. The present RTL requires at least one victim entry; a true
-zero-entry bypass configuration is future work.
+It does not yet report architectural CPU stall cycles or measured AMAT. Replay
+service cycles describe the serialized cache model and must not be presented as
+whole-program CPU execution time; those two measurements remain future work.
+
+The current boundary plots can sweep associativity, victim entries 4/8,
+prefetch enable, cache capacity, line size, and lower-memory latency. The
+present RTL requires at least one victim entry; adding zero-entry bypass before
+a future 0/4/8 sweep remains future work.
 
 ## Current Limitations and Next Steps
 

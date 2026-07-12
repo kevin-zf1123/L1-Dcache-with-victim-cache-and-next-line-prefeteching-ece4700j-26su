@@ -35,7 +35,8 @@ metadata；执行全相联比较；victim hit 时交换；覆盖 dirty victim en
 
 当前设计把原本主要面向 direct-mapped 的方法扩展到 2-way L1。结构上可行，
 但收益必须实测，因为 L1 相联度提高后可由 victim cache 捕获的 conflict
-miss 会减少。
+miss 会减少。因此 workload 计划直接比较 direct-mapped 和 2-way 设计，
+而不假定 victim cache 在两者中有相同收益。
 
 当前简化包括：
 
@@ -55,11 +56,25 @@ ChampSim `next_line` 的候选生成一致：观察 block `N` 后生成 `N+1`。
 设计比独立 stream buffer 更容易污染，因此 RTL 为 prefetched line 保存
 metadata，并记录 useful、useless 和 displacement 事件。
 
-最终评价不能只看 useful prefetch，必须同时计算 accuracy、coverage、
-timeliness、pollution 和 bandwidth overhead。当前
+Chen 和 Baer 的硬件 prefetch 研究及后续综述区分了 accuracy、
+coverage、timeliness 和 bandwidth cost。只统计 useful prefetch 并不
+充分。完整的未来评价应计算以下指标。当前严格的配对 replay 已计算
+除独立 in-flight timeliness 之外的所有项；在当前 blocking 模型中，
+`timely_useful=useful` 且 `late_useful=0` 只是结构性 proxy：
+
+- `accuracy = useful prefetches / filled prefetches`；
+- `L1 coverage = (baseline L1 misses - prefetch-on L1 misses) / baseline L1 misses`；
+- `lower-memory coverage = (baseline demand reads - prefetch-on demand reads) / baseline demand reads`；
+- `timeliness = timely useful / (timely useful + late useful)`，其中 late
+  prefetch 指 demand 首次拉高 valid 时该 prefetch 仍在 flight；
+- `bandwidth overhead = (prefetch-on bytes - baseline bytes) / baseline bytes`；
+- true L1 pollution 是“baseline 为 L1 hit、prefetch-on 为 L1 miss”的逐 demand 事件；
+- true lower-memory pollution 是“baseline 不读下级内存、prefetch-on demand 需要读下级内存”的逐 demand 事件。
+
+所有比例在分母为 0 时必须记为 `N/A`，不能记为 0。当前
 `stat_prefetch_pollution` 只是压力 proxy，因为被 prefetch 移出 L1 的行
 仍可能存在 victim cache 中。真正污染需要与关闭 prefetch 的同 trace 运行
-进行对照。
+逐访问配对；aggregate miss delta 只能说明净损益，不能识别具体污染事件。
 
 ## Adaptive 接口
 
@@ -92,16 +107,16 @@ CPU 或下级内存协议。
 - 显式 prefetched metadata 和反馈事件；
 - 可替换的 prefetch candidate 接口。
 
-后续必须补充：
+当前 baseline 已包含分开的 demand/prefetch 下级内存计数、paired 逐
+demand true-pollution 归因、line-uniqueness assertion 和 randomized
+golden-memory reference model。剩余工作是：
 
-- 独立 prefetch buffer 放置方案，与直接 L1 安装对比；
-- 真正的 pollution 和 timeliness 测量；
-- 下级内存请求和带宽计数；
-- 支持 backpressure 的调度与取消；
-- victim entry 的 0/4/8 配置；
-- round-robin 与 LRU 对比；
-- L1/victim 不重复保存同一行的 assertion；
-- randomized reference model 和 dirty-data formal property；
+- 增加独立 prefetch buffer 放置方案，与直接 L1 安装对比；
+- 测量独立的 issue/fill/accept timeliness 和完整 latency distribution；
+- 增加支持 backpressure 的 prefetch 调度与取消；
+- 增加 victim entry 的 0/4/8 配置；零 entry 仍需 bypass 实现；
+- 比较 round-robin 与 LRU victim replacement；
+- 在现有 simulation assertion 之上增加 dirty-data-preservation formal property；
 - blocking baseline 稳定后再考虑 MSHR/refill buffer。
 
 ## Proposal 引用审查

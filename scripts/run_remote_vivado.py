@@ -9,13 +9,20 @@ for non-interactive use, or run from a TTY and enter it at the prompt.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import getpass
+import hashlib
+import json
 import os
 import posixpath
 import re
+import shlex
+import shutil
 import socket
 import stat
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_HOST = "192.168.1.101"
@@ -45,6 +52,106 @@ DEFAULT_DOWNLOADS = [
     "vivado.log",
     "vivado.jou",
 ]
+
+SIMULATION_CONFIGURATIONS = {
+    "dm_s8_vc4_pf0": {
+        "sets": 8, "ways": 1, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 0, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "2w_s4_vc4_pf0": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 0, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "2w_s4_vc8_pf0": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 8,
+        "prefetch": 0, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "2w_s4_vc4_pf1": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "trace_replay_smoke_2w_s4_vc4_pf0": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 0, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "trace_replay_generated_pointer_2w_s4_vc4_pf1": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "mem_latency": 2, "mem_bp": 1, "cpu_bp": 0,
+    },
+    "2w_s4_vc4_pf1_low_latency": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "mem_latency": 0, "mem_bp": 0, "cpu_bp": 0,
+    },
+    "2w_s4_vc4_pf1_high_latency_random_bp": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "mem_latency": 8, "mem_bp": 2, "cpu_bp": 0,
+    },
+}
+
+SYNTHESIS_CONFIGURATIONS = {
+    name: SIMULATION_CONFIGURATIONS[name]
+    for name in (
+        "dm_s8_vc4_pf0",
+        "2w_s4_vc4_pf0",
+        "2w_s4_vc8_pf0",
+        "2w_s4_vc4_pf1",
+    )
+}
+
+BASE_WORKLOADS = (
+    "directed_rv64",
+    "victim_dirty_regression",
+    "cpu_response_backpressure",
+    "matrix_row_major",
+    "matrix_column_major",
+    "matrix_blocked_tiled",
+    "matrix_same_set_exceeds_l1",
+    "matrix_same_set_exceeds_l1_plus_victim",
+    "matrix_store_heavy_dirty",
+    "pointer_random_permutation",
+    "pointer_conflict_chain",
+    "pointer_irregular_defeats_next_line",
+    "pointer_mixed_load_store_update",
+)
+
+SIMULATION_WORKLOADS = {
+    name: BASE_WORKLOADS
+    for name in (
+        "dm_s8_vc4_pf0",
+        "2w_s4_vc4_pf0",
+        "2w_s4_vc8_pf0",
+    )
+}
+SIMULATION_WORKLOADS.update(
+    {
+        name: BASE_WORKLOADS + ("external_prefetch_matrix_candidates",)
+        for name in (
+            "2w_s4_vc4_pf1",
+            "2w_s4_vc4_pf1_low_latency",
+            "2w_s4_vc4_pf1_high_latency_random_bp",
+        )
+    }
+)
+SIMULATION_WORKLOADS.update(
+    {
+        "trace_replay_smoke_2w_s4_vc4_pf0": ("trace_replay",),
+        "trace_replay_generated_pointer_2w_s4_vc4_pf1": ("trace_replay",),
+    }
+)
+
+SYNTHESIS_PARAMETER_FIELDS = {
+    "LINE_BYTES": "line_bytes",
+    "NUM_SETS": "sets",
+    "NUM_WAYS": "ways",
+    "VICTIM_ENTRIES": "victim_entries",
+    "ENABLE_PREFETCH": "prefetch",
+}
+
+REQUIRED_EVIDENCE_ARTIFACTS = (
+    "build/vivado/reports/2w_s4_vc4_pf1.vcd",
+    "vivado.log",
+    "vivado.jou",
+)
 
 FAIL_PATTERNS = [
     re.compile(r"^\s*ERROR:", re.IGNORECASE),
@@ -162,7 +269,7 @@ def check_tcp(host: str, port: int, timeout: float = 5.0) -> None:
         return
 
 
-def scan_logs(local_root: Path, rel_paths: list[str]) -> int:
+def scan_logs(local_root: Path, rel_paths: list[str]) -> tuple[int, list[str]]:
     checked = 0
     findings: list[str] = []
     candidate_files: list[Path] = []
@@ -200,7 +307,318 @@ def scan_logs(local_root: Path, rel_paths: list[str]) -> int:
     print(f"scanned {checked} downloaded log/report files", flush=True)
     for finding in findings:
         print(f"LOG_SCAN_FAILURE {finding}", flush=True)
-    return 1 if findings else 0
+    return (1 if findings else 0), findings
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def clear_local_download(path: Path) -> None:
+    """Remove a prior download so a failed transfer cannot reuse stale evidence."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def execution_evidence(
+    command: str,
+    remote_exit_status: int,
+    download_failures: list[str],
+    *,
+    log_scan_skipped: bool,
+) -> tuple[dict[str, object], list[str]]:
+    """Build manifest execution metadata and fail-closed findings."""
+    findings: list[str] = []
+    if remote_exit_status != 0:
+        findings.append(f"remote Vivado exited with status {remote_exit_status}")
+    for rel_path in download_failures:
+        findings.append(f"remote download failed: {rel_path}")
+    if log_scan_skipped:
+        findings.append("downloaded log scan was skipped")
+    return (
+        {
+            "command": command,
+            "remote_exit_status": remote_exit_status,
+            "download_failures": list(download_failures),
+            "log_scan_skipped": log_scan_skipped,
+        },
+        findings,
+    )
+
+
+def parse_synthesis_parameters(path: Path) -> dict[str, dict[str, set[int]]]:
+    """Read the parameter bindings Vivado reports for each synthesis point."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    starts = list(
+        re.finditer(r"^Running Vivado synthesis: (\S+)\s*$", text, re.MULTILINE)
+    )
+    result: dict[str, dict[str, set[int]]] = {}
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        section = text[match.end() : end]
+        parameters: dict[str, set[int]] = {}
+        for parameter, value in re.findall(
+            r"^\s*Parameter\s+(\S+)\s+bound to:\s+([0-9]+)\b",
+            section,
+            re.MULTILINE,
+        ):
+            parameters.setdefault(parameter, set()).add(int(value))
+        result[match.group(1)] = parameters
+    return result
+
+
+def parse_workload_results(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("WORKLOAD_RESULT "):
+            continue
+        row: dict[str, str] = {}
+        for token in shlex.split(line[len("WORKLOAD_RESULT ") :]):
+            if "=" not in token:
+                raise ValueError(f"{path}: malformed WORKLOAD_RESULT token {token!r}")
+            key, value = token.split("=", 1)
+            if key in row:
+                raise ValueError(f"{path}: duplicate WORKLOAD_RESULT field {key!r}")
+            row[key] = value
+        rows.append(row)
+    return rows
+
+
+def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, object]]:
+    report_root = local_root / "build" / "vivado" / "reports"
+    findings: list[str] = []
+    evidence: dict[str, object] = {
+        "simulations": [],
+        "synthesis": [],
+        "artifacts": {},
+    }
+
+    expected_logs = {f"{name}_simulation.log" for name in SIMULATION_CONFIGURATIONS}
+    actual_logs = {path.name for path in report_root.glob("*_simulation.log")}
+    if actual_logs != expected_logs:
+        findings.append(
+            "simulation log set mismatch: "
+            f"missing={sorted(expected_logs - actual_logs)} "
+            f"extra={sorted(actual_logs - expected_logs)}"
+        )
+
+    expected_dirs = set(SYNTHESIS_CONFIGURATIONS)
+    actual_dirs = {path.name for path in report_root.iterdir() if path.is_dir()} \
+        if report_root.is_dir() else set()
+    if actual_dirs != expected_dirs:
+        findings.append(
+            "synthesis directory set mismatch: "
+            f"missing={sorted(expected_dirs - actual_dirs)} "
+            f"extra={sorted(actual_dirs - expected_dirs)}"
+        )
+
+    for name, geometry in SIMULATION_CONFIGURATIONS.items():
+        log = report_root / f"{name}_simulation.log"
+        if not log.is_file():
+            continue
+        try:
+            rows = parse_workload_results(log)
+        except (OSError, UnicodeError, ValueError) as exc:
+            findings.append(str(exc))
+            rows = []
+        if not rows:
+            findings.append(f"{log}: no WORKLOAD_RESULT schema=2 rows")
+
+        expected_workloads = SIMULATION_WORKLOADS[name]
+        actual_workloads = [row.get("name", "<missing>") for row in rows]
+        counts = Counter(actual_workloads)
+        missing_workloads = sorted(set(expected_workloads) - set(actual_workloads))
+        extra_workloads = sorted(set(actual_workloads) - set(expected_workloads))
+        duplicate_workloads = sorted(
+            workload for workload, count in counts.items() if count != 1
+        )
+        if (
+            len(actual_workloads) != len(expected_workloads)
+            or missing_workloads
+            or extra_workloads
+            or duplicate_workloads
+        ):
+            findings.append(
+                f"{log}: workload matrix mismatch: "
+                f"expected_count={len(expected_workloads)} "
+                f"actual_count={len(actual_workloads)} "
+                f"missing={missing_workloads} extra={extra_workloads} "
+                f"duplicates={duplicate_workloads}"
+            )
+
+        for index, row in enumerate(rows):
+            context = f"{log}:result[{index}]"
+            expected_config_id = name
+            if name.startswith("trace_replay_smoke_"):
+                expected_config_id = "2w_s4_vc4_pf0"
+            elif name.startswith("trace_replay_generated_pointer_") or name.startswith(
+                "2w_s4_vc4_pf1_"
+            ):
+                expected_config_id = "2w_s4_vc4_pf1"
+            expected_fields = {
+                "schema": 2,
+                "config_id": expected_config_id,
+                "sets": geometry["sets"],
+                "ways": geometry["ways"],
+                "line_bytes": geometry["line_bytes"],
+                "l1_bytes": (
+                    geometry["sets"] * geometry["ways"] * geometry["line_bytes"]
+                ),
+                "victim_entries": geometry["victim_entries"],
+                "victim_bytes": geometry["victim_entries"] * geometry["line_bytes"],
+                "total_bytes": (
+                    geometry["sets"] * geometry["ways"] * geometry["line_bytes"]
+                    + geometry["victim_entries"] * geometry["line_bytes"]
+                ),
+                "mem_latency": geometry["mem_latency"],
+                "mem_bp": geometry["mem_bp"],
+                "cpu_bp": geometry["cpu_bp"],
+                "status": "PASS",
+                "watchdogs": 0,
+                "protocol": 0,
+                "duplicate_lines": 0,
+            }
+            for field, expected in expected_fields.items():
+                if row.get(field) != str(expected):
+                    findings.append(
+                        f"{context}: {field}={row.get(field)!r}, expected {expected!r}"
+                    )
+        evidence["simulations"].append(
+            {
+                "config_id": name,
+                "geometry": geometry,
+                "log": str(log.relative_to(local_root)),
+                "sha256": sha256(log),
+                "workload_results": len(rows),
+                "workloads": actual_workloads,
+            }
+        )
+
+    vivado_log = local_root / "vivado.log"
+    synthesis_parameters: dict[str, dict[str, set[int]]] = {}
+    if vivado_log.is_file():
+        try:
+            synthesis_parameters = parse_synthesis_parameters(vivado_log)
+        except (OSError, UnicodeError, ValueError) as exc:
+            findings.append(f"cannot parse synthesis parameters: {exc}")
+    actual_synthesis_sections = set(synthesis_parameters)
+    expected_synthesis_sections = set(SYNTHESIS_CONFIGURATIONS)
+    if actual_synthesis_sections != expected_synthesis_sections:
+        findings.append(
+            "Vivado synthesis section mismatch: "
+            f"missing={sorted(expected_synthesis_sections - actual_synthesis_sections)} "
+            f"extra={sorted(actual_synthesis_sections - expected_synthesis_sections)}"
+        )
+
+    required_reports = ("utilization.rpt", "timing_summary.rpt", "power.rpt")
+    for name, geometry in SYNTHESIS_CONFIGURATIONS.items():
+        report_dir = report_root / name
+        artifacts: dict[str, dict[str, str]] = {}
+        for filename in required_reports:
+            report = report_dir / filename
+            if not report.is_file():
+                findings.append(f"missing synthesis report: {report}")
+                continue
+            artifacts[filename] = {
+                "path": str(report.relative_to(local_root)),
+                "sha256": sha256(report),
+            }
+        bound_parameters = synthesis_parameters.get(name, {})
+        normalized_parameters: dict[str, object] = {}
+        for parameter, geometry_field in SYNTHESIS_PARAMETER_FIELDS.items():
+            values = bound_parameters.get(parameter, set())
+            expected_value = geometry[geometry_field]
+            if values != {expected_value}:
+                findings.append(
+                    f"Vivado synthesis {name}: {parameter} bindings="
+                    f"{sorted(values)}, expected [{expected_value}]"
+                )
+            normalized_parameters[parameter] = (
+                next(iter(values)) if len(values) == 1 else sorted(values)
+            )
+        evidence["synthesis"].append(
+            {
+                "config_id": name,
+                "geometry": geometry,
+                "bound_parameters": normalized_parameters,
+                "reports": artifacts,
+            }
+        )
+
+    evidence_artifacts = evidence["artifacts"]
+    assert isinstance(evidence_artifacts, dict)
+    for rel_path in REQUIRED_EVIDENCE_ARTIFACTS:
+        artifact = local_root / rel_path
+        if not artifact.is_file():
+            findings.append(f"missing Vivado evidence artifact: {artifact}")
+            continue
+        evidence_artifacts[rel_path] = {
+            "path": rel_path,
+            "sha256": sha256(artifact),
+        }
+    return findings, evidence
+
+
+def write_evidence_manifest(
+    local_root: Path,
+    args: argparse.Namespace,
+    evidence: dict[str, object],
+    findings: list[str],
+    execution: dict[str, object],
+) -> Path:
+    version_text = (local_root / "vivado.log").read_text(
+        encoding="utf-8", errors="replace"
+    ) if (local_root / "vivado.log").is_file() else ""
+    version_match = re.search(r"Vivado v([^\s]+)", version_text)
+    xdc_text = (local_root / "constraints" / "l1d_baseline.xdc").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    period_match = re.search(
+        r"create_clock[^\n]*\s-period\s+([0-9.]+)", xdc_text
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=local_root, check=True,
+        text=True, stdout=subprocess.PIPE,
+    ).stdout.strip()
+    dirty = bool(subprocess.run(
+        ["git", "status", "--porcelain"], cwd=local_root, check=True,
+        text=True, stdout=subprocess.PIPE,
+    ).stdout.strip())
+    inputs = {}
+    for rel_path in DEFAULT_UPLOADS + ["scripts/run_remote_vivado.py"]:
+        path = local_root / rel_path
+        inputs[rel_path] = sha256(path)
+    manifest = {
+        "schema": "l1d-vivado-evidence-v2",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "PASS" if not findings else "FAIL",
+        "findings": findings,
+        "tool": {
+            "vivado_version": version_match.group(1) if version_match else None,
+            "launcher": args.vivado,
+            "part": args.part_env or "xc7a35tcpg236-1",
+            "clock_period_ns": float(period_match.group(1)) if period_match else None,
+        },
+        "repository": {"commit": commit, "dirty": dirty},
+        "inputs": inputs,
+        "execution": execution,
+        **evidence,
+    }
+    output = local_root / "build" / "vivado" / "evidence_manifest.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, output)
+    print(f"wrote Vivado evidence manifest: {output}", flush=True)
+    return output
 
 
 def parse_args() -> argparse.Namespace:
@@ -259,6 +677,9 @@ def main() -> int:
         allow_agent=False,
     )
     sftp = ssh.open_sftp()
+    command = ""
+    remote_exit_status = 1
+    download_failures: list[str] = []
     try:
         ensure_remote_dir(sftp, remote_root)
         if args.probe_only:
@@ -281,22 +702,53 @@ def main() -> int:
             f"-mode batch -source '{tcl_source}'"
         )
         print(f"starting remote Vivado batch flow with source {tcl_source}", flush=True)
-        status = run_remote(ssh, command)
-        print(f"remote Vivado exit status: {status}", flush=True)
+        remote_exit_status = run_remote(ssh, command)
+        status = remote_exit_status
+        print(f"remote Vivado exit status: {remote_exit_status}", flush=True)
 
         for rel_path in downloads:
             remote_path = posixpath.join(remote_root, rel_path.replace("\\", "/"))
+            local_path = local_root / rel_path
+            clear_local_download(local_path)
             try:
-                download_path(sftp, remote_path, local_root / rel_path)
-            except FileNotFoundError:
-                print(f"missing remote download path: {rel_path}", flush=True)
+                download_path(sftp, remote_path, local_path)
+            except OSError as exc:
+                failure_kind = (
+                    "missing" if isinstance(exc, FileNotFoundError) else "failed"
+                )
+                print(
+                    f"{failure_kind} remote download path: {rel_path} "
+                    f"({type(exc).__name__})",
+                    flush=True,
+                )
+                clear_local_download(local_path)
+                download_failures.append(rel_path)
                 status = status or 1
     finally:
         sftp.close()
         ssh.close()
 
+    execution, findings = execution_evidence(
+        command,
+        remote_exit_status,
+        download_failures,
+        log_scan_skipped=args.skip_log_scan and not args.probe_only,
+    )
+    evidence: dict[str, object] = {
+        "simulations": [],
+        "synthesis": [],
+        "artifacts": {},
+    }
+    if not args.probe_only:
+        matrix_findings, evidence = validate_report_matrix(local_root)
+        findings.extend(matrix_findings)
     if not args.skip_log_scan:
-        status = status or scan_logs(local_root, downloads)
+        scan_status, scan_findings = scan_logs(local_root, downloads)
+        status = status or scan_status
+        findings.extend(scan_findings)
+    if not args.probe_only:
+        write_evidence_manifest(local_root, args, evidence, findings, execution)
+        status = status or (1 if findings else 0)
     return status
 
 

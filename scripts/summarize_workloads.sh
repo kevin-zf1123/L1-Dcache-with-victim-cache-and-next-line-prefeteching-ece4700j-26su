@@ -6,23 +6,33 @@ SIM_DIR="${ROOT_DIR}/sim"
 OUTPUT="${SIM_DIR}/workload_results.csv"
 
 mkdir -p "${SIM_DIR}"
+tmp_output="${OUTPUT}.tmp"
+rm -f "${OUTPUT}" "${tmp_output}"
+trap 'rm -f "${tmp_output}"' EXIT
 
-awk '
-BEGIN {
-    print "name,ways,victim_entries,prefetch,accesses,hits,misses,victim_hits,mem_reads,mem_writes,useful,useless,pollution,dropped,cycles"
-}
-/^WORKLOAD_RESULT / {
-    delete value
-    for (field = 2; field <= NF; field++) {
-        split($field, pair, "=")
-        value[pair[1]] = pair[2]
-    }
-    print value["name"] "," value["ways"] "," value["vc"] "," \
-          value["prefetch"] "," value["accesses"] "," value["hits"] "," \
-          value["misses"] "," value["victim_hits"] "," value["mem_reads"] "," \
-          value["mem_writes"] "," value["useful"] "," value["useless"] "," \
-          value["pollution"] "," value["dropped"] "," value["cycles"]
-}
-' "${SIM_DIR}"/workload_*.log "${SIM_DIR}"/trace_replay_*.log > "${OUTPUT}"
+if (( $# > 0 )); then
+    INPUTS=("$@")
+else
+    INPUTS=(
+        "${SIM_DIR}/workload_dm_s8_vc4_pf0.log"
+        "${SIM_DIR}/workload_2w_s4_vc4_pf0.log"
+        "${SIM_DIR}/workload_2w_s4_vc8_pf0.log"
+        "${SIM_DIR}/workload_2w_s4_vc4_pf1.log"
+        "${SIM_DIR}/trace_replay_smoke.log"
+    )
+fi
+
+for input in "${INPUTS[@]}"; do
+    if [[ ! -f "${input}" ]]; then
+        echo "summarize_workloads: missing input: ${input}" >&2
+        exit 2
+    fi
+done
+
+python3 "${ROOT_DIR}/scripts/validate_workload_results.py" \
+    "${INPUTS[@]}" > "${tmp_output}"
+
+mv "${tmp_output}" "${OUTPUT}"
+trap - EXIT
 
 echo "Workload CSV written to ${OUTPUT}."

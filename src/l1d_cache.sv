@@ -152,6 +152,9 @@ module l1d_cache #(
     logic next_line_candidate_ready;
     logic [ADDR_WIDTH-1:0] next_line_candidate_addr;
     logic next_line_dropped;
+    logic accept_cpu;
+    logic accept_ext;
+    logic accept_next;
 
     integer lookup_i;
     integer reset_i;
@@ -365,14 +368,22 @@ module l1d_cache #(
     end
 
     always_comb begin
+        accept_cpu = (state == ST_IDLE) && cpu_req_valid;
+        ext_prefetch_ready = (state == ST_IDLE) && !cpu_req_valid &&
+            (ENABLE_PREFETCH != 0) && cfg_prefetch_enable;
+        accept_ext = ext_prefetch_ready && ext_prefetch_valid;
+        next_line_candidate_ready = (state == ST_IDLE) && !cpu_req_valid &&
+            !ext_prefetch_valid && (ENABLE_PREFETCH != 0) &&
+            cfg_prefetch_enable;
+        accept_next = next_line_candidate_ready &&
+            next_line_candidate_valid;
+
         cpu_req_ready = (state == ST_IDLE);
         cpu_rsp_valid = (state == ST_RESP);
         cpu_rsp_rdata = response_data;
         cpu_rsp_error = response_error;
         cpu_rsp_error_cause = response_error_cause;
         cache_idle = (state == ST_IDLE);
-        ext_prefetch_ready = 1'b0;
-        next_line_candidate_ready = 1'b0;
         next_line_trigger =
             (state == ST_INSTALL) && !req_is_prefetch;
         event_prefetch_dropped = next_line_dropped;
@@ -390,18 +401,15 @@ module l1d_cache #(
         array_wdata = working_line;
 
         if (state == ST_IDLE) begin
-            if (cpu_req_valid &&
-                !access_misaligned(cpu_req_addr, cpu_req_size)) begin
-                array_en = 1'b1;
-                array_addr = address_set(cpu_req_addr);
-            end else if ((ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
-                         ext_prefetch_valid) begin
-                ext_prefetch_ready = 1'b1;
+            if (accept_cpu) begin
+                if (!access_misaligned(cpu_req_addr, cpu_req_size)) begin
+                    array_en = 1'b1;
+                    array_addr = address_set(cpu_req_addr);
+                end
+            end else if (accept_ext) begin
                 array_en = 1'b1;
                 array_addr = address_set(ext_prefetch_addr);
-            end else if ((ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
-                         next_line_candidate_valid) begin
-                next_line_candidate_ready = 1'b1;
+            end else if (accept_next) begin
                 array_en = 1'b1;
                 array_addr = address_set(next_line_candidate_addr);
             end
@@ -512,7 +520,7 @@ module l1d_cache #(
 
             case (state)
                 ST_IDLE: begin
-                    if (cpu_req_valid) begin
+                    if (accept_cpu) begin
                         req_addr <= cpu_req_addr;
                         req_write <= cpu_req_write;
                         req_size <= cpu_req_size;
@@ -530,9 +538,7 @@ module l1d_cache #(
                         end else begin
                             state <= ST_LOOKUP;
                         end
-                    end else if ((ENABLE_PREFETCH != 0) &&
-                                 cfg_prefetch_enable &&
-                                 ext_prefetch_valid) begin
+                    end else if (accept_ext) begin
                         req_addr <= line_address(ext_prefetch_addr);
                         req_write <= 1'b0;
                         req_size <= ACCESS_DOUBLE;
@@ -540,9 +546,7 @@ module l1d_cache #(
                         req_wdata <= '0;
                         req_is_prefetch <= 1'b1;
                         state <= ST_LOOKUP;
-                    end else if ((ENABLE_PREFETCH != 0) &&
-                                 cfg_prefetch_enable &&
-                                 next_line_candidate_valid) begin
+                    end else if (accept_next) begin
                         req_addr <= next_line_candidate_addr;
                         req_write <= 1'b0;
                         req_size <= ACCESS_DOUBLE;
@@ -834,6 +838,10 @@ module l1d_cache #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n) begin
+            assert (!((accept_cpu && accept_ext) ||
+                      (accept_cpu && accept_next) ||
+                      (accept_ext && accept_next)))
+                else $fatal(1, "CPU/external/next-line accepts are not one-hot");
             if (state == ST_LOOKUP && l1_hit_comb &&
                 victim_hit_valid_comb) begin
                 $fatal(1, "A line is simultaneously valid in L1 and victim cache");

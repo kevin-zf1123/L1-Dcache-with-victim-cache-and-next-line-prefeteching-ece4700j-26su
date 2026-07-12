@@ -71,18 +71,31 @@ events.
 
 Chen and Baer's hardware prefetching work and later surveys distinguish
 accuracy, coverage, timeliness, and bandwidth cost. A useful-prefetch count
-alone is insufficient. Final evaluation must calculate:
+alone is insufficient. A complete future evaluation should calculate the
+following metrics. The current strict paired replay calculates all of them
+except independent in-flight timeliness; in this blocking model,
+`timely_useful=useful` and `late_useful=0` are only structural proxy values:
 
-- accuracy = useful prefetches / issued or filled prefetches;
-- coverage = demand misses removed by prefetching / baseline demand misses;
-- timeliness = whether the prefetch completes before the demand;
-- pollution = additional demand misses caused by prefetch displacement; and
-- bandwidth overhead = extra lower-memory traffic.
+- accuracy = useful prefetches / filled prefetches;
+- L1 coverage = (baseline L1 misses - prefetch-on L1 misses) /
+  baseline L1 misses;
+- lower-memory coverage = (baseline demand reads - prefetch-on demand reads) /
+  baseline demand reads;
+- timeliness = timely useful / (timely useful + late useful), where a late
+  prefetch is still in flight when the demand first presents valid;
+- true L1 pollution = a demand that is an L1 hit in the baseline run and an
+  L1 miss in the paired prefetch-on run;
+- true lower-memory pollution = a demand that avoids lower memory in the
+  baseline run but reads lower memory in the paired prefetch-on run; and
+- bandwidth overhead = (prefetch-on bytes - baseline bytes) / baseline bytes.
+
+A ratio with a zero denominator is reported as N/A rather than zero.
 
 The current `stat_prefetch_pollution` counter is only a pressure proxy because
 an L1 line displaced by prefetch may remain in the victim cache. Trace-based
-comparison against a prefetch-disabled run is required to identify true
-additional misses.
+per-demand comparison against a prefetch-disabled run is required to identify
+true additional misses. Aggregate miss deltas show net benefit or harm but
+cannot identify pollution and help events that cancel out.
 
 ### Adaptive and feedback-directed prefetching
 
@@ -117,22 +130,23 @@ protocols.
 - Explicit prefetched-line metadata and feedback events.
 - Replaceable prefetch candidate interface.
 
-### Areas requiring further work
+### Current implementation status and remaining work
 
-- Add a separate prefetch-buffer placement option to compare against direct L1
-  insertion.
-- Add true pollution measurement by tracking whether a displaced demand line
-  is requested before it would otherwise have been evicted.
-- Add prefetch timeliness and lower-memory request counters.
-- Add backpressure-aware prefetch scheduling and cancellation.
-- Add 0/4/8 victim-entry configurations; zero entries currently require a
-  bypass implementation.
-- Compare round-robin and LRU victim replacement.
-- Add assertions that a line cannot be simultaneously valid in L1 and victim
-  cache, except transiently inside a swap edge.
-- Add randomized reference-model checking and formal properties for dirty-data
-  preservation.
-- Add MSHRs or a refill buffer only after the blocking baseline is stable.
+The baseline now includes separate demand/prefetch lower-memory counters,
+paired per-demand true-pollution attribution, line-uniqueness assertions, and
+a randomized golden-memory reference model. Remaining work is:
+
+- add a separate prefetch-buffer placement option to compare against direct L1
+  insertion;
+- measure independent issue/fill/accept timeliness and a full latency
+  distribution;
+- add backpressure-aware prefetch scheduling and cancellation;
+- add 0/4/8 victim-entry configurations; zero entries currently require a
+  bypass implementation;
+- compare round-robin and LRU victim replacement;
+- extend simulation assertions with formal dirty-data-preservation properties;
+  and
+- add MSHRs or a refill buffer only after the blocking baseline is stable.
 
 ## Proposal Reference Audit
 

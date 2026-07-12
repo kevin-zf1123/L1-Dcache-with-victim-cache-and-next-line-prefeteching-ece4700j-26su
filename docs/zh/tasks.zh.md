@@ -21,6 +21,7 @@
 
 - [x] 增加 deterministic randomized golden-memory scoreboard。
 - [x] 验证 RV64 load/store size、符号/零扩展和未对齐错误。
+- [x] 验证 CPU/external/next-line 在重叠请求下的 handshake 必须互斥。
 - [x] 验证 64 位高地址 tag 和 RV64 trace replay 格式。
 - [x] 检查 backpressure 下 CPU response 和下级内存请求稳定性。
 - [x] 增加 handshake stability 和 line uniqueness 仿真检查。
@@ -33,10 +34,21 @@
 - [ ] 增加零 entry victim cache bypass 配置。
 - [ ] 增加 LRU victim replacement 选项。
 - [ ] 增加独立 prefetch buffer 放置方案。
-- [ ] 增加真实 pollution、timeliness 和内存带宽测量。
+- [x] 增加 paired true-pollution 分析和分开统计的 demand/prefetch 内存带宽
+  测量；RTL displacement counter 仍明确作为 proxy。
+- [ ] 增加独立的 issue/fill/accept prefetch timeliness 测量。
 - [x] 增加 SPEC CPU 2017/2026 区间 trace replay driver。
-- [x] 运行初始获许可 SPEC CPU 2026 782.lbm_r trace extraction 和 replay 验证。
-- [x] 对更多获许可 SPEC workload 区间进行分类。
+- [x] 运行历史 `782.lbm_r` extraction/replay 流程检查（不是权威 benchmark
+  证据）。
+- [x] 捕获并 replay 旧版 20-window/四配置 SPEC matrix（历史全系统混合
+  trace，不能归因到 benchmark）。
+- [x] 在 dynamic RV64 smoke workload 上验证目标进程、vCPU、privilege 和
+  address-space 归因。
+- [x] 输出统一 workload schema 并实现严格 paired-run 分析。
+- [x] 通过 paired replay sidecar 增加逐 demand true-pollution 归因。
+- [ ] 增加独立的逐 demand prefetch timeliness 分析。
+- [ ] 使用验证后的 process-scoped 流程重新捕获获许可 SPEC 区间。
+- [ ] 对有效窗口分类并发布 paired metrics 与图表。
 
 ## Vivado 与 PPA
 
@@ -50,3 +62,10 @@
 - [x] 运行 RV64 vectorless FPGA power estimation 并记录其假设。
 - [ ] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
 - [x] 比较 baseline、victim cache、prefetch 和组合配置。
+- [x] 使用相同 L1 容量及完全一致的 simulation/PPA geometry 重跑比较。
+
+## 发布范围
+
+仓库保持公开。进一步的 Git 历史、cached ref、LFS object 或 fork 清理已明确
+不属于本次修复计划；获许可 capture artifact 继续保存在被忽略的私有
+build directory 中。

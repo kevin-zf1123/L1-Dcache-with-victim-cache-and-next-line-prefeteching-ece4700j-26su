@@ -1,0 +1,18 @@
+#ifndef L1D_TRACE_ROI_ABI_H
+#define L1D_TRACE_ROI_ABI_H
+
+#include <stdint.h>
+
+#define L1D_ROI_ABI_VERSION 2
+#define L1D_ROI_MAGIC UINT64_C(0x4c3144524f490002)
+#define L1D_ROI_MARKER_WORD UINT32_C(0x12300013)
+
+enum l1d_roi_event {
+    L1D_ROI_START = 1,
+    L1D_ROI_STOP = 2,
+};
+
+#define L1D_ROI_NONCE_ENV "L1D_TRACE_ROI_NONCE"
+#define L1D_ROI_COMMAND_ENV "L1D_TRACE_ROI_COMMAND"
+
+#endif

@@ -3,12 +3,12 @@
 module tb_l1d_cache #(
     parameter integer NUM_WAYS = 1,
     parameter integer ENABLE_PREFETCH = 0,
-    parameter integer VICTIM_ENTRIES = 4
+    parameter integer VICTIM_ENTRIES = 4,
+    parameter integer NUM_SETS = 8,
+    parameter integer LINE_BYTES = 16
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
-    localparam integer LINE_BYTES = 16;
-    localparam integer NUM_SETS = 4;
     localparam integer LINE_BITS = LINE_BYTES * 8;
     localparam integer MEM_BYTES = 4096;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
@@ -90,8 +90,27 @@ module tb_l1d_cache #(
     integer errors;
     integer protocol_errors;
     integer accepted_mem_reads;
+    integer accepted_demand_mem_reads;
+    integer accepted_prefetch_mem_reads;
     integer accepted_mem_writes;
     integer cycles_since_reset;
+    integer metric_hits_base;
+    integer metric_misses_base;
+    integer metric_victim_hits_base;
+    integer metric_writebacks_base;
+    integer metric_fills_base;
+    integer metric_useful_base;
+    integer metric_useless_base;
+    integer metric_pollution_base;
+    integer metric_dropped_base;
+    integer metric_demand_reads_base;
+    integer metric_prefetch_reads_base;
+    integer metric_writes_base;
+    integer metric_cycles_base;
+    integer access_sidecar_fd;
+    logic measurement_active;
+    reg [8*64-1:0] config_id;
+    reg [8*256-1:0] trace_id;
     integer k;
 
     l1d_cache #(
@@ -278,6 +297,94 @@ module tb_l1d_cache #(
         end
     endfunction
 
+    function automatic integer count_unused_resident;
+        integer way_index;
+        integer set_index;
+        integer victim_index;
+        begin
+            count_unused_resident = 0;
+            for (way_index = 0; way_index < NUM_WAYS;
+                 way_index = way_index + 1) begin
+                for (set_index = 0; set_index < NUM_SETS;
+                     set_index = set_index + 1) begin
+                    if (dut.valid_bits[way_index][set_index] &&
+                        dut.prefetched_bits[way_index][set_index]) begin
+                        count_unused_resident = count_unused_resident + 1;
+                    end
+                end
+            end
+            for (victim_index = 0; victim_index < VICTIM_ENTRIES;
+                 victim_index = victim_index + 1) begin
+                if (dut.vc_valid[victim_index] &&
+                    dut.vc_prefetched[victim_index]) begin
+                    count_unused_resident = count_unused_resident + 1;
+                end
+            end
+        end
+    endfunction
+
+    function automatic integer trace_phase_code(
+        input reg [8*256-1:0] line
+    );
+        integer c0;
+        integer c1;
+        integer c2;
+        integer c3;
+        integer c4;
+        integer c5;
+        integer c6;
+        integer c7;
+        integer c8;
+        integer c9;
+        integer c10;
+        integer c11;
+        integer c12;
+        integer c13;
+        integer c14;
+        integer count;
+        begin
+            count = $sscanf(line,
+                            "%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c",
+                            c0, c1, c2, c3, c4, c5, c6, c7,
+                            c8, c9, c10, c11, c12, c13, c14);
+            trace_phase_code = 0;
+            if (count >= 14 &&
+                c0 == 8'h23 && c1 == 8'h20 &&
+                c2 == 8'h50 && c3 == 8'h48 && c4 == 8'h41 &&
+                c5 == 8'h53 && c6 == 8'h45 && c7 == 8'h20 &&
+                c8 == 8'h77 && c9 == 8'h61 && c10 == 8'h72 &&
+                c11 == 8'h6d && c12 == 8'h75 && c13 == 8'h70) begin
+                trace_phase_code = 1;
+            end else if (count >= 15 &&
+                         c0 == 8'h23 && c1 == 8'h20 &&
+                         c2 == 8'h50 && c3 == 8'h48 && c4 == 8'h41 &&
+                         c5 == 8'h53 && c6 == 8'h45 && c7 == 8'h20 &&
+                         c8 == 8'h6d && c9 == 8'h65 && c10 == 8'h61 &&
+                         c11 == 8'h73 && c12 == 8'h75 && c13 == 8'h72 &&
+                         c14 == 8'h65) begin
+                trace_phase_code = 2;
+            end
+        end
+    endfunction
+
+    task automatic snapshot_measurement_counters;
+        begin
+            metric_hits_base = stat_cpu_hits;
+            metric_misses_base = stat_cpu_misses;
+            metric_victim_hits_base = stat_victim_hits;
+            metric_writebacks_base = stat_writebacks;
+            metric_fills_base = stat_prefetch_fills;
+            metric_useful_base = stat_prefetch_useful;
+            metric_useless_base = stat_prefetch_useless;
+            metric_pollution_base = stat_prefetch_pollution;
+            metric_dropped_base = stat_prefetch_dropped;
+            metric_demand_reads_base = accepted_demand_mem_reads;
+            metric_prefetch_reads_base = accepted_prefetch_mem_reads;
+            metric_writes_base = accepted_mem_writes;
+            metric_cycles_base = cycles_since_reset;
+        end
+    endtask
+
     task automatic initialize_memory;
         integer b;
         begin
@@ -316,11 +423,13 @@ module tb_l1d_cache #(
             cfg_next_line_enable = (ENABLE_PREFETCH != 0);
             ext_prefetch_valid = 1'b0;
             ext_prefetch_addr = '0;
+            measurement_active = 1'b0;
             rst_n = 1'b0;
             repeat (3) @(posedge clk);
             @(negedge clk);
             rst_n = 1'b1;
             repeat (2) @(posedge clk);
+            snapshot_measurement_counters();
         end
     endtask
 
@@ -853,6 +962,191 @@ module tb_l1d_cache #(
         end
     endtask
 
+    task automatic test_prefetch_arbitration;
+        logic [ADDR_WIDTH-1:0] base;
+        logic ext_accepted;
+        logic [31:0] fills_before;
+        integer timeout;
+        begin
+            $display("TEST prefetch arbitration, ways=%0d", NUM_WAYS);
+
+            // A misaligned CPU request still owns the CPU acceptance slot.  An
+            // external producer is allowed to retire its request only when the
+            // cache can actually latch it.
+            initialize_memory();
+            reset_cache();
+            cfg_next_line_enable = 1'b0;
+            base = 64'h0000_0000_0000_0200;
+            fills_before = stat_prefetch_fills;
+            @(negedge clk);
+            cpu_req_valid = 1'b1;
+            cpu_req_addr = base + 1;
+            cpu_req_write = 1'b0;
+            cpu_req_size = SIZE_HALF;
+            cpu_req_unsigned = 1'b0;
+            cpu_req_wdata = '0;
+            ext_prefetch_valid = 1'b1;
+            ext_prefetch_addr = base + 4*LINE_BYTES;
+            #1;
+            ext_accepted = ext_prefetch_ready;
+            if (ext_prefetch_ready) begin
+                $display("FAIL external prefetch accepted with misaligned CPU demand");
+                errors = errors + 1;
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cpu_req_valid = 1'b0;
+            cpu_req_addr = '0;
+            cpu_req_size = SIZE_DOUBLE;
+            if (ext_accepted) begin
+                ext_prefetch_valid = 1'b0;
+            end
+
+            timeout = 0;
+            while (!cpu_rsp_valid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 40) $fatal(1, "misaligned arbitration response timeout");
+            end
+            if (!cpu_rsp_error || cpu_rsp_error_cause != RSP_LOAD_MISALIGNED) begin
+                $display("FAIL arbitration CPU request did not report misalignment");
+                errors = errors + 1;
+            end
+            @(posedge clk);
+
+            if (ext_prefetch_valid) begin
+                timeout = 0;
+                while (!ext_prefetch_ready) begin
+                    @(negedge clk);
+                    timeout = timeout + 1;
+                    if (timeout > 40) $fatal(1, "deferred external prefetch timeout");
+                end
+                @(posedge clk);
+                @(negedge clk);
+                ext_prefetch_valid = 1'b0;
+            end
+            timeout = 0;
+            while (stat_prefetch_fills == fills_before && timeout <= 80) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
+            if (stat_prefetch_fills == fills_before) begin
+                $display("FAIL external prefetch was acknowledged but never filled");
+                errors = errors + 1;
+            end
+
+            // A queued next-line candidate must likewise remain pending while
+            // a misaligned demand receives its architectural error response.
+            initialize_memory();
+            reset_cache();
+            base = 64'h0000_0000_0000_0400;
+            cpu_rsp_ready = 1'b0;
+            expect_read(base, memory_load(base, SIZE_DOUBLE, 1'b0),
+                        "seed pending next-line candidate");
+            fills_before = stat_prefetch_fills;
+            @(negedge clk);
+            cpu_req_valid = 1'b1;
+            cpu_req_addr = base + 3;
+            cpu_req_write = 1'b0;
+            cpu_req_size = SIZE_WORD;
+            cpu_rsp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            #1;
+            if (!dut.next_line_candidate_valid) begin
+                $display("FAIL next-line candidate was not pending at arbitration boundary");
+                errors = errors + 1;
+            end
+            if (dut.next_line_candidate_ready) begin
+                $display("FAIL next-line candidate accepted with misaligned CPU demand");
+                errors = errors + 1;
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cpu_req_valid = 1'b0;
+            cpu_req_addr = '0;
+            cpu_req_size = SIZE_DOUBLE;
+            timeout = 0;
+            while (!cpu_rsp_valid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 40) $fatal(1, "pending arbitration response timeout");
+            end
+            @(posedge clk);
+            timeout = 0;
+            while (stat_prefetch_fills == fills_before && timeout <= 80) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
+            if (stat_prefetch_fills == fills_before) begin
+                $display("FAIL pending next-line request was silently lost");
+                errors = errors + 1;
+            end
+
+            // Three back-to-back cold demand misses keep the single-entry
+            // next-line queue occupied: one candidate survives and the two
+            // later candidates are explicitly counted as dropped.
+            initialize_memory();
+            reset_cache();
+            base = 64'h0000_0000_0000_0800;
+            cpu_rsp_ready = 1'b0;
+            expect_read(base, memory_load(base, SIZE_DOUBLE, 1'b0),
+                        "continuous demand miss 0");
+
+            // Present miss 1 before retiring miss 0's response.
+            @(negedge clk);
+            cpu_req_valid = 1'b1;
+            cpu_req_addr = base + 4*LINE_BYTES;
+            cpu_req_write = 1'b0;
+            cpu_req_size = SIZE_DOUBLE;
+            cpu_rsp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            cpu_rsp_ready = 1'b0;
+            @(posedge clk);
+            @(negedge clk);
+            cpu_req_valid = 1'b0;
+            timeout = 0;
+            while (!cpu_rsp_valid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 80) $fatal(1, "continuous miss 1 response timeout");
+            end
+
+            // Present miss 2 before retiring miss 1's response.
+            @(negedge clk);
+            cpu_req_valid = 1'b1;
+            cpu_req_addr = base + 8*LINE_BYTES;
+            cpu_rsp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            cpu_rsp_ready = 1'b0;
+            @(posedge clk);
+            @(negedge clk);
+            cpu_req_valid = 1'b0;
+            timeout = 0;
+            while (!cpu_rsp_valid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 80) $fatal(1, "continuous miss 2 response timeout");
+            end
+            @(negedge clk);
+            cpu_rsp_ready = 1'b1;
+            @(posedge clk);
+            timeout = 0;
+            while ((stat_prefetch_fills < 1 || stat_prefetch_dropped < 2) &&
+                   timeout <= 120) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
+            if (stat_prefetch_fills != 1 || stat_prefetch_dropped != 2) begin
+                $display("FAIL expected one fill and two drops, got fills=%0d dropped=%0d",
+                         stat_prefetch_fills, stat_prefetch_dropped);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
     task automatic wait_for_quiescence;
         integer timeout;
         begin
@@ -872,20 +1166,79 @@ module tb_l1d_cache #(
         input string workload_name,
         input integer accesses
     );
+        integer hits;
+        integer misses;
+        integer victim_hits;
+        integer demand_reads;
+        integer prefetch_reads;
+        integer writes;
+        integer writebacks;
+        integer fills;
+        integer useful;
+        integer useless;
+        integer pollution;
+        integer dropped;
+        integer unused_resident;
+        integer service_cycles;
+        reg [8*256-1:0] result_trace_id;
+        string status;
         begin
-            $display("WORKLOAD_RESULT name=%s ways=%0d vc=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d mem_reads=%0d mem_writes=%0d useful=%0d useless=%0d pollution=%0d dropped=%0d cycles=%0d",
-                     workload_name, NUM_WAYS, VICTIM_ENTRIES,
-                     cfg_prefetch_enable, accesses, stat_cpu_hits,
-                     stat_cpu_misses, stat_victim_hits, accepted_mem_reads,
-                     accepted_mem_writes, stat_prefetch_useful,
-                     stat_prefetch_useless, stat_prefetch_pollution,
-                     stat_prefetch_dropped, cycles_since_reset);
-            if (stat_cpu_hits + stat_cpu_misses != accesses) begin
+            hits = stat_cpu_hits - metric_hits_base;
+            misses = stat_cpu_misses - metric_misses_base;
+            victim_hits = stat_victim_hits - metric_victim_hits_base;
+            demand_reads = accepted_demand_mem_reads - metric_demand_reads_base;
+            prefetch_reads = accepted_prefetch_mem_reads - metric_prefetch_reads_base;
+            writes = accepted_mem_writes - metric_writes_base;
+            writebacks = stat_writebacks - metric_writebacks_base;
+            fills = stat_prefetch_fills - metric_fills_base;
+            useful = stat_prefetch_useful - metric_useful_base;
+            useless = stat_prefetch_useless - metric_useless_base;
+            pollution = stat_prefetch_pollution - metric_pollution_base;
+            dropped = stat_prefetch_dropped - metric_dropped_base;
+            unused_resident = count_unused_resident();
+            service_cycles = cycles_since_reset - metric_cycles_base;
+            if (trace_id == '0) begin
+                result_trace_id = "synthetic";
+            end else begin
+                result_trace_id = trace_id;
+            end
+            if (hits + misses != accesses) begin
                 $display("FAIL workload accounting name=%s accesses=%0d hits_plus_misses=%0d",
-                         workload_name, accesses,
-                         stat_cpu_hits + stat_cpu_misses);
+                         workload_name, accesses, hits + misses);
                 errors = errors + 1;
             end
+            if (demand_reads != misses - victim_hits) begin
+                $display("FAIL demand read accounting name=%s demand_reads=%0d misses_minus_victim=%0d",
+                         workload_name, demand_reads, misses - victim_hits);
+                errors = errors + 1;
+            end
+            if (prefetch_reads != fills) begin
+                $display("FAIL prefetch read/fill accounting name=%s prefetch_reads=%0d fills=%0d",
+                         workload_name, prefetch_reads, fills);
+                errors = errors + 1;
+            end
+            if (fills != useful + useless + unused_resident) begin
+                $display("FAIL prefetch conservation name=%s fills=%0d useful=%0d useless=%0d resident=%0d",
+                         workload_name, fills, useful, useless, unused_resident);
+                errors = errors + 1;
+            end
+            if (writes != writebacks) begin
+                $display("FAIL writeback accounting name=%s mem_writes=%0d writebacks=%0d",
+                         workload_name, writes, writebacks);
+                errors = errors + 1;
+            end
+            status = (errors == 0 && protocol_errors == 0) ? "PASS" : "FAIL";
+            $display("WORKLOAD_RESULT schema=2 name=%s config_id=%0s trace_id=%0s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=0 protocol=%0d duplicate_lines=0 status=%s",
+                     workload_name, config_id, result_trace_id, NUM_SETS,
+                     NUM_WAYS, LINE_BYTES, NUM_SETS*NUM_WAYS*LINE_BYTES,
+                     VICTIM_ENTRIES, VICTIM_ENTRIES*LINE_BYTES,
+                     (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                     ENABLE_PREFETCH, accesses, hits, misses, victim_hits,
+                     demand_reads, prefetch_reads, demand_reads + prefetch_reads,
+                     writes, (demand_reads + prefetch_reads)*LINE_BYTES,
+                     writes*LINE_BYTES, writebacks, fills, useful, useless,
+                     unused_resident, pollution, dropped, useful,
+                     service_cycles, protocol_errors, status);
         end
     endtask
 
@@ -1039,39 +1392,99 @@ module tb_l1d_cache #(
         integer trace_unsigned;
         integer check_load_data;
         integer accesses;
+        integer has_phase_markers;
+        integer saw_measure_phase;
+        integer hit_before;
+        integer victim_before;
+        integer accept_cycle;
+        integer is_phase_line;
+        integer phase_code;
         reg [8*256-1:0] trace_line;
         logic [ADDR_WIDTH-1:0] addr;
         logic [DATA_WIDTH-1:0] data;
         logic [DATA_WIDTH-1:0] actual;
         logic [1:0] size;
         logic unsigned_load;
+        string outcome;
         begin
             trace_fd = $fopen(trace_path, "r");
             if (trace_fd == 0) begin
                 $fatal(1, "cannot open trace file: %s", trace_path);
             end
 
-            $display("TEST trace replay file=%s ways=%0d prefetch=%0d",
-                     trace_path, NUM_WAYS, ENABLE_PREFETCH);
+            // Detect phased traces before replay so warmup is guaranteed to
+            // execute with every prefetch source disabled.  Legacy traces
+            // without markers remain whole-ROI measurement traces.
+            has_phase_markers = 0;
+            while (!$feof(trace_fd)) begin
+                trace_line = '0;
+                if ($fgets(trace_line, trace_fd) != 0) begin
+                    if (trace_phase_code(trace_line) != 0) begin
+                        has_phase_markers = 1;
+                    end
+                end
+            end
+            $fclose(trace_fd);
+            trace_fd = $fopen(trace_path, "r");
+            if (trace_fd == 0) begin
+                $fatal(1, "cannot reopen trace file: %s", trace_path);
+            end
+
+            $display("TEST trace replay file=%s ways=%0d sets=%0d line_bytes=%0d prefetch=%0d phased=%0d",
+                     trace_path, NUM_WAYS, NUM_SETS, LINE_BYTES,
+                     ENABLE_PREFETCH, has_phase_markers);
             check_load_data = !$test$plusargs("TRACE_SKIP_LOAD_CHECKS");
             if (!check_load_data) begin
                 $display("TRACE load-data checks disabled");
             end
             accesses = 0;
+            saw_measure_phase = 0;
+            measurement_active = !has_phase_markers;
+            cfg_prefetch_enable = (!has_phase_markers) &&
+                                  (ENABLE_PREFETCH != 0);
+            cfg_next_line_enable = cfg_prefetch_enable;
+            snapshot_measurement_counters();
             trace_line_number = 0;
             while (!$feof(trace_fd)) begin
                 trace_line = '0;
                 if ($fgets(trace_line, trace_fd) != 0) begin
                     trace_line_number = trace_line_number + 1;
                     operation = -1;
+                    scan_count = 0;
                     trace_size = -1;
                     trace_unsigned = 0;
                     addr = '0;
                     data = '0;
-                    scan_count = $sscanf(trace_line, "%d %d %d %h %h",
-                                         operation, trace_size,
-                                         trace_unsigned, addr, data);
-                    if (scan_count >= 1) begin
+                    is_phase_line = 0;
+                    phase_code = trace_phase_code(trace_line);
+                    if (phase_code == 1) begin
+                        is_phase_line = 1;
+                        if (saw_measure_phase) begin
+                            $fatal(1, "warmup phase follows measure at line %0d",
+                                   trace_line_number);
+                        end
+                        measurement_active = 1'b0;
+                        cfg_prefetch_enable = 1'b0;
+                        cfg_next_line_enable = 1'b0;
+                    end else if (phase_code == 2) begin
+                            is_phase_line = 1;
+                            if (saw_measure_phase) begin
+                                $fatal(1, "duplicate measure phase at line %0d",
+                                       trace_line_number);
+                            end
+                            wait_for_quiescence();
+                            snapshot_measurement_counters();
+                            accesses = 0;
+                            saw_measure_phase = 1;
+                            measurement_active = 1'b1;
+                            cfg_prefetch_enable = (ENABLE_PREFETCH != 0);
+                            cfg_next_line_enable = (ENABLE_PREFETCH != 0);
+                    end else begin
+                        scan_count = $sscanf(trace_line, "%d %d %d %h %h",
+                                             operation, trace_size,
+                                             trace_unsigned, addr, data);
+                    end
+                    if (!is_phase_line && scan_count >= 1) begin
                         case (operation)
                             0: begin
                                 if (scan_count != 4 ||
@@ -1082,6 +1495,10 @@ module tb_l1d_cache #(
                                 end
                                 size = trace_size;
                                 unsigned_load = trace_unsigned != 0;
+                                hit_before = stat_cpu_hits;
+                                victim_before = stat_victim_hits;
+                                accept_cycle = cycles_since_reset -
+                                               metric_cycles_base + 1;
                                 cpu_load(addr, size, unsigned_load, actual);
                                 if (check_load_data &&
                                     actual !== golden_load(addr, size,
@@ -1094,7 +1511,22 @@ module tb_l1d_cache #(
                                              actual);
                                     errors = errors + 1;
                                 end
-                                accesses = accesses + 1;
+                                if (measurement_active) begin
+                                    accesses = accesses + 1;
+                                    if (stat_cpu_hits != hit_before) begin
+                                        outcome = "l1_hit";
+                                    end else if (stat_victim_hits != victim_before) begin
+                                        outcome = "victim_hit";
+                                    end else begin
+                                        outcome = "lower_memory";
+                                    end
+                                    if (access_sidecar_fd != 0) begin
+                                        $fdisplay(access_sidecar_fd,
+                                                  "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=load size=%0d outcome=%s details=-",
+                                                  accesses - 1, accept_cycle,
+                                                  addr, size, outcome);
+                                    end
+                                end
                             end
                             1: begin
                                 if (scan_count != 5 ||
@@ -1103,9 +1535,28 @@ module tb_l1d_cache #(
                                            trace_line_number);
                                 end
                                 size = trace_size;
+                                hit_before = stat_cpu_hits;
+                                victim_before = stat_victim_hits;
+                                accept_cycle = cycles_since_reset -
+                                               metric_cycles_base + 1;
                                 cpu_store(addr, size, data);
                                 update_golden_store(addr, data, size);
-                                accesses = accesses + 1;
+                                if (measurement_active) begin
+                                    accesses = accesses + 1;
+                                    if (stat_cpu_hits != hit_before) begin
+                                        outcome = "l1_hit";
+                                    end else if (stat_victim_hits != victim_before) begin
+                                        outcome = "victim_hit";
+                                    end else begin
+                                        outcome = "lower_memory";
+                                    end
+                                    if (access_sidecar_fd != 0) begin
+                                        $fdisplay(access_sidecar_fd,
+                                                  "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=store size=%0d outcome=%s details=-",
+                                                  accesses - 1, accept_cycle,
+                                                  addr, size, outcome);
+                                    end
+                                end
                             end
                             default: begin
                                 $fatal(1, "invalid trace opcode at line %0d",
@@ -1116,6 +1567,9 @@ module tb_l1d_cache #(
                 end
             end
             $fclose(trace_fd);
+            if (has_phase_markers && !saw_measure_phase) begin
+                $fatal(1, "phased trace does not contain a measure phase");
+            end
             wait_for_quiescence();
             report_workload("trace_replay", accesses);
         end
@@ -1133,6 +1587,8 @@ module tb_l1d_cache #(
             mem_rsp_rdata <= '0;
             mem_ready_phase <= '0;
             accepted_mem_reads <= 0;
+            accepted_demand_mem_reads <= 0;
+            accepted_prefetch_mem_reads <= 0;
             accepted_mem_writes <= 0;
             cycles_since_reset <= 0;
         end else begin
@@ -1159,6 +1615,13 @@ module tb_l1d_cache #(
                     end
                 end else begin
                     accepted_mem_reads <= accepted_mem_reads + 1;
+                    if (debug_req_is_prefetch) begin
+                        accepted_prefetch_mem_reads <=
+                            accepted_prefetch_mem_reads + 1;
+                    end else begin
+                        accepted_demand_mem_reads <=
+                            accepted_demand_mem_reads + 1;
+                    end
                     read_pending <= 1'b1;
                     read_addr <= mem_req_addr;
                     read_countdown <= 2;
@@ -1212,12 +1675,62 @@ module tb_l1d_cache #(
         end
     end
 
+    always @(posedge clk) begin
+        if (rst_n && measurement_active && access_sidecar_fd != 0) begin
+            if (mem_req_valid && mem_req_ready && !mem_req_write &&
+                debug_req_is_prefetch) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=2 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory details=-",
+                          cycles_since_reset - metric_cycles_base,
+                          mem_req_addr, LINE_BYTES);
+            end
+            if (event_prefetch_fill) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=2 event=prefetch_fill seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit details=-",
+                          cycles_since_reset - metric_cycles_base,
+                          dut.req_line_addr_comb, LINE_BYTES);
+            end
+        end
+    end
+
     initial begin
         string trace_path;
+        string sidecar_path;
         clk = 1'b0;
         rst_n = 1'b0;
         errors = 0;
         protocol_errors = 0;
+        access_sidecar_fd = 0;
+        measurement_active = 1'b0;
+        trace_id = '0;
+        if (!$value$plusargs("CONFIG_ID=%s", config_id)) begin
+            if (NUM_WAYS == 1 && NUM_SETS == 8 &&
+                VICTIM_ENTRIES == 4 && ENABLE_PREFETCH == 0) begin
+                config_id = "dm_s8_vc4_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 4 && ENABLE_PREFETCH == 0) begin
+                config_id = "2w_s4_vc4_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 8 && ENABLE_PREFETCH == 0) begin
+                config_id = "2w_s4_vc8_pf0";
+            end else if (NUM_WAYS == 2 && NUM_SETS == 4 &&
+                         VICTIM_ENTRIES == 4 && ENABLE_PREFETCH != 0) begin
+                config_id = "2w_s4_vc4_pf1";
+            end else begin
+                config_id = $sformatf("%0dw_s%0d_vc%0d_pf%0d",
+                                      NUM_WAYS, NUM_SETS, VICTIM_ENTRIES,
+                                      ENABLE_PREFETCH);
+            end
+        end
+        if (!$value$plusargs("TRACE_ID=%s", trace_id)) begin
+            trace_id = '0;
+        end
+        if ($value$plusargs("ACCESS_SIDECAR=%s", sidecar_path)) begin
+            access_sidecar_fd = $fopen(sidecar_path, "w");
+            if (access_sidecar_fd == 0) begin
+                $fatal(1, "cannot open access sidecar: %s", sidecar_path);
+            end
+        end
         cpu_req_valid = 1'b0;
         cpu_req_addr = '0;
         cpu_req_write = 1'b0;
@@ -1242,6 +1755,7 @@ module tb_l1d_cache #(
         end else if ($test$plusargs("WORKLOADS_ONLY")) begin
             test_workload_boundaries();
         end else if (ENABLE_PREFETCH != 0) begin
+            test_prefetch_arbitration();
             test_prefetch();
         end else begin
             test_baseline();
@@ -1250,6 +1764,11 @@ module tb_l1d_cache #(
             test_dirty_victim_writeback();
             test_response_backpressure();
             test_randomized_scoreboard();
+        end
+
+        if (access_sidecar_fd != 0) begin
+            $fclose(access_sidecar_fd);
+            access_sidecar_fd = 0;
         end
 
         if (errors == 0 && protocol_errors == 0) begin

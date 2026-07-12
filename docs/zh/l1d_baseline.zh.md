@@ -32,9 +32,16 @@ Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | 功能与 synthetic workload 初步回归 |
 | `scripts/summarize_workloads.sh` | 将 workload 日志记录转换为 CSV |
+| `scripts/validate_workload_results.py` | fail-closed 的 schema-2 字段与 counter 守恒验证器 |
 | `scripts/run_vivado.tcl` | Vivado 仿真、综合、资源、时序与功耗报告 |
 | `scripts/run_remote_vivado.py` | 用于 Windows host 的 Paramiko 远程 Vivado runner |
 | `scripts/generate_phase3_traces.py` | 确定性 Phase 3 trace generator |
+| `scripts/capture_spec_qemu_windows.py` | fail-closed 的逐命令 RV64 QEMU 抓取与私有 manifest |
+| `scripts/split_qemu_memtrace_windows.py` | 验证 schema-v3 raw capture 并生成 canonical 分阶段 replay window |
+| `scripts/run_spec_trace_replay.sh` | manifest 驱动的四配置 replay 与 paired analysis |
+| `scripts/summarize_spec_replay.py` | 严格验证 artifact、counter、sidecar 与 off/on pair |
+| `scripts/render_spec_replay_plots.py` | 确定性 helpful/neutral/harmful 分类 CSV 与 cycle-delta SVG |
+| `scripts/analyze_trace_windows.py` | locality、stride、reuse distance 与 set pressure 分析 |
 | `constraints/l1d_baseline.xdc` | 默认 100 MHz 综合时钟约束 |
 | `traces/smoke.trace` | 可重新分发的 trace replay 格式 smoke test |
 | `traces/generated/MANIFEST.md` | Generated Phase 3 trace hash |
@@ -112,13 +119,14 @@ module instance。
 | --- | ---: | --- |
 | `ADDR_WIDTH` | 64 | RV64 字节地址宽度 |
 | `DATA_WIDTH` | 64 | RV64 XLEN 数据宽度 |
-| `LINE_BYTES` | 16 | 2 的幂次的缓存行大小 |
+| `LINE_BYTES` | 16 | `DATA_WIDTH/8` 的 2 次幂倍数 |
 | `NUM_SETS` | 8 | 至少为 2 的 2 次幂 |
 | `NUM_WAYS` | 2 | `1` 表示直接映射，`2` 表示 2 路 |
 | `VICTIM_ENTRIES` | 4 | 非零的 2 次幂，目标范围为 4 至 8 |
-| `ENABLE_PREFETCH` | 1 | 允许在空闲周期发起 next-line prefetch |
+| `ENABLE_PREFETCH` | 1 | elaboration-time 的 built-in/external prefetch 接收开关；仍受 runtime enable 控制 |
 
-当前每个 set 使用 round-robin 替换，并优先选择 invalid way。
+当前每个 set 使用 round-robin 替换。对于 2 路配置，这等价于选择最近一次
+被选中 way 之后的 way；invalid way 始终优先。
 
 ## 接口约定
 
@@ -154,16 +162,18 @@ misaligned，为 `2` 表示 store address misaligned。当前没有实现对未�
 
 ### 下级缓存行内存接口
 
-下级接口按完整缓存行传输。读请求使用对齐地址，之后由
-`mem_rsp_valid` 返回缓存行。write-back 使用 `mem_req_write=1` 和
-`mem_req_wdata`。当前 baseline 假设写请求被 `mem_req_ready` 接收后即
-完成，没有单独的写响应和错误通道。
+下级接口按完整缓存行传输：读请求使用 `mem_req_valid`、`mem_req_ready`、
+`mem_req_write=0` 和对齐的 `mem_req_addr`；读数据随后以
+`mem_rsp_valid` 脉冲和 `mem_rsp_rdata` 返回；write-back 使用
+`mem_req_write=1` 和 `mem_req_wdata`。当前 baseline 假设写请求被
+`mem_req_ready` 接收后即完成，没有单独的写响应和错误通道。
 
 ## FSM 与数据流
 
 主要状态如下：
 
-1. `ST_IDLE`：接收 CPU 请求；若 CPU 无请求，则启动等待中的 prefetch。
+1. `ST_IDLE`：按 CPU（包括 misaligned request）、external prefetch、等待中的
+   built-in next-line prefetch 顺序严格选择一个请求。
 2. `ST_LOOKUP`：使用同步 SRAM 输出比较所有 L1 way 和 victim entry。
 3. `ST_HIT_WRITE`：提交带字节使能的 store hit。
 4. `ST_VC_SWAP`：将 victim hit 的行提升到 L1，并把选中的 L1 行放入同一
@@ -207,8 +217,10 @@ Testbench 对直接映射和 2 路配置都验证了 victim rescue，并验证 d
 
 ## Next-Line Prefetch 与监控
 
-Demand fill 完成后，缓存排队请求下一条对齐缓存行。Prefetch 只在
-`ST_IDLE` 且 CPU 没有请求时运行，因此 demand 优先。若目标行已存在于 L1
+Demand fill 完成后，缓存排队请求下一条对齐缓存行。在 `ST_IDLE` 中，接收
+顺序为 CPU demand、external prefetch、pending built-in next-line candidate。
+任何置位的 CPU 请求都会占用该周期，包括随后返回架构错误的未对齐请求，
+因此两个 producer 不会同时观察到同一 slot 的握手。若目标行已存在于 L1
 或 victim cache，则不会重复读取。
 
 监控计数器包括：
@@ -221,9 +233,11 @@ Demand fill 完成后，缓存排队请求下一条对齐缓存行。Prefetch �
 | `stat_prefetch_pollution` | 导致 demand L1 行被移出的 prefetch 分配 |
 | `stat_prefetch_dropped` | built-in 单 entry 队列已满时丢弃的 candidate |
 
-`stat_prefetch_pollution` 是缓存压力的硬件 proxy，不等同于性能一定下降，
-因为被移出的行可能仍由 victim cache 救回。最终分析必须结合 miss、
-内存流量和 AMAT。
+`stat_prefetch_pollution` 是 displacement pressure proxy，不等同于性能一定
+下降，因为被移出的行可能仍由 victim cache 救回。Replay sidecar 会记录每次
+demand outcome；严格的 off/on 配对按相同的 `(sequence, address, operation,
+size)` identity 统计真实 L1/lower-memory help 与 pollution。只有 aggregate
+miss delta 时只能得到净效应。
 
 ### Adaptation 接口
 
@@ -251,34 +265,35 @@ verification monitor 使用。累计计数器继续用于软件可见或仿真�
 
 脚本包含定向测试、内存接口 backpressure、CPU response backpressure、
 握手 payload 稳定性检查、160 次操作的 deterministic randomized
-golden-memory scoreboard，以及三种 synthetic workload 配置。当前 Icarus
-结果：
+golden-memory scoreboard、未对齐 demand 与 external/pending prefetch 的
+仲裁，以及持续 demand 下的 drop 计数，并运行四种 geometry/workload 配置：
 
 | 配置 | 覆盖内容 | 结果 |
 | --- | --- | --- |
-| 直接映射，VC4，关闭 prefetch | RV64 load/store size、符号/零扩展、未对齐错误、64 位高地址 tag、victim hit、dirty preservation、随机流量 | PASS |
-| 2 路，VC4，关闭 prefetch | 同上，并覆盖 way replacement 和 backpressure | PASS |
-| 2 路，VC8，关闭 prefetch | 同样 RV64 检查，并覆盖 8-entry victim replacement 和 dirty preservation | PASS |
-| 2 路，VC4，开启 prefetch | next-line fill、prefetch victim rescue、外部注入和 usefulness 计数 | PASS |
-| Direct-mapped，VC4，关闭 prefetch | 五种 synthetic boundary profile | PASS |
-| 2 路，VC4，关闭 prefetch | 五种 synthetic boundary profile | PASS |
-| 2 路，VC4，开启 prefetch | 五种 synthetic boundary profile 和 prefetch boundary assertion | PASS |
-| 2 路，VC4，关闭 prefetch | RV64 文本 trace replay、load signedness、store size 和 golden-memory 检查 | PASS |
+| 直接映射，8 sets，VC4，关闭 prefetch | RV64 load/store size、相同 128-byte L1 容量、未对齐错误、victim hit、dirty preservation、随机流量 | PASS |
+| 2 路，4 sets，VC4，关闭 prefetch | 相同 128-byte L1 容量、way replacement、backpressure、五种 boundary profile、trace smoke | PASS |
+| 2 路，4 sets，VC8，关闭 prefetch | 独立比较 victim capacity，并检查 dirty preservation | PASS |
+| 2 路，4 sets，VC4，开启 prefetch | next-line/victim/external 行为、仲裁回归、fill/use/resident/drop 守恒 | PASS |
 
 生成的 `.vvp` 和日志位于 `sim/`。Icarus 会输出关于 `always_*` constant
 select 的提示信息，但编译和全部自检均成功。
 
-每个 workload 都会输出一行机器可读的 `WORKLOAD_RESULT`。
+每个 workload 都会输出一行机器可读的 `WORKLOAD_RESULT schema=2`。
 `scripts/summarize_workloads.sh` 将这些记录汇总到被忽略的
 `sim/workload_results.csv`。记录字段包括 access、hit、miss、victim hit、
-被下级内存接受的读写请求、prefetch 事件和 testbench cycle。
+完整 geometry/capacity、分别统计的 demand/prefetch 下级读、read/write
+bytes、真实 prefetch fills、useful/useless-evicted/unused-resident 守恒、
+drop/protocol counter，以及 replay service cycle。
 
 ## Vivado 验证
 
-当前 RV64 Vivado 证据记录在 `docs/phase3_vivado_report.md` 中。最终
-Phase 3 运行在 2026-07-01 使用远程 Vivado 2024.2.1，将工程暂存到
-`C:/Users/kevin/l1d_codex_ascii_20260701_r10`，并在下载报告后通过日志
-扫描。
+当前 RV64 Vivado 证据记录在 `docs/phase3_vivado_report.md` 中。
+2026-07-13 的无旧报告混入替代运行使用远程 Vivado 2024.2.1，并在 XSim 与
+synthesis 中共用显式 geometry。运行成功退出，并扫描了恰好 22 份
+log/report：8 份 simulation log、12 份 synthesis report、Vivado log 与
+Vivado journal。代表性 waveform 另行验证。最终生成的证据 manifest
+状态为 `PASS`，其中记录 10.0 ns 时钟与所有输入和证据 artifact 的
+SHA-256。
 
 在 Vivado 已加入 `PATH` 的机器上，可用以下命令运行本地 Vivado 入口：
 
@@ -298,16 +313,20 @@ prefetch case，并使用 10 ns 时钟约束综合四种主要硬件配置，在
 仿真日志和代表性 VCD 会复制到 `build/vivado/reports/`。当前 Phase 3 综合
 结果如下：
 
-| 配置 | LUT | FF | RAMB36 | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
+| 配置 | LUT | FF | Block RAM tile | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 直接映射，VC4，关闭 prefetch | 5,178 | 1,853 | 2 | -1.291 ns | 88.6 MHz | 0.117 W |
-| 2 路，VC4，关闭 prefetch | 4,721 | 2,008 | 4 | -0.417 ns | 96.0 MHz | 0.107 W |
-| 2 路，VC8，关闭 prefetch | 5,395 | 2,767 | 4 | -1.462 ns | 87.2 MHz | 0.117 W |
-| 2 路，VC4，开启 prefetch | 5,789 | 2,168 | 4 | -1.981 ns | 83.5 MHz | 0.117 W |
+| 直接映射，8 sets，VC4，关闭 prefetch | 5,189 | 1,852 | 2 | -1.581 ns | 86.3 MHz | 0.114 W |
+| 2 路，每路 4 sets，VC4，关闭 prefetch | 5,699 | 2,246 | 0 | -2.068 ns | 82.9 MHz | 0.106 W |
+| 2 路，每路 4 sets，VC8，关闭 prefetch | 5,783 | 3,004 | 0 | -1.516 ns | 86.8 MHz | 0.106 W |
+| 2 路，每路 4 sets，VC4，开启 prefetch | 6,222 | 2,407 | 0 | -1.626 ns | 86.0 MHz | 0.111 W |
 
-这些当前 RV64 配置均未满足 100 MHz 综合约束。data array 被推断为 block
-RAM，tag array 被推断为 distributed RAM。Fmax 按 `1000 / (10 - WNS)`
-计算，只是综合后 STA 估算；布局布线后结果可能下降。
+这些当前 RV64 配置的逻辑 L1 data capacity 均为 128 bytes，且都
+未满足 100 MHz 综合约束。Vivado 为 direct-mapped array 推断了 2 个
+block RAM tile，却将所有 2-way 配置中深度更浅的每路 array 映射为
+distributed logic/register。逻辑 capacity 已受控，但物理 memory mapping
+仍不一致；因此 LUT/FF/timing 差异不能只归因于 associativity。Fmax
+按 `1000 / (10 - WNS)` 计算，只是综合后 STA 估算；布局布线后
+结果可能下降。
 
 功耗值使用 Vivado vectorless activity propagation，没有 SAIF/VCD activity
 文件，采用默认 operating condition，且置信度为 `Low`。这些数据只能作为
@@ -319,7 +338,8 @@ Windows 上应使用纯 ASCII 工程路径。Vivado 仿真可以在中文用户�
 最终签核前仍需检查所有 FSM 路径的 XSim 波形，并执行 implementation/
 post-route timing。为了获得有意义的功耗比较，还应使用 workload trace
 产生的代表性 switching activity 重新运行 `report_power`。当前代表性通过
-VCD 为 `build/vivado/reports/next_line_prefetch_vc4.vcd`。
+VCD 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。机器可读的验证记录为
+`build/vivado/evidence_manifest.json`。
 
 ## Workload-Driven Boundary Analysis
 
@@ -339,22 +359,25 @@ speed/rate 套件。
 申请免费的 SPEC CPU 2026 学术许可证。不得把 benchmark 源码或专有输入
 数据提交到本仓库。
 
-当前本地状态：该流程假设通过 `SPEC_DIR` 提供本地获许可 SPEC CPU 2026
-tree，并通过 `RV64_VM_DIR` 提供 Debian RV64 QEMU VM。这些路径有意不写入
-仓库。本仓库包含一个有界的 `782.lbm_r` test workload trace 片段，用于
-本地获许可分析。若未经过单独的再分发审查，不要在获许可项目上下文之外
-发布该 SPEC-derived trace。
+当前本地状态：capture 预期获许可 SPEC CPU 2026 tree 位于 guest 内的
+`/home/debian/spec2026`。Debian RV64 VM 默认使用项目内的 `debian-rv64/`
+directory，可用 `L1D_QEMU_VM_DIR` 覆盖。获许可 raw trace、replay window、
+log、sidecar 和 manifest 全部保留在被忽略的 `build/` 下。公开仓库
+不跟踪任何 SPEC-derived trace。
 
 ### 基于 Trace 的 RTL 方法
 
-在 RTL testbench 中直接运行完整 SPEC 程序并不现实。计划采用：
+在 RTL testbench 中直接运行完整 SPEC 程序并不现实。当前实现采用：
 
 1. 在 host 或体系结构 simulator 中构建并运行获得许可的 SPEC workload；
-2. 捕获已提交 load/store 的地址、大小、允许记录的写数据，以及指令计数
-   或时间戳；
-3. 对地址进行匿名化，同时保留 set/index/offset 行为；
-4. 将有限的代表性区间通过 CPU 接口回放；
-5. 分别开关 victim cache 和 prefetch 比较配置；
+2. 只捕获选定 timed command 的 U-mode memory operation，使用物理地址并
+   删除全部 store data；
+3. 先通过 count pass 选择有限 warmup/measurement window，再在新的 snapshot
+   capture pass 中复现相同总事件数；
+4. 将私有 window 通过 CPU 接口回放；
+5. 比较等容量 `dm_s8_vc4_pf0` 与 `2w_s4_vc4_pf0`、独立的
+   `2w_s4_vc8_pf0` victim-capacity point，以及唯一严格 prefetch pair
+   `2w_s4_vc4_pf0` 与 `2w_s4_vc4_pf1`；
 6. 只发布派生统计和许可证允许重新分发的 trace metadata。
 
 使用 `+TRACE=<path>` 选择可复用 replay driver。每行格式为：
@@ -369,30 +392,91 @@ tree，并通过 `RV64_VM_DIR` 提供 Debian RV64 QEMU VM。这些路径有意�
 halfword、`2` word、`3` doubleword。`UNSIGNED` 为十进制，仅 load 使用。
 地址和数据是不带 `0x` 前缀的十六进制。load 会按请求的符号扩展或零扩展
 与 testbench golden memory 比较；store 在 cache 完成后更新 golden
-memory。空行和注释行会被忽略。例如：
+memory。空行和注释行会被忽略。例如，先用
+`scripts/run_iverilog.sh` 构建 canonical matrix，再执行：
 
 ```bash
-vvp sim/two_way_vc4.vvp +TRACE=traces/smoke.trace
+vvp sim/2w_s4_vc4_pf0.vvp \
+  +TRACE=traces/smoke.trace \
+  +TRACE_ID=smoke +CONFIG_ID=2w_s4_vc4_pf0
 ```
 
 该命令需要从仓库根目录运行。使用 ASCII 相对路径可以避免 Icarus 在工作区
-绝对路径包含非 ASCII 字符时的 plusarg 限制。SPEC extraction 工具需要将
-committed access 转换为该 cache interface 格式，保留自然对齐的 RV64
-access size，并按实验策略记录或过滤 misaligned access。若许可证不允许
-重新分发，则必须省略受保护的数据值。
+绝对路径包含非 ASCII 字符时的 plusarg 限制。当前 extraction 流程会将
+committed access 转换为该 cache interface 格式。自然对齐访问保留 RV64 size；
+位于同一 16-byte cache line 内的未对齐访问转为一条 byte-sized line touch；
+跨 line 访问转为两条 byte-sized touch，并独立翻译最后一个 byte。Manifest
+同时记录 source-event 与展开后 replay-access 数，不会静默过滤任何访问。
+受许可保护的 data value 会被省略。
 
-当 replay 的 trace 来自真实程序，而不是来自 testbench golden-memory
-generator 时，传入 `+TRACE_SKIP_LOAD_CHECKS`。这会保留 cache 性能流中的
-所有 load/store 地址，但关闭与 synthetic golden memory image 的 load
-数据比较：
+当 replay 来自真实程序时，`+TRACE_SKIP_LOAD_CHECKS` 会保留每条 load/store
+地址，但关闭与 synthetic golden-memory image 的比较。应优先使用
+manifest-driven runner，而不是手写 `vvp` 命令。
+
+### 当前可归因的 capture 与 replay 流程
+
+Host plugin 严格要求 QEMU 11.0.1、Plugin API 6、`riscv64` system emulation
+和单一 vCPU。VM 使用 `-snapshot`，不会修改基础磁盘或 UEFI variable。动态
+链接的 timed command 由 `libl1d_roi.so` 包装，并在 `a0..a5` 中发出带版本
+marker ABI：magic/version、随机 nonce、start/stop event、command index、
+PID 与 TID。Plugin 锁定 vCPU 0、U privilege 和 marker 中的 non-Bare `satp`。
+Kernel access 与其他 U-mode address space 会被忽略并计数，只有绑定 SATP
+计入 source event。Plugin 记录物理地址；malformed/mismatched marker、目标 IO、
+不支持的 size、缺少物理地址（包括无法独立翻译跨 line 访问末尾）、window
+不完整或 count/capture 不一致都会使 capture fail closed。
+`trace_exec` 还会在 target `exec` 前设置并验证 `ADDR_NO_RANDOMIZE`；无法关闭
+ASLR 会使 unit 失败。Splitter 会独立检查 context/start/stop/summary identity
+链，并把每条 payload row 绑定到 ROI 的 SATP、vCPU 与 privilege。
+
+若 ROI 至少包含 50,000 条支持的事件，则在 source event stream 的
+10%、30%、50%、70%、90% 位置选取五个不重叠 window；每个 source window
+先包含 5,000 条 demand-only warmup event，再包含 5,000 条 measurement event。
+Manifest 分开记录 source event 与跨 line 展开后的 canonical replay access。更短的
+ROI 整体 replay，并标为 `whole-roi-short`，不得描述成已经 demand-warmed。
+
+从仓库根目录运行：
 
 ```bash
-vvp sim/two_way_vc4_trace.vvp \
-  +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
-  +TRACE_SKIP_LOAD_CHECKS
+scripts/build_qemu_memtrace_plugin.sh
+python3 scripts/capture_spec_qemu_windows.py \
+  --out-dir build/spec2026/qemu-private \
+  --size test --label codexrv64 \
+  708.sqlite_r 721.gcc_r 767.nest_r 777.zstd_r
+scripts/run_spec_trace_replay.sh \
+  build/spec2026/qemu-private/campaign_manifest.json \
+  build/spec2026/replay/logs
 ```
 
-### 已复现的 SPEC CPU 2026 `782.lbm_r` 抓取
+Capture campaign 与每个 unit manifest 都必须为 `PASS`、`valid=true` 且
+hash 完整。每个 count/capture snapshot 还会先清除 SPEC `compare.cmd` 中声明的
+全部输出，运行一个 timed command，再在 ROI stop 后要求该命令实际生成输出对应的
+精确 comparison 子集通过。两个 pass 必须选择相同子集，且两份子集文件和 log
+均会哈希。逐 benchmark plan 绑定原始 timed-command 文件、连续 command index
+及完整 comparison plan 的精确互斥分区。Campaign provenance 会哈希实际 QEMU
+binary、不可变 VM/firmware input、target ELF、plugin 与全部 host capture source；
+完整临时证据图必须先通过验证，才能发布 PASS。Replay runner 只消费这些 manifest，拒绝 stale 或额外 trace，
+编译四个明确 geometry，记录 binary/simulator/command/cwd hash 与 identity，
+写入包含所有 demand outcome 与 prefetch issue/fill event 的 schema-2 sidecar，生成
+严格 replay campaign 并调用 `summarize_spec_replay.py`。Analyzer 验证 artifact 与
+command path 绑定、trace/sidecar demand identity、geometry、timing identity、schema-2
+counter 与 sidecar event 守恒、唯一严格 off/on pair，以及真实 L1/lower-memory
+help/pollution。Direct-mapped 与 VC8
+配置是独立比较点，不是 prefetch pair。有效 pair 还会生成
+`classification.csv` 和 `cycles-on-minus-off.svg`；仅按
+`cycles_on_minus_off` 的符号分类：负值为 helpful、零为 neutral、正值为
+harmful。当前 blocking model 中
+`timely_useful=useful`、`late_useful=0` 是结构性口径，不是独立 latency
+measurement；真正的 issue/fill/accept timeliness 仍属于 future work。
+
+截至 2026-07-13，真实 RV64 dynamic-ELF count/capture/split smoke 已通过：
+总事件数一致、vCPU 0、U mode、non-Bare `satp`、物理地址、零 violation。
+历史 mixed-system SPEC trace 不是有效 benchmark 证据；只有完整私有 campaign
+通过该流程后，新的 SPEC 性能结论才可视为 authoritative。
+
+### 历史 `782.lbm_r` 抓取（非 authoritative）
+
+下文只保留早期本地实验记录。对应 trace 已不再被跟踪，旧 plugin option 和
+marker ABI 均已替换，其 aggregate 结果不得作为当前 SPEC 或 prefetch 证据。
 
 RV64 Debian VM 从 VM 目录启动：
 
@@ -403,13 +487,13 @@ cd "$RV64_VM_DIR"
 ./ssh.sh
 ```
 
-host 侧 QEMU memory-trace plugin 从仓库根目录构建：
+历史 host 侧 QEMU memory-trace plugin 曾从仓库根目录构建：
 
 ```bash
 scripts/build_qemu_memtrace_plugin.sh
 ```
 
-该 plugin 直接输出 trace-replay 文本格式。它支持 `out=...`、
+该已废弃 plugin 当时直接输出 trace-replay 文本格式，并支持 `out=...`、
 `limit=...`、`start=on|off`、`phys=on|off`、`noio=on|off` 和
 `aligned=on|off`。为了隔离 benchmark，启动 VM 时使用 `start=off`，
 并让带插桩的 `lbm_r_trace` binary 在 LBM timestep loop 前后使用两条
@@ -463,7 +547,7 @@ diff -u ../../data/test/output/lbm.out lbm.out
 resident memory 约 1.6 GiB。带插桩的 `lbm_r_trace` binary 在 plugin
 抓取前也产生了完全相同的输出。
 
-本次提交的 trace artifact 为：
+历史本地 artifact 如下；现在均不再被跟踪：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -484,6 +568,8 @@ victim-cache 配置中 replay：
 iverilog -g2012 -Wall \
   -s tb_l1d_cache \
   -P tb_l1d_cache.NUM_WAYS=2 \
+  -P tb_l1d_cache.NUM_SETS=4 \
+  -P tb_l1d_cache.LINE_BYTES=16 \
   -P tb_l1d_cache.ENABLE_PREFETCH=0 \
   -P tb_l1d_cache.VICTIM_ENTRIES=4 \
   -o sim/two_way_vc4_trace.vvp \
@@ -492,10 +578,12 @@ iverilog -g2012 -Wall \
 
 vvp sim/two_way_vc4_trace.vvp \
   +TRACE=traces/spec2026_782_lbm_r_test_1m_aligned.trace \
-  +TRACE_SKIP_LOAD_CHECKS
+  +TRACE_SKIP_LOAD_CHECKS \
+  +TRACE_ID=historical_782_lbm_r +CONFIG_ID=2w_s4_vc4_pf0
 ```
 
-replay 通过，并产生：
+原始运行通过并产生了下列旧 schema-1 记录；当前 testbench 会改为输出
+字段更完整的 schema-2 记录：
 
 ```text
 WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
@@ -527,19 +615,24 @@ useful 或 non-useful 行为、局部循环稳定命中，以及 victim cache �
 冲突 working set 的保留。这些是 synthetic microbenchmark，不能替代
 SPEC trace。
 
-2026 年 6 月 10 日的 2-way VC4 初步结果如下：
+当前 schema-2 在 2026-07-13 对严格 2-way、4-set、VC4 off/on pair 的结果为：
 
-| Profile | Prefetch | Hits | Misses | Victim hits | Memory reads | Useful | Useless | Cycles |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Sequential stream | Off | 0 | 12 | 0 | 12 | 0 | 0 | 128 |
-| Sequential stream | On | 6 | 6 | 0 | 12 | 6 | 0 | 129 |
-| Two-line stride | Off | 0 | 12 | 0 | 12 | 0 | 0 | 133 |
-| Two-line stride | On | 0 | 12 | 0 | 24 | 0 | 6 | 227 |
-| Localized loop | Off | 10 | 2 | 0 | 2 | 0 | 0 | 63 |
-| Localized loop | On | 11 | 1 | 0 | 2 | 1 | 0 | 63 |
-| Same-set conflict | Off | 0 | 12 | 9 | 3 | 0 | 0 | 79 |
-| Irregular pointer chase | Off | 0 | 12 | 0 | 12 | 0 | 0 | 133 |
-| Irregular pointer chase | On | 0 | 12 | 0 | 24 | 0 | 6 | 227 |
+| Profile | Prefetch | Hits | Misses | Victim hits | Demand reads | Prefetch reads | Fills | Useful | Useless evicted | Unused resident | Pollution proxy | Service cycles |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sequential stream | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 127 |
+| Sequential stream | On | 6 | 6 | 0 | 6 | 6 | 6 | 6 | 0 | 0 | 2 | 128 |
+| Two-line stride | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 132 |
+| Two-line stride | On | 0 | 12 | 0 | 12 | 12 | 12 | 0 | 6 | 6 | 0 | 226 |
+| Localized loop | Off | 10 | 2 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 62 |
+| Localized loop | On | 11 | 1 | 0 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 62 |
+| Same-set conflict | Off | 0 | 12 | 9 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 78 |
+| Irregular pointer chase | Off | 0 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 132 |
+| Irregular pointer chase | On | 0 | 12 | 0 | 12 | 12 | 12 | 0 | 6 | 6 | 0 | 226 |
+
+`fills = useful + useless_evicted + unused_resident`，因此 accuracy 使用真实
+fill，而不是根据 eviction 重建分母。RTL 的 `pollution_proxy` 只表示
+displacement pressure；真正的 baseline-hit/prefetch-miss pollution 由严格
+off/on 逐 demand replay sidecar 计算。
 
 这些结果用于展示设计边界，而不是一般性的性能结论。对于当前 blocking
 实现，next-line prefetch 将一半 sequential demand access 转换为 hit，
@@ -548,19 +641,23 @@ SPEC trace。
 配置，victim cache 能保留三个 line 的单 set working set，因此只有最初
 三个 access 到达下级内存。
 
-每个 trace 区间记录：
+对每个 trace 区间，当前已验证 replay 会记录：
 
 - CPU access、L1 hit、demand miss 和 victim hit；
 - 下级内存读取和 write-back；
 - useful、useless 和 pollution prefetch 事件；
-- cycle、stall cycle 和实测 AMAT；
+- replay service cycle；
 - working-set size、load/store ratio、stride histogram 和 reuse-distance
   摘要；
 - 完整缓存配置及 random/trace seed。
 
-主要边界图应扫描 associativity、victim entry 数量（最终比较 0/4/8）、
-prefetch 开关、cache capacity、line size 和下级内存延迟。当前 RTL 至少
-需要一个 victim entry；真正的零 entry bypass 配置属于后续工作。
+它尚未报告架构级 CPU stall cycle 或实测 AMAT。Replay service cycle
+描述的是串行 cache 模型，不能表述为整程序 CPU 执行时间；这两项
+测量仍属于后续工作。
+
+当前边界图可扫描 associativity、victim entry 数量 4/8、prefetch 开关、
+cache capacity、line size 和下级内存延迟。当前 RTL 至少需要一个 victim
+entry；需要先增加零 entry bypass，才能在未来进行 0/4/8 sweep。
 
 ## 当前限制与后续工作
 

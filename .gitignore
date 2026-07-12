@@ -28,3 +28,8 @@
 # Licensed benchmark-derived traces must remain local-only.
 traces/spec2026/
 traces/spec2026_782_lbm_r_test_1m*
+
+# Local editor and interpreter artifacts.
+.DS_Store
+**/__pycache__/
+*.py[cod]

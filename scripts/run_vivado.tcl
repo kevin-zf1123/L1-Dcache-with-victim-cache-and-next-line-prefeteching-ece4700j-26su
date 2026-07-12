@@ -10,6 +10,9 @@ if {[info exists ::env(L1D_PART)]} {
 }
 
 file mkdir $build_dir
+if {[file exists $report_root]} {
+    file delete -force $report_root
+}
 file mkdir $report_root
 create_project -force l1d_baseline $build_dir -part $part_name
 set_property target_language Verilog [current_project]
@@ -63,24 +66,24 @@ set run_all_tcl [file join $build_dir xsim_run_all.tcl]
 write_run_all_tcl $run_all_tcl
 
 set simulation_configurations [list \
-    [list direct_mapped_vc4 \
-        "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
-    [list two_way_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
-    [list two_way_vc8 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
-    [list next_line_prefetch_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" ""] \
-    [list trace_replay_smoke_two_way_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
-        "-testplusarg TRACE=$smoke_trace"] \
-    [list trace_replay_generated_pointer_prefetch_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
-        "-testplusarg TRACE=$generated_pointer_trace"] \
-    [list next_line_prefetch_vc4_low_latency \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=0 MEM_BACKPRESSURE_MODE=0 CPU_BACKPRESSURE_MODE=0" ""] \
-    [list next_line_prefetch_vc4_high_latency_random_bp \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" ""]]
+    [list dm_s8_vc4_pf0 \
+        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=dm_s8_vc4_pf0"] \
+    [list 2w_s4_vc4_pf0 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf0"] \
+    [list 2w_s4_vc8_pf0 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc8_pf0"] \
+    [list 2w_s4_vc4_pf1 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
+    [list trace_replay_smoke_2w_s4_vc4_pf0 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "-testplusarg TRACE=$smoke_trace -testplusarg TRACE_ID=smoke -testplusarg CONFIG_ID=2w_s4_vc4_pf0"] \
+    [list trace_replay_generated_pointer_2w_s4_vc4_pf1 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "-testplusarg TRACE=$generated_pointer_trace -testplusarg TRACE_ID=generated_pointer -testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
+    [list 2w_s4_vc4_pf1_low_latency \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=0 MEM_BACKPRESSURE_MODE=0 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
+    [list 2w_s4_vc4_pf1_high_latency_random_bp \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"]]
 
 foreach configuration $simulation_configurations {
     lassign $configuration name generics more_options
@@ -88,7 +91,7 @@ foreach configuration $simulation_configurations {
     set_property generic $generics [get_filesets sim_1]
     set custom_tcl $run_all_tcl
     set run_more_options $more_options
-    if {$name eq "next_line_prefetch_vc4"} {
+    if {$name eq "2w_s4_vc4_pf1"} {
         set vcd_path [file join $report_root "${name}.vcd"]
         set run_more_options [string trim \
             "$run_more_options -testplusarg DUMP_VCD=$vcd_path"]
@@ -109,14 +112,14 @@ foreach configuration $simulation_configurations {
 }
 
 set synthesis_configurations [list \
-    [list direct_mapped_vc4 \
-        "NUM_WAYS=1 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
-    [list two_way_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
-    [list two_way_vc8 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8"] \
-    [list next_line_prefetch_vc4 \
-        "NUM_WAYS=2 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4"]]
+    [list dm_s8_vc4_pf0 \
+        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
+    [list 2w_s4_vc4_pf0 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
+    [list 2w_s4_vc8_pf0 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8"] \
+    [list 2w_s4_vc4_pf1 \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4"]]
 
 foreach configuration $synthesis_configurations {
     lassign $configuration name generics

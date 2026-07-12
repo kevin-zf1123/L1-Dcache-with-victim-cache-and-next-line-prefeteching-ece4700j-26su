@@ -1,6 +1,75 @@
 # Phase 3 Vivado Verification Report
 
-## Summary
+## Evidence Status (2026-07-13)
+
+The 2026-07-01 simulation/PPA and SPEC tables below are historical. Simulation
+used `NUM_SETS=4`, whereas synthesis silently used the RTL default
+`NUM_SETS=8`; direct-mapped versus two-way replay also changed L1 capacity.
+The SPEC traces were full-system multi-vCPU captures and are not attributable
+to the named benchmarks. These tables must not be used for controlled
+associativity, benchmark, or final PPA claims. Replacement evidence must use a
+single explicit geometry record shared by Icarus, XSim, synthesis, timing, and
+power.
+
+## Current Replacement Evidence (2026-07-13)
+
+The replacement flow uses remote Vivado 2024.2.1, part
+`xc7a35tcpg236-1`, a 10 ns constraint, and the same explicit geometry in XSim
+and synthesis. `scripts/run_vivado.tcl` deletes the prior report directory
+before each run. `scripts/run_remote_vivado.py` also clears the local download,
+requires exactly eight simulation logs and four synthesis directories with
+utilization/timing/power reports, checks every `WORKLOAD_RESULT schema=2` row
+for geometry, timing, `PASS`, and zero watchdog/protocol/duplicate-line
+errors, and writes `build/vivado/evidence_manifest.json` with source and
+artifact SHA-256 values.
+
+The stale-report-free 2026-07-13 execution exited with status 0 and scanned
+exactly 22 log/report files: eight simulation logs, twelve synthesis reports,
+the Vivado log, and the Vivado journal. The representative VCD was validated
+and hashed separately. Validation found no stale or missing report and wrote a
+`PASS` manifest whose parsed clock period is 10.0 ns.
+
+The eight simulation points are:
+
+| Configuration | Geometry / timing |
+| --- | --- |
+| `dm_s8_vc4_pf0` | 1 way, 8 sets, 16-byte line, VC4, prefetch off, latency 2, periodic backpressure |
+| `2w_s4_vc4_pf0` | 2 ways, 4 sets, 16-byte line, VC4, prefetch off, latency 2, periodic backpressure |
+| `2w_s4_vc8_pf0` | 2 ways, 4 sets, 16-byte line, VC8, prefetch off, latency 2, periodic backpressure |
+| `2w_s4_vc4_pf1` | 2 ways, 4 sets, 16-byte line, VC4, prefetch on, latency 2, periodic backpressure |
+| `trace_replay_smoke_2w_s4_vc4_pf0` | redistributable smoke replay at the matching 2-way geometry |
+| `trace_replay_generated_pointer_2w_s4_vc4_pf1` | generated pointer replay at the matching prefetch geometry |
+| `2w_s4_vc4_pf1_low_latency` | prefetch on, latency 0, no memory backpressure |
+| `2w_s4_vc4_pf1_high_latency_random_bp` | prefetch on, latency 8, randomized memory backpressure |
+
+All four main L1s contain 128 bytes; this isolates logical L1 capacity when
+comparing direct-mapped and 2-way behavior. The current post-synthesis reports
+are:
+
+| Configuration | LUTs | FFs | Block RAM tiles | WNS at 10 ns | Approx. Fmax | Vectorless power | Dynamic | Static |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 5,189 | 1,852 | 2 | -1.581 ns | 86.3 MHz | 0.114 W | 0.044 W | 0.070 W |
+| `2w_s4_vc4_pf0` | 5,699 | 2,246 | 0 | -2.068 ns | 82.9 MHz | 0.106 W | 0.035 W | 0.070 W |
+| `2w_s4_vc8_pf0` | 5,783 | 3,004 | 0 | -1.516 ns | 86.8 MHz | 0.106 W | 0.036 W | 0.070 W |
+| `2w_s4_vc4_pf1` | 6,222 | 2,407 | 0 | -1.626 ns | 86.0 MHz | 0.111 W | 0.041 W | 0.070 W |
+
+These are post-synthesis estimates and all miss the 100 MHz constraint. The
+Fmax estimate is `1000 / (10 - WNS)`. Power is vectorless and `Low`
+confidence. Vivado inferred two block-RAM tiles for the 8-set direct-mapped
+arrays, but mapped each 4-set-per-way 2-way array into distributed logic and
+registers. Consequently, logical capacity is controlled but FPGA primitive
+mapping is not: LUT/FF/timing differences cannot be attributed solely to
+associativity. A physically matched experiment would need an explicit common
+RAM style or primitive mapping.
+
+The representative current waveform is
+`build/vivado/reports/2w_s4_vc4_pf1.vcd`. Licensed SPEC performance remains
+unvalidated until the new private, attributable capture campaign passes; the
+historical SPEC tables below are not part of this replacement evidence.
+
+## Historical 2026-07-01 Evidence
+
+### Historical Summary
 
 This report records the Phase 3 workload-driven Vivado evidence collected on
 2026-07-01. The run used remote Vivado 2024.2.1 on `192.168.1.101`, staged
@@ -13,12 +82,12 @@ waveform, utilization, timing, and vectorless power reports, and scanned 22
 downloaded log/report files without finding `ERROR:`, `CRITICAL WARNING:`,
 `FATAL`, source failures, or testbench failures.
 
-The licensed SPEC CPU 2026 campaign also completed for `708.sqlite_r`,
-`721.gcc_r`, `767.nest_r`, and `777.zstd_r` using SPEC default O3 base
-optimization. `723.llvm_r` was skipped after the user narrowed the requested
-scope because it overlaps the compiler behavior represented by `721.gcc_r`.
+The legacy full-system capture sessions carried the labels `708.sqlite_r`,
+`721.gcc_r`, `767.nest_r`, and `777.zstd_r` and used SPEC default O3 base
+optimization. They completed mechanically but are not attributable to those
+benchmarks. `723.llvm_r` was outside the user-narrowed label set.
 
-## Implemented Phase 3 Changes
+### Historical Implemented Phase 3 Changes
 
 - Added `scripts/run_remote_vivado.py` for Paramiko-based upload, ASCII remote
   staging, Windows-path Tcl invocation, report download, and log scanning.
@@ -39,7 +108,7 @@ scope because it overlaps the compiler behavior represented by `721.gcc_r`.
   `scripts/run_spec_trace_replay.sh`, `scripts/split_qemu_memtrace_windows.py`,
   and `scripts/summarize_spec_replay.py`.
 
-## Vivado Matrix
+### Historical Vivado Matrix
 
 All eight XSim configurations passed:
 
@@ -57,7 +126,7 @@ All eight XSim configurations passed:
 Every `WORKLOAD_RESULT` row in the final run reports `status=PASS`,
 `watchdogs=0`, `protocol=0`, and `duplicate_lines=0`.
 
-## Workload Coverage
+### Historical Workload Coverage
 
 The OOP harness covers:
 
@@ -85,22 +154,24 @@ SPEC traces:
 
 Licensed SPEC sample hashes, sampling commands, replay commands, and detailed
 aggregate results are recorded in `docs/spec2026_trace_campaign.md`.
-Uncompressed raw SPEC captures remain local under `build/spec2026/`; compressed
-window samples for replay testing are checked in under `traces/spec2026/`
-through Git LFS.
+All licensed raw and replay-derived SPEC samples remain local under ignored
+`build/spec2026/`; they are not distributed through Git or Git LFS.
 
-## Prefetch Boundary Results
+### Historical Prefetch Boundary Results
 
 The medium-latency `next_line_prefetch_vc4` run shows the intended boundary:
+
+Coverage below is paired baseline miss reduction, not `useful/accesses`;
+workloads without a matching prefetch-off run report N/A.
 
 | Workload | Hits | Misses | Victim hits | Mem reads | Read bytes | Useful | Useless | Pollution | Accuracy | Coverage | Cycles |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `matrix_row_major` | 8 | 8 | 0 | 16 | 256 | 8 | 0 | 4 | 100.00% | 50.00% | 174 |
-| `matrix_column_major` | 0 | 16 | 8 | 16 | 256 | 8 | 0 | 0 | 100.00% | 50.00% | 193 |
+| `matrix_column_major` | 0 | 16 | 8 | 16 | 256 | 8 | 0 | 0 | 100.00% | 0.00% | 193 |
 | `matrix_blocked_tiled` | 8 | 8 | 0 | 16 | 256 | 8 | 0 | 4 | 100.00% | 50.00% | 174 |
-| `pointer_random_permutation` | 4 | 12 | 1 | 19 | 304 | 5 | 1 | 5 | 62.50% | 31.25% | 208 |
+| `pointer_random_permutation` | 4 | 12 | 1 | 19 | 304 | 5 | 1 | 5 | 62.50% | 25.00% | 208 |
 | `pointer_irregular_defeats_next_line` | 0 | 24 | 0 | 48 | 768 | 0 | 18 | 10 | 0.00% | 0.00% | 474 |
-| `external_prefetch_matrix_candidates` | 8 | 0 | 0 | 8 | 128 | 8 | 0 | 0 | 100.00% | 100.00% | 100 |
+| `external_prefetch_matrix_candidates` | 8 | 0 | 0 | 8 | 128 | 8 | 0 | 0 | 100.00% | N/A | 100 |
 
 Compared with the no-prefetch two-way VC4 baseline, next-line prefetch turns
 half of the row-major and blocked/tiled demand accesses into hits, but it does
@@ -108,7 +179,7 @@ not reduce lower-memory reads in this blocking implementation. The irregular
 pointer chase is harmful: memory reads double from 24 to 48 and cycles grow
 from 275 to 474 at the medium-latency setting.
 
-## SPEC CPU 2026 Trace Campaign
+### Historical SPEC CPU 2026 Trace Campaign (Invalid Attribution)
 
 The SPEC campaign captured four requested subitems after O3 build and
 test-size run setup:
@@ -146,16 +217,15 @@ Aggregate replay metrics over the five samples per benchmark:
 | `777.zstd_r` | `two_way_vc8` | 0.6976 | 0.0796 | 0.3353 | 6.35 | 0.0000 |
 | `777.zstd_r` | `next_line_prefetch_vc4` | 0.7097 | 0.0417 | 0.5829 | 8.10 | 0.2175 |
 
-The SPEC samples reinforce the synthetic workload boundary result. Two-way
-associativity consistently improves hit rate versus direct-mapped VC4.
-Increasing the victim cache from VC4 to VC8 does not change the L1 hit rate,
-but it reduces memory accesses per demand by about 0.044 to 0.052 and reduces
-cycles per access in every SPEC benchmark. The current next-line prefetch
-policy is mostly harmful for these samples: it provides at most a small hit-rate
-gain, slightly hurts `767.nest_r`, and increases memory/access by +0.196 to
-+0.344 versus the two-way VC4 no-prefetch baseline.
+When the invalid mixed-system streams are grouped mechanically by their legacy
+labels, two-way VC4 has higher measured hit rate than direct-mapped VC4, VC8
+reduces measured memory accesses per demand by about 0.044 to 0.052, and
+next-line prefetch increases memory/access by +0.196 to +0.344. These are
+session-level historical statistics only. They neither reinforce a SPEC
+workload claim nor establish behavior for any named benchmark, including
+`767.nest_r`.
 
-## Synthesis and Power
+### Historical Synthesis and Power
 
 Vivado synthesized the four main RTL configurations for `xc7a35tcpg236-1`
 using the 10 ns clock constraint. These are post-synthesis estimates, not
@@ -173,7 +243,7 @@ column is calculated as `1000 / (10 - WNS)` and should be treated only as an
 early estimate. Power uses Vivado vectorless activity propagation with no
 SAIF/VCD switching activity file and `Low` confidence.
 
-## Waveform Artifact
+### Historical Waveform Artifact
 
 The representative passing waveform is:
 
@@ -197,11 +267,13 @@ design gap:
 - no whole-cache greedy prefetch pool;
 - no separate prefetch buffer or direct victim-cache prefetch placement;
 - no LRU or pointer-based replacement option;
-- no true pollution attribution, prefetch timeliness, or full latency
-  distribution beyond the current min/max/average fields;
+- paired replay sidecars now provide true L1/lower-memory help and pollution,
+  but there is no independent issue/fill/accept timeliness measurement or full
+  latency distribution beyond the current min/max/average fields;
 - no demand-caused versus prefetch-caused dirty write-back split; and
 - no post-route timing or activity-based power analysis.
 
-The SPEC CPU 2026 campaign covers `708`, `721`, `767`, and `777`. `723` remains
-outside the executed set by the user's narrowed scope, not because of a tooling
-blocker.
+The historical invalid campaign covered labels `708`, `721`, `767`, and
+`777`; it is not benchmark-attributable. The replacement private campaign for
+those four labels remains a required execution step. `723` stays outside the
+requested set.
