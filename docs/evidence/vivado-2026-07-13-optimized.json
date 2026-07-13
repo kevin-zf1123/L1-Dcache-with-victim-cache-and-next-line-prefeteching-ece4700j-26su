@@ -1,0 +1,489 @@
+{
+  "artifacts": {
+    "build/vivado/reports/2w_s4_vc4_pf1.vcd": {
+      "path": "build/vivado/reports/2w_s4_vc4_pf1.vcd",
+      "sha256": "c07679ee7092d822b076e5f32fc6cffddebe51405eb9a29edb9ba39fe5539e6a"
+    },
+    "vivado.jou": {
+      "path": "vivado.jou",
+      "sha256": "71a3de77f41a648d43c53f74c2a5ff5896168be3cfc86991c11bc28f151f9a4f"
+    },
+    "vivado.log": {
+      "path": "vivado.log",
+      "sha256": "db98f89ee3886a9718df40b485089b4cc874e29d6baf9e252e3ffead4a7cfdcd"
+    }
+  },
+  "execution": {
+    "download_failures": [],
+    "log_scan_skipped": false,
+    "remote_exit_status": 0
+  },
+  "findings": [],
+  "generated_at": "2026-07-13T06:58:25.192439+00:00",
+  "inputs": {
+    "constraints/l1d_baseline.xdc": "e40b660c623a53d4bdcb584dc75e36c3a44f7d3a46b5cdfa164154edf04a9af6",
+    "scripts/run_remote_vivado.py": "29acc3e1f77e88ef593fe0f7c08658921f854a6fced8624888d343b15758944a",
+    "scripts/run_vivado.tcl": "536d8ccc61a2504f89a030fd9ee94454afd026c7a0c054e0c896de3751ef7042",
+    "src/l1d_cache.sv": "4af9e9be2f604cc9bdc009e14fbeb935c935219ba3b12d01b2e33ebfe59008cf",
+    "src/l1d_cache_legacy.sv": "a3f324b51c4fe8a04cf1b7f42e28d287ce6bb0d0ff44a24a3adcba4228129507",
+    "src/l1d_cache_optimized.sv": "33f7b352192c1d2531f19be55b3aac7959b65e8d624a3d37000c8260766957da",
+    "src/l1d_next_line_prefetch.sv": "99a43d65e806a77c80243b2663572f54eb2482a626b6b576e132aa42fa8402f4",
+    "src/l1d_prefetch_controller.sv": "4d567db3a9134983c790017639c931f3896e98641b5d2e638d709faa06a3eaf5",
+    "src/l1d_shadow_cache.sv": "e10f2e957566440ad40586f453c00276224c778ee8720c03f44cc9b31df59ff7",
+    "src/l1d_sram.sv": "1671ca20a99aa8656f424c08f08e6675ed5233aa2779e6daf09cf94aaaf2621b",
+    "src/l1d_stream_prefetch.sv": "d70b32fc189f8f1eee850cfcb12116cb5f746278dabd156984890f8cc9bebf8d",
+    "src/tb_l1d_cache.sv": "30f6fe6bdf704e35d5afd09437a6e9e337c700592957bae34e3230e0b3287e60",
+    "src/tb_l1d_cache_oop.sv": "14b0bd36eb36c2d04f3199e31a90dd70de1127669c181e2aafaf0a007042c00d",
+    "src/tb_l1d_cache_optimized_p3.sv": "1d29ae75078d01fe959986360a0811f02bb4b24a6c5327451e7bcb103f99170a",
+    "src/tb_l1d_cache_p3.sv": "279c70f15d13d0219cdc8d6ef5dd8ece3f518ad1ab442ef2cc5f764ce921ec8e",
+    "src/tb_l1d_prefetch_units.sv": "5443bb4834202f5ad9fb733c48ce55a574dc077b3d7d0a1fa5d0f2d51f7aee30",
+    "traces/generated/MANIFEST.md": "a75613fb362f288dd7c8e09d5f97aca281316331357d1b0252bef87a8c9b9cef",
+    "traces/generated/phase3_matrix_column_major.trace": "ae8a522c6c87328ba93c4472ab37fbffa20daacbdbf00c211d1a6e99ca74c8bf",
+    "traces/generated/phase3_matrix_row_major.trace": "400ed1afb8775561e46c10856461fffa13b5bbc6a0ab57f33887d9b8c06f0445",
+    "traces/generated/phase3_pointer_mixed_update.trace": "7e52cd734e4f9a36f7e30c4bef858853e0be15bb213fabebecca782ae6033c0e",
+    "traces/generated/phase3_pointer_permutation.trace": "5c8039c1e6a8f40d376fa2787a6ce85378ab07bcae8e115a51a980206ee50d08",
+    "traces/smoke.trace": "6fce18b950516f3d18edb1a3f60b89ea365472663a327826e1e3a110a5e23163"
+  },
+  "public_redaction": {
+    "policy": "Environment-specific commands and absolute launcher paths are omitted; credentials were never recorded.",
+    "removed_fields": [
+      "execution.command",
+      "tool.launcher"
+    ],
+    "source_manifest_sha256": "8a603dcff120f15114370e7556dd84d33e8bd9fc4028375d5ddedc97685e10cd"
+  },
+  "repository": {
+    "commit": "0e05bdb35cf48d1df942ce49a5adaec4af982a95",
+    "dirty": true
+  },
+  "schema": "l1d-vivado-evidence-v2",
+  "simulations": [
+    {
+      "config_id": "dm_s8_vc4_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 8,
+        "victim_entries": 4,
+        "ways": 1
+      },
+      "log": "build/vivado/reports/dm_s8_vc4_pf0_simulation.log",
+      "sha256": "f9387c459ffaaeee06863124a43ce83d2e70bc3512f0908cd3d73c8d2f712084",
+      "workload_results": 13,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update"
+      ]
+    },
+    {
+      "config_id": "2w_s4_vc4_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/2w_s4_vc4_pf0_simulation.log",
+      "sha256": "8cfcfff7283ab63a64f20a2490047ee734648ad51f0a75f0d129cbfbd319390b",
+      "workload_results": 13,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update"
+      ]
+    },
+    {
+      "config_id": "2w_s4_vc8_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 8,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/2w_s4_vc8_pf0_simulation.log",
+      "sha256": "3ff692beef5a7aa65f258a67d032f45d49bf9e3c712e605907a63507d30b8573",
+      "workload_results": 13,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update"
+      ]
+    },
+    {
+      "config_id": "2w_s4_vc4_pf1",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 1,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/2w_s4_vc4_pf1_simulation.log",
+      "sha256": "2be3339d6223fe975770c722f8972519781056249bfe1d376951459fa8de27a6",
+      "workload_results": 14,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update",
+        "external_prefetch_matrix_candidates"
+      ]
+    },
+    {
+      "config_id": "trace_replay_smoke_2w_s4_vc4_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/trace_replay_smoke_2w_s4_vc4_pf0_simulation.log",
+      "sha256": "fc9094dc2cce6b3eb06cdcca5f184e5e378241730f92386b2c692790c645f71f",
+      "workload_results": 1,
+      "workloads": [
+        "trace_replay"
+      ]
+    },
+    {
+      "config_id": "trace_replay_generated_pointer_2w_s4_vc4_pf1",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 1,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/trace_replay_generated_pointer_2w_s4_vc4_pf1_simulation.log",
+      "sha256": "f821c5002110a8282bd314c6ee139f88c10c4aa7cdc8bb697e3d46504ec03587",
+      "workload_results": 1,
+      "workloads": [
+        "trace_replay"
+      ]
+    },
+    {
+      "config_id": "2w_s4_vc4_pf1_low_latency",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 0,
+        "mem_latency": 0,
+        "pf_opt_level": 3,
+        "prefetch": 1,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/2w_s4_vc4_pf1_low_latency_simulation.log",
+      "sha256": "a10004d637b9fcf861239a5676e762d66a8a4834c22f97ad55f9ec9999089813",
+      "workload_results": 14,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update",
+        "external_prefetch_matrix_candidates"
+      ]
+    },
+    {
+      "config_id": "2w_s4_vc4_pf1_high_latency_random_bp",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 2,
+        "mem_latency": 8,
+        "pf_opt_level": 3,
+        "prefetch": 1,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "log": "build/vivado/reports/2w_s4_vc4_pf1_high_latency_random_bp_simulation.log",
+      "sha256": "b78a920fc70418a6897a6729855b95712b795a44b75a087efed64635a21d8c8a",
+      "workload_results": 14,
+      "workloads": [
+        "directed_rv64",
+        "victim_dirty_regression",
+        "cpu_response_backpressure",
+        "matrix_row_major",
+        "matrix_column_major",
+        "matrix_blocked_tiled",
+        "matrix_same_set_exceeds_l1",
+        "matrix_same_set_exceeds_l1_plus_victim",
+        "matrix_store_heavy_dirty",
+        "pointer_random_permutation",
+        "pointer_conflict_chain",
+        "pointer_irregular_defeats_next_line",
+        "pointer_mixed_load_store_update",
+        "external_prefetch_matrix_candidates"
+      ]
+    },
+    {
+      "config_id": "prefetch_units",
+      "geometry": null,
+      "log": "build/vivado/reports/prefetch_units_simulation.log",
+      "sha256": "a2c8195609cd68a44ee7f5a6701119306f795694ae16d0e40234e7de7f8808e6",
+      "workload_results": 0,
+      "workloads": []
+    },
+    {
+      "config_id": "p3_prefetch_mshr",
+      "geometry": null,
+      "log": "build/vivado/reports/p3_prefetch_mshr_simulation.log",
+      "sha256": "3a28e6dbfcaea7624a258aa48a3327980a8cf08a515e522a87eaf363d43d9fee",
+      "workload_results": 0,
+      "workloads": []
+    },
+    {
+      "config_id": "p3_prefetch_edges",
+      "geometry": null,
+      "log": "build/vivado/reports/p3_prefetch_edges_simulation.log",
+      "sha256": "04ab3689a2c9855d154a7f1de37be30c5d031c2d34396cfceba3154d78b2349e",
+      "workload_results": 0,
+      "workloads": []
+    }
+  ],
+  "status": "PASS",
+  "synthesis": [
+    {
+      "bound_parameters": {
+        "ENABLE_PREFETCH": 0,
+        "LINE_BYTES": 16,
+        "NUM_SETS": 8,
+        "NUM_WAYS": 1,
+        "PF_OPT_LEVEL": 3,
+        "PREFETCH_POLICY": 1,
+        "VICTIM_ENTRIES": 4
+      },
+      "config_id": "dm_s8_vc4_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 8,
+        "victim_entries": 4,
+        "ways": 1
+      },
+      "reports": {
+        "power.rpt": {
+          "path": "build/vivado/reports/dm_s8_vc4_pf0/power.rpt",
+          "sha256": "8cc60451054380a8c78ff72983ea288a0d653a38c9e9769934e55effeb8f9ac8"
+        },
+        "timing_summary.rpt": {
+          "path": "build/vivado/reports/dm_s8_vc4_pf0/timing_summary.rpt",
+          "sha256": "df18cc9686106c2883d0f2c8d96e9432c3fcf61d992261c7ef6d88a0f6919cfa"
+        },
+        "utilization.rpt": {
+          "path": "build/vivado/reports/dm_s8_vc4_pf0/utilization.rpt",
+          "sha256": "8e3a99dea0ebecad0d2b05375b660425d6005509fec0abd966d5905a4a5377ee"
+        }
+      }
+    },
+    {
+      "bound_parameters": {
+        "ENABLE_PREFETCH": 0,
+        "LINE_BYTES": 16,
+        "NUM_SETS": 4,
+        "NUM_WAYS": 2,
+        "PF_OPT_LEVEL": 3,
+        "PREFETCH_POLICY": 1,
+        "VICTIM_ENTRIES": 4
+      },
+      "config_id": "2w_s4_vc4_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "reports": {
+        "power.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf0/power.rpt",
+          "sha256": "cfb1e5986b9d3e6c62778178032ffcb7019ce5af3799d04c1a2cbf0881e266f4"
+        },
+        "timing_summary.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf0/timing_summary.rpt",
+          "sha256": "6726bf2f8a7513e5c8b00c8496d54b6c69c10b75f12f938e9272643d988fea22"
+        },
+        "utilization.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf0/utilization.rpt",
+          "sha256": "472c12c145157984ff32e7672ee3d08403b4da9ec248ade08cbeccf95606fbb4"
+        }
+      }
+    },
+    {
+      "bound_parameters": {
+        "ENABLE_PREFETCH": 0,
+        "LINE_BYTES": 16,
+        "NUM_SETS": 4,
+        "NUM_WAYS": 2,
+        "PF_OPT_LEVEL": 3,
+        "PREFETCH_POLICY": 1,
+        "VICTIM_ENTRIES": 8
+      },
+      "config_id": "2w_s4_vc8_pf0",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 0,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 8,
+        "ways": 2
+      },
+      "reports": {
+        "power.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc8_pf0/power.rpt",
+          "sha256": "2595d323028a4f5e9787dfddbbbad69119744faa6e4c80ddf5926c7bdcb3dda2"
+        },
+        "timing_summary.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc8_pf0/timing_summary.rpt",
+          "sha256": "9d876abeb389c7afb26656e8bcb7d514d40c055255811428cb3c8ccbe636734b"
+        },
+        "utilization.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc8_pf0/utilization.rpt",
+          "sha256": "565afe30ebeebc50f35aab99a80b299f9a293863e45c739f70a1b2e26249441f"
+        }
+      }
+    },
+    {
+      "bound_parameters": {
+        "ENABLE_PREFETCH": 1,
+        "LINE_BYTES": 16,
+        "NUM_SETS": 4,
+        "NUM_WAYS": 2,
+        "PF_OPT_LEVEL": 3,
+        "PREFETCH_POLICY": 1,
+        "VICTIM_ENTRIES": 4
+      },
+      "config_id": "2w_s4_vc4_pf1",
+      "geometry": {
+        "cpu_bp": 0,
+        "line_bytes": 16,
+        "mem_bp": 1,
+        "mem_latency": 2,
+        "pf_opt_level": 3,
+        "prefetch": 1,
+        "prefetch_policy": 1,
+        "sets": 4,
+        "victim_entries": 4,
+        "ways": 2
+      },
+      "reports": {
+        "power.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf1/power.rpt",
+          "sha256": "35bfbd60340c7efe7d01daf51af635c2e67ba70387ade5fe50fe42cc6738fa55"
+        },
+        "timing_summary.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf1/timing_summary.rpt",
+          "sha256": "5e3514128404585a2f7428757dd48beac8c8dbdc0724b8a23104237cf04a5216"
+        },
+        "utilization.rpt": {
+          "path": "build/vivado/reports/2w_s4_vc4_pf1/utilization.rpt",
+          "sha256": "4559c69d7ab727c5a5bed4c2d2aaa3d54ba76033e8a0469a303754c0086848cf"
+        }
+      }
+    }
+  ],
+  "tool": {
+    "clock_period_ns": 10.0,
+    "part": "xc7a35tcpg236-1",
+    "vivado_version": "2024.2.1"
+  }
+}

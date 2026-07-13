@@ -1,0 +1,9 @@
+# Zero-bubble producer and phase-boundary regression.
+# The warmup request must fully drain before the measured stream is presented.
+# PHASE warmup
+0 3 0 0000000000000800
+# PHASE measure
+0 3 0 0000000000001000
+0 3 0 0000000000001010
+0 3 0 0000000000001020
+0 3 0 0000000000001030

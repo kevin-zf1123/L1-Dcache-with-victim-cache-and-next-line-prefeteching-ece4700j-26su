@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts.summarize_spec_replay import (
     INT_RESULT_FIELDS,
+    V3_LIFECYCLE_COUNTER_FIELDS,
     ValidationError,
     aggregate_pairs,
     analyze_campaign,
@@ -192,6 +193,45 @@ class CampaignFixture:
                 "schema=2 event=prefetch_fill seq=-1 "
                 f"cycle={200 + index} addr=0x{0x1000 + index * 16:x} "
                 "op=prefetch size=16 outcome=l1_hit details=-"
+            )
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _write_v3_sidecar(
+        path: Path,
+        outcomes: list[str],
+        *,
+        prefetch_issues: int = 0,
+        prefetch_fills: int = 0,
+    ) -> None:
+        addresses = (0x0, 0x10, 0x20, 0x30)
+        rows = []
+        for seq, (addr, outcome) in enumerate(zip(addresses, outcomes)):
+            present = seq * 10
+            accept = present + 1
+            response = accept + 3
+            common = f"seq={seq} addr=0x{addr:x} op=load size=3"
+            rows.extend(
+                [
+                    f"schema=3 event=demand_present {common} cycle={present} "
+                    "outcome=pending latency=-1 details=-",
+                    f"schema=3 event=demand_accept {common} cycle={accept} "
+                    "outcome=pending latency=0 details=-",
+                    f"schema=3 event=demand_response {common} cycle={response} "
+                    f"outcome={outcome} latency=3 details=-",
+                ]
+            )
+        for index in range(prefetch_issues):
+            rows.append(
+                "schema=3 event=prefetch_issue seq=-1 "
+                f"cycle={100 + index} addr=0x{0x1000 + index * 16:x} "
+                "op=prefetch size=16 outcome=lower_memory latency=-1 details=-"
+            )
+        for index in range(prefetch_fills):
+            rows.append(
+                "schema=3 event=prefetch_fill seq=-1 "
+                f"cycle={200 + index} addr=0x{0x1000 + index * 16:x} "
+                "op=prefetch size=16 outcome=l1_hit latency=-1 details=-"
             )
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -443,6 +483,118 @@ class StrictCampaignTests(unittest.TestCase):
         self.assertEqual(pair["cycles_on_minus_off"], -5)
         self.assertEqual(pair["cycle_class"], "helpful")
         self.assertAlmostEqual(aggregate[0]["accuracy"], 2 / 3)
+
+    def test_schema3_lifecycle_allows_merge_without_install(self) -> None:
+        fixture = CampaignFixture(self.root)
+        fixture.on.update(
+            {
+                "schema": 3,
+                "demand_mem_reads": 0,
+                "prefetch_mem_reads": 4,
+                "mem_reads": 4,
+                "read_bytes": 64,
+                "useless_evicted": 1,
+                "pf_candidates": 5,
+                "pf_admitted": 4,
+                "pf_issued": 4,
+                "pf_returned": 4,
+                "pf_installed": 3,
+                "pf_merged": 1,
+                "pf_discarded": 0,
+                "pf_cancelled": 1,
+                "pf_unused_evicted": 1,
+                "pf_unused_resident": 1,
+            }
+        )
+        for field in V3_LIFECYCLE_COUNTER_FIELDS:
+            fixture.on.setdefault(field, 0)
+        fields = ["schema=3", "config_id=pf1", "trace_id=trace-c0-w0"]
+        fields.extend(
+            f"{field}={fixture.on[field]}"
+            for field in INT_RESULT_FIELDS
+            if field != "schema"
+        )
+        fields.extend(
+            f"{field}={fixture.on[field]}"
+            for field in V3_LIFECYCLE_COUNTER_FIELDS
+        )
+        fields.append("status=PASS")
+        fixture.on_log.write_text(
+            "WORKLOAD_RESULT " + " ".join(fields) + "\n", encoding="utf-8"
+        )
+        fixture._write_sidecar(
+            fixture.on_sidecar,
+            ["lower_memory", "l1_hit", "l1_hit", "victim_hit"],
+            prefetch_issues=4,
+            prefetch_fills=3,
+        )
+        fixture.refresh_artifact_hashes()
+        fixture.write_manifest()
+
+        runs, pairs, _, _ = analyze_campaign(fixture.manifest)
+        on = next(run for run in runs if run["prefetch"] == 1)
+        self.assertEqual(on["pf_issued"], 4)
+        self.assertEqual(on["pf_installed"], 3)
+        self.assertEqual(on["pf_merged"], 1)
+        self.assertEqual(pairs[0]["on_pf_returned"], 4)
+
+        fixture.on["pf_admitted"] = 5
+        fixture.on["pf_cancelled"] = 0
+        fields = ["schema=3", "config_id=pf1", "trace_id=trace-c0-w0"]
+        fields.extend(
+            f"{field}={fixture.on[field]}"
+            for field in INT_RESULT_FIELDS
+            if field != "schema"
+        )
+        fields.extend(
+            f"{field}={fixture.on[field]}"
+            for field in V3_LIFECYCLE_COUNTER_FIELDS
+        )
+        fields.append("status=PASS")
+        fixture.on_log.write_text(
+            "WORKLOAD_RESULT " + " ".join(fields) + "\n", encoding="utf-8"
+        )
+        fixture.refresh_artifact_hashes()
+        fixture.write_manifest()
+        with self.assertRaisesRegex(
+            ValidationError,
+            r"pf_admitted must be <= pf_issued \+ pf_cancelled after drain",
+        ):
+            analyze_campaign(fixture.manifest)
+
+    def test_campaign_and_sidecar_schema3_bind_producer_and_policy(self) -> None:
+        fixture = CampaignFixture(self.root)
+        fixture.data["schema"] = "l1d-replay-campaign-v3"
+        fixture._write_v3_sidecar(
+            fixture.off_sidecar,
+            ["l1_hit", "lower_memory", "victim_hit", "lower_memory"],
+        )
+        fixture._write_v3_sidecar(
+            fixture.on_sidecar,
+            ["lower_memory", "l1_hit", "l1_hit", "victim_hit"],
+            prefetch_issues=3,
+            prefetch_fills=3,
+        )
+        for run in fixture.data["runs"]:
+            run.update(
+                {
+                    "prefetch_policy": 1,
+                    "pf_opt_level": 3,
+                    "producer_profile": "zero-bubble",
+                    "producer_gap": 0,
+                }
+            )
+            command = run["simulation_command"]
+            command.extend(["+PRODUCER_PROFILE=1", "+PRODUCER_GAP=0"])
+            fixture.refresh_command_hash(run)
+        fixture.refresh_artifact_hashes()
+        fixture.write_manifest()
+
+        runs, pairs, aggregate, _ = analyze_campaign(fixture.manifest)
+        self.assertEqual({run["producer_profile"] for run in runs}, {"zero-bubble"})
+        self.assertEqual(pairs[0]["prefetch_policy"], 1)
+        self.assertEqual(pairs[0]["pf_opt_level"], 3)
+        self.assertEqual(aggregate[0]["producer_gap"], 0)
 
     def test_zero_denominators_are_na_not_silent_zero(self) -> None:
         fixture = CampaignFixture(self.root, all_hits=True)

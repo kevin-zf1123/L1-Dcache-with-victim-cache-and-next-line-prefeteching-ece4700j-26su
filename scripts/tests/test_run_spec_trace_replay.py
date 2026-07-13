@@ -45,6 +45,33 @@ def fake_toolchain() -> dict[str, object]:
 
 
 class ReplayRunnerTests(unittest.TestCase):
+    def test_invalid_replay_matrix_is_rejected_before_replay(self) -> None:
+        cases = (
+            ({"L1D_PREFETCH_POLICY": "0", "L1D_PF_OPT_LEVEL": "3"}, "requires"),
+            ({"L1D_PRODUCER_PROFILE": "fixed-gap", "L1D_PRODUCER_GAP": "3"}, "1, 2, 4, or 8"),
+            ({"L1D_MEM_LATENCY": "-1"}, "non-negative integer"),
+            ({"L1D_MEM_LATENCY": "fast"}, "non-negative integer"),
+            (
+                {"L1D_MEM_READY_MODE": "random"},
+                "always-ready, periodic, or deterministic-random",
+            ),
+            ({"L1D_REPLAY_SCOPE": "pair"}, "full or paired"),
+        )
+        for overrides, expected in cases:
+            with self.subTest(overrides=overrides):
+                environment = os.environ.copy()
+                environment.update(overrides)
+                completed = subprocess.run(
+                    [str(REPO / "scripts" / "run_spec_trace_replay.sh")],
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env=environment,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stdout)
+                self.assertIn(expected, completed.stdout)
+
     def test_failed_capture_validation_removes_stale_pass_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -286,9 +313,40 @@ class ReplayRunnerTests(unittest.TestCase):
             generated = json.loads(
                 (replay_root / "campaign_manifest.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(generated["schema"], "l1d-replay-campaign-v3")
+            self.assertEqual(generated["replay_scope"], "full")
             self.assertEqual(generated["expected_runs"], 4)
             self.assertEqual(generated["expected_pairs"], 1)
+            self.assertEqual(
+                generated["standalone_config_ids"],
+                ["dm_s8_vc4_pf0", "2w_s4_vc8_pf0"],
+            )
+            self.assertEqual(
+                {path.stem for path in (replay_root / "bin").glob("*.vvp")},
+                {
+                    "dm_s8_vc4_pf0",
+                    "2w_s4_vc4_pf0",
+                    "2w_s4_vc8_pf0",
+                    "2w_s4_vc4_pf1",
+                },
+            )
             self.assertEqual(len(generated["runs"]), 4)
+            for run in generated["runs"]:
+                self.assertEqual(run["prefetch_policy"], 1)
+                self.assertEqual(run["pf_opt_level"], 3)
+                self.assertEqual(run["producer_profile"], "zero-bubble")
+                self.assertEqual(run["producer_gap"], 0)
+                self.assertEqual(run["mem_latency"], 2)
+                self.assertEqual(run["mem_ready_mode"], "periodic")
+                self.assertEqual(run["mem_ready_mode_code"], 1)
+                self.assertEqual(
+                    run["timing_profile"],
+                    "blocking-fixed-latency2-periodic-ready",
+                )
+                self.assertIn("+SIDECAR_SCHEMA=3", run["simulation_command"])
+                self.assertIn("+PRODUCER_PROFILE=1", run["simulation_command"])
+                self.assertIn("+MEM_LATENCY=2", run["simulation_command"])
+                self.assertIn("+MEM_READY_MODE=1", run["simulation_command"])
             validation = json.loads(
                 (replay_root / "analysis" / "validation.json").read_text(
                     encoding="utf-8"
@@ -297,6 +355,114 @@ class ReplayRunnerTests(unittest.TestCase):
             self.assertEqual(validation["status"], "PASS")
             self.assertEqual(validation["validated_runs"], 4)
             self.assertEqual(validation["validated_pairs"], 1)
+
+            paired_root = root / "replay-paired"
+            paired_logs = paired_root / "logs"
+            paired_logs.mkdir(parents=True)
+            paired_environment = os.environ.copy()
+            paired_environment["L1D_REPLAY_SCOPE"] = "paired"
+            paired_run = subprocess.run(
+                [
+                    str(REPO / "scripts" / "run_spec_trace_replay.sh"),
+                    str(campaign),
+                    str(paired_logs),
+                ],
+                cwd=root,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=paired_environment,
+            )
+            self.assertEqual(paired_run.returncode, 0, paired_run.stdout)
+            paired_manifest = json.loads(
+                (paired_root / "campaign_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(paired_manifest["replay_scope"], "paired")
+            self.assertEqual(paired_manifest["expected_runs"], 2)
+            self.assertEqual(paired_manifest["actual_runs"], 2)
+            self.assertEqual(paired_manifest["expected_pairs"], 1)
+            self.assertEqual(
+                paired_manifest["paired_config_ids"],
+                ["2w_s4_vc4_pf0", "2w_s4_vc4_pf1"],
+            )
+            self.assertEqual(paired_manifest["standalone_config_ids"], [])
+            self.assertEqual(
+                {path.stem for path in (paired_root / "bin").glob("*.vvp")},
+                {"2w_s4_vc4_pf0", "2w_s4_vc4_pf1"},
+            )
+            self.assertEqual(
+                {run["config_id"] for run in paired_manifest["runs"]},
+                {"2w_s4_vc4_pf0", "2w_s4_vc4_pf1"},
+            )
+            paired_validation = json.loads(
+                (paired_root / "analysis" / "validation.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(paired_validation["status"], "PASS")
+            self.assertEqual(paired_validation["validated_runs"], 2)
+            self.assertEqual(paired_validation["validated_pairs"], 1)
+
+            sensitivity_cases = (
+                (0, "always-ready", 0, "blocking-fixed-latency0-always-ready"),
+                (
+                    8,
+                    "deterministic-random",
+                    2,
+                    "blocking-fixed-latency8-deterministic-random-ready",
+                ),
+            )
+            for latency, ready_mode, ready_mode_code, timing_profile in sensitivity_cases:
+                with self.subTest(latency=latency, ready_mode=ready_mode):
+                    sensitivity_root = root / f"replay-latency-{latency}"
+                    sensitivity_logs = sensitivity_root / "logs"
+                    sensitivity_logs.mkdir(parents=True)
+                    environment = os.environ.copy()
+                    environment.update(
+                        {
+                            "L1D_MEM_LATENCY": str(latency),
+                            "L1D_MEM_READY_MODE": ready_mode,
+                        }
+                    )
+                    sensitivity_run = subprocess.run(
+                        [
+                            str(REPO / "scripts" / "run_spec_trace_replay.sh"),
+                            str(campaign),
+                            str(sensitivity_logs),
+                        ],
+                        cwd=root,
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        env=environment,
+                    )
+                    self.assertEqual(
+                        sensitivity_run.returncode, 0, sensitivity_run.stdout
+                    )
+                    sensitivity_manifest = json.loads(
+                        (sensitivity_root / "campaign_manifest.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    self.assertEqual(len(sensitivity_manifest["runs"]), 4)
+                    for run in sensitivity_manifest["runs"]:
+                        self.assertEqual(run["mem_latency"], latency)
+                        self.assertEqual(run["mem_ready_mode"], ready_mode)
+                        self.assertEqual(
+                            run["mem_ready_mode_code"], ready_mode_code
+                        )
+                        self.assertEqual(run["timing_profile"], timing_profile)
+                        self.assertIn(
+                            f"+MEM_LATENCY={latency}", run["simulation_command"]
+                        )
+                        self.assertIn(
+                            f"+MEM_READY_MODE={ready_mode_code}",
+                            run["simulation_command"],
+                        )
 
             wrapper_dir = root / "python-wrapper"
             wrapper_dir.mkdir()

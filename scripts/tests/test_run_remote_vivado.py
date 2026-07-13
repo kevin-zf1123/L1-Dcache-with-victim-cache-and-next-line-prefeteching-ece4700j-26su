@@ -37,7 +37,7 @@ class RunRemoteVivadoEvidenceTests(unittest.TestCase):
         l1_bytes = geometry["sets"] * geometry["ways"] * geometry["line_bytes"]
         victim_bytes = geometry["victim_entries"] * geometry["line_bytes"]
         fields: dict[str, object] = {
-            "schema": 2,
+            "schema": 3,
             "name": workload,
             "config_id": config_id,
             "sets": geometry["sets"],
@@ -54,6 +54,18 @@ class RunRemoteVivadoEvidenceTests(unittest.TestCase):
             "watchdogs": 0,
             "protocol": 0,
             "duplicate_lines": 0,
+            "pf_admitted": 0,
+            "pf_issued": 0,
+            "pf_returned": 0,
+            "pf_installed": 0,
+            "pf_merged": 0,
+            "pf_discarded": 0,
+            "pf_cancelled": 0,
+            "timely_useful": 0,
+            "pf_unused_evicted": 0,
+            "pf_unused_resident": 0,
+            "pf_caused_writebacks": 0,
+            "pf_mshr_valid": 0,
         }
         fields.update(overrides)
         return "WORKLOAD_RESULT " + " ".join(
@@ -68,6 +80,10 @@ class RunRemoteVivadoEvidenceTests(unittest.TestCase):
             lines.append("ALL OOP TESTS PASSED")
             (report_root / f"{name}_simulation.log").write_text(
                 "\n".join(lines) + "\n", encoding="utf-8"
+            )
+        for name, marker in RUNNER.AUXILIARY_SIMULATIONS.items():
+            (report_root / f"{name}_simulation.log").write_text(
+                f"PASS: 1 {marker}\n", encoding="utf-8"
             )
 
         vivado_lines = ["Vivado v2024.2.1"]
@@ -99,9 +115,35 @@ class RunRemoteVivadoEvidenceTests(unittest.TestCase):
             findings, evidence = RUNNER.validate_report_matrix(root)
 
         self.assertEqual([], findings)
-        self.assertEqual(8, len(evidence["simulations"]))
+        self.assertEqual(11, len(evidence["simulations"]))
         self.assertEqual(4, len(evidence["synthesis"]))
         self.assertEqual(3, len(evidence["artifacts"]))
+
+    def test_log_scan_accepts_oop_and_auxiliary_pass_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_tree(root)
+            status, findings = RUNNER.scan_logs(root, RUNNER.DEFAULT_DOWNLOADS)
+
+        self.assertEqual(0, status)
+        self.assertEqual([], findings)
+
+    def test_log_scan_rejects_missing_auxiliary_pass_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_tree(root)
+            log = root / "build/vivado/reports/p3_prefetch_mshr_simulation.log"
+            log.write_text("PASS: unrelated checks\n", encoding="utf-8")
+            status, findings = RUNNER.scan_logs(root, RUNNER.DEFAULT_DOWNLOADS)
+
+        self.assertEqual(1, status)
+        self.assertTrue(
+            any(
+                "missing PASS marker 'directed P3 PF-MSHR checks'" in finding
+                for finding in findings
+            ),
+            findings,
+        )
 
     def test_truncated_workload_log_fails_exact_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -141,6 +183,106 @@ class RunRemoteVivadoEvidenceTests(unittest.TestCase):
 
         self.assertTrue(any("duplicates=['directed_rv64']" in f for f in findings))
         self.assertTrue(any("l1_bytes='999', expected 128" in f for f in findings))
+
+    def test_nonzero_drained_optimized_lifecycle_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_tree(root)
+            name = "2w_s4_vc4_pf1"
+            log = root / f"build/vivado/reports/{name}_simulation.log"
+            lines = log.read_text(encoding="utf-8").splitlines()
+            lines[0] = self.workload_line(
+                name,
+                RUNNER.SIMULATION_WORKLOADS[name][0],
+                pf_admitted=4,
+                pf_issued=3,
+                pf_cancelled=1,
+                pf_returned=3,
+                pf_installed=1,
+                pf_merged=1,
+                pf_discarded=1,
+                timely_useful=0,
+                pf_unused_evicted=1,
+                pf_unused_resident=0,
+            )
+            log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            findings, _ = RUNNER.validate_report_matrix(root)
+
+        self.assertEqual([], findings)
+
+    def test_invalid_optimized_lifecycle_relations_fail(self) -> None:
+        cases = (
+            (
+                {"pf_admitted": 1},
+                "pf_admitted must be <= pf_issued + pf_cancelled after drain",
+            ),
+            (
+                {"pf_admitted": 1, "pf_issued": 1},
+                "pf_issued == pf_returned",
+            ),
+            (
+                {"pf_admitted": 1, "pf_issued": 1, "pf_returned": 1},
+                "pf_returned == pf_installed + pf_merged + pf_discarded",
+            ),
+            (
+                {
+                    "pf_admitted": 1,
+                    "pf_issued": 1,
+                    "pf_returned": 1,
+                    "pf_installed": 1,
+                },
+                "pf_installed == timely_useful + pf_unused_evicted + "
+                "pf_unused_resident",
+            ),
+            ({"pf_caused_writebacks": 1}, "pf_caused_writebacks=1, expected 0"),
+            ({"pf_mshr_valid": 1}, "pf_mshr_valid=1, expected 0"),
+        )
+        for overrides, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.make_valid_tree(root)
+                name = "2w_s4_vc4_pf1"
+                log = root / f"build/vivado/reports/{name}_simulation.log"
+                lines = log.read_text(encoding="utf-8").splitlines()
+                lines[1] = self.workload_line(
+                    name,
+                    RUNNER.SIMULATION_WORKLOADS[name][1],
+                    **overrides,
+                )
+                log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                findings, _ = RUNNER.validate_report_matrix(root)
+
+            self.assertTrue(
+                any(expected in finding for finding in findings), findings
+            )
+
+    def test_missing_or_non_decimal_optimized_lifecycle_field_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_tree(root)
+            name = "2w_s4_vc4_pf1"
+            log = root / f"build/vivado/reports/{name}_simulation.log"
+            lines = log.read_text(encoding="utf-8").splitlines()
+            lines[0] = lines[0].replace(" pf_cancelled=0", "")
+            lines[1] = lines[1].replace(" pf_mshr_valid=0", " pf_mshr_valid=x")
+            log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            findings, _ = RUNNER.validate_report_matrix(root)
+
+        self.assertTrue(
+            any(
+                "missing optimized lifecycle field pf_cancelled" in finding
+                for finding in findings
+            ),
+            findings,
+        )
+        self.assertTrue(
+            any(
+                "pf_mshr_valid='x', expected non-negative decimal integer"
+                in finding
+                for finding in findings
+            ),
+            findings,
+        )
 
     def test_synthesis_parameter_mismatch_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

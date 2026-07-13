@@ -1,0 +1,5 @@
+config_id,luts,lut_as_memory,registers,bram_tiles,dsp48,wns_ns,tns_ns,estimated_fmax_mhz,total_power_w,dynamic_power_w,static_power_w,power_confidence
+dm_s8_vc4_pf0,5679,57,2897,2,0,-1.019,-45.732,90.752,0.124,0.053,0.070,Low
+2w_s4_vc4_pf0,7137,372,3214,0,0,-2.130,-101.115,82.440,0.125,0.055,0.070,Low
+2w_s4_vc8_pf0,7891,372,4227,0,0,-2.500,-139.521,80.000,0.128,0.058,0.070,Low
+2w_s4_vc4_pf1,10882,372,4757,0,0,-9.342,-2571.288,51.701,0.139,0.068,0.070,Low

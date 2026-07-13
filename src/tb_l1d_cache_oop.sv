@@ -60,6 +60,27 @@ interface l1d_tb_if #(
     logic event_prefetch_dropped;
     logic [3:0] debug_state;
     logic debug_req_is_prefetch;
+    logic [31:0] stat_pf_candidates;
+    logic [31:0] stat_pf_admitted;
+    logic [31:0] stat_pf_issued;
+    logic [31:0] stat_pf_returned;
+    logic [31:0] stat_pf_installed;
+    logic [31:0] stat_pf_merged;
+    logic [31:0] stat_pf_discarded;
+    logic [31:0] stat_pf_cancelled;
+    logic [31:0] stat_pf_unused_evicted;
+    logic [31:0] stat_pf_vc_bypass;
+    logic [31:0] stat_pf_caused_writebacks;
+    logic [31:0] stat_pf_demand_block_cycles;
+    logic [31:0] stat_pf_true_help;
+    logic [31:0] stat_pf_true_pollution;
+    logic [31:0] stat_pf_suppressed_quota;
+    logic [31:0] stat_pf_suppressed_unsafe;
+    logic [31:0] stat_pf_same_line_coalesced;
+    logic [1:0] debug_pf_controller_state;
+    logic debug_pf_mshr_valid;
+    logic [ADDR_WIDTH-1:0] debug_pf_mshr_addr;
+    logic [1:0] debug_pf_mshr_confidence;
 endinterface
 
 module tb_l1d_cache_oop #(
@@ -70,7 +91,12 @@ module tb_l1d_cache_oop #(
     parameter integer LINE_BYTES = 16,
     parameter integer MEM_LATENCY = 2,
     parameter integer MEM_BACKPRESSURE_MODE = 1,
-    parameter integer CPU_BACKPRESSURE_MODE = 0
+    parameter integer CPU_BACKPRESSURE_MODE = 0,
+    parameter integer PREFETCH_POLICY = 1,
+    parameter integer PF_OPT_LEVEL = 3,
+    // Keep the historical producer as the default for regression identity.
+    parameter integer PRODUCER_PROFILE = 0,
+    parameter integer PRODUCER_GAP = 1
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
@@ -91,6 +117,10 @@ module tb_l1d_cache_oop #(
     localparam logic [3:0] ST_VC_SWAP = 4'd3;
 
     logic clk;
+    integer producer_profile;
+    integer producer_gap;
+    integer trace_plusarg_status;
+    integer producer_plusarg_status;
     string run_config_id;
     string run_trace_id;
     l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) bus(clk);
@@ -102,7 +132,9 @@ module tb_l1d_cache_oop #(
         .NUM_SETS(NUM_SETS),
         .NUM_WAYS(NUM_WAYS),
         .VICTIM_ENTRIES(VICTIM_ENTRIES),
-        .ENABLE_PREFETCH(ENABLE_PREFETCH)
+        .ENABLE_PREFETCH(ENABLE_PREFETCH),
+        .PREFETCH_POLICY(PREFETCH_POLICY),
+        .PF_OPT_LEVEL(PF_OPT_LEVEL)
     ) dut (
         .clk(clk),
         .rst_n(bus.rst_n),
@@ -151,7 +183,28 @@ module tb_l1d_cache_oop #(
         .event_prefetch_pollution(bus.event_prefetch_pollution),
         .event_prefetch_dropped(bus.event_prefetch_dropped),
         .debug_state(bus.debug_state),
-        .debug_req_is_prefetch(bus.debug_req_is_prefetch)
+        .debug_req_is_prefetch(bus.debug_req_is_prefetch),
+        .stat_pf_candidates(bus.stat_pf_candidates),
+        .stat_pf_admitted(bus.stat_pf_admitted),
+        .stat_pf_issued(bus.stat_pf_issued),
+        .stat_pf_returned(bus.stat_pf_returned),
+        .stat_pf_installed(bus.stat_pf_installed),
+        .stat_pf_merged(bus.stat_pf_merged),
+        .stat_pf_discarded(bus.stat_pf_discarded),
+        .stat_pf_cancelled(bus.stat_pf_cancelled),
+        .stat_pf_unused_evicted(bus.stat_pf_unused_evicted),
+        .stat_pf_vc_bypass(bus.stat_pf_vc_bypass),
+        .stat_pf_caused_writebacks(bus.stat_pf_caused_writebacks),
+        .stat_pf_demand_block_cycles(bus.stat_pf_demand_block_cycles),
+        .stat_pf_true_help(bus.stat_pf_true_help),
+        .stat_pf_true_pollution(bus.stat_pf_true_pollution),
+        .stat_pf_suppressed_quota(bus.stat_pf_suppressed_quota),
+        .stat_pf_suppressed_unsafe(bus.stat_pf_suppressed_unsafe),
+        .stat_pf_same_line_coalesced(bus.stat_pf_same_line_coalesced),
+        .debug_pf_controller_state(bus.debug_pf_controller_state),
+        .debug_pf_mshr_valid(bus.debug_pf_mshr_valid),
+        .debug_pf_mshr_addr(bus.debug_pf_mshr_addr),
+        .debug_pf_mshr_confidence(bus.debug_pf_mshr_confidence)
     );
 
     string dump_vcd_path;
@@ -176,7 +229,7 @@ module tb_l1d_cache_oop #(
                                           VICTIM_ENTRIES, ENABLE_PREFETCH);
             end
         end
-        void'($value$plusargs("TRACE_ID=%s", run_trace_id));
+        trace_plusarg_status = $value$plusargs("TRACE_ID=%s", run_trace_id);
         if ($value$plusargs("DUMP_VCD=%s", dump_vcd_path)) begin
             $dumpfile(dump_vcd_path);
             $dumpvars(0, clk);
@@ -294,12 +347,12 @@ module tb_l1d_cache_oop #(
                             bus.debug_state != ST_VC_SWAP &&
                             dut.valid_bits[dbg_way_a][dbg_set] &&
                             dut.valid_bits[dbg_way_b][dbg_set] &&
-                            dut.gen_arrays[dbg_way_a].tag_array.mem[dbg_set] ==
-                            dut.gen_arrays[dbg_way_b].tag_array.mem[dbg_set]) begin
+                            dut.debug_tag[dbg_way_a][dbg_set] ==
+                            dut.debug_tag[dbg_way_b][dbg_set]) begin
                             $display("FAIL duplicate L1 line set=%0d way_a=%0d way_b=%0d addr=%016x state=%0d",
                                      dbg_set, dbg_way_a, dbg_way_b,
                                      compose_debug_line_address(
-                                         dut.gen_arrays[dbg_way_a].tag_array.mem[dbg_set],
+                                         dut.debug_tag[dbg_way_a][dbg_set],
                                          dbg_set),
                                      bus.debug_state);
                             bus.duplicate_line_errors = bus.duplicate_line_errors + 1;
@@ -318,7 +371,7 @@ module tb_l1d_cache_oop #(
                             dut.valid_bits[dbg_way_a][dbg_set] &&
                             dut.vc_valid[dbg_vc_a] &&
                             compose_debug_line_address(
-                                dut.gen_arrays[dbg_way_a].tag_array.mem[dbg_set],
+                                dut.debug_tag[dbg_way_a][dbg_set],
                                 dbg_set) == dut.vc_addr[dbg_vc_a]) begin
                             $display("FAIL duplicate L1/victim line set=%0d way=%0d victim=%0d addr=%016x state=%0d",
                                      dbg_set, dbg_way_a, dbg_vc_a,
@@ -606,13 +659,19 @@ module tb_l1d_cache_oop #(
     class l1d_cpu_driver;
         virtual l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) vif;
         l1d_scoreboard sb;
+        integer profile;
+        integer gap;
 
         function new(
             virtual l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) vif_i,
-            l1d_scoreboard sb_i
+            l1d_scoreboard sb_i,
+            integer profile_i,
+            integer gap_i
         );
             vif = vif_i;
             sb = sb_i;
+            profile = profile_i;
+            gap = gap_i;
         endfunction
 
         task drive_defaults();
@@ -683,7 +742,11 @@ module tb_l1d_cache_oop #(
                 rsp_data = vif.cpu_rsp_rdata;
                 rsp_error = vif.cpu_rsp_error;
                 rsp_error_cause = vif.cpu_rsp_error_cause;
-                @(posedge vif.clk);
+                if (profile == 0) begin
+                    @(posedge vif.clk);
+                end else if (profile == 2) begin
+                    repeat (gap) @(posedge vif.clk);
+                end
             end
         endtask
 
@@ -776,9 +839,15 @@ module tb_l1d_cache_oop #(
                     if (!vif.rst_n) begin
                         reset_metrics();
                     end else begin
+                        // cache_idle is a quiescence signal, so a queued
+                        // external candidate intentionally deasserts it even
+                        // though demand-priority arbitration may still accept
+                        // a CPU request from ST_IDLE.  Check the acceptance
+                        // state directly instead of conflating ready with
+                        // whole-cache quiescence.
                         if (vif.cpu_req_valid && vif.cpu_req_ready &&
-                            !vif.cache_idle) begin
-                            $display("FAIL CPU request accepted while cache is not idle state=%s",
+                            vif.debug_state != 4'd0) begin
+                            $display("FAIL CPU request accepted outside idle state=%s",
                                      state_name(vif.debug_state));
                             protocol_errors = protocol_errors + 1;
                         end
@@ -903,6 +972,23 @@ module tb_l1d_cache_oop #(
         integer metric_prefetch_reads_base;
         integer metric_writes_base;
         integer metric_cycles_base;
+        integer metric_pf_candidates_base;
+        integer metric_pf_admitted_base;
+        integer metric_pf_issued_base;
+        integer metric_pf_returned_base;
+        integer metric_pf_installed_base;
+        integer metric_pf_merged_base;
+        integer metric_pf_discarded_base;
+        integer metric_pf_cancelled_base;
+        integer metric_pf_unused_evicted_base;
+        integer metric_pf_vc_bypass_base;
+        integer metric_pf_caused_writebacks_base;
+        integer metric_pf_demand_block_cycles_base;
+        integer metric_pf_true_help_base;
+        integer metric_pf_true_pollution_base;
+        integer metric_pf_suppressed_quota_base;
+        integer metric_pf_suppressed_unsafe_base;
+        integer metric_pf_same_line_coalesced_base;
 
         function new(
             virtual l1d_tb_if #(ADDR_WIDTH, DATA_WIDTH, LINE_BYTES) vif_i,
@@ -957,6 +1043,28 @@ module tb_l1d_cache_oop #(
                 metric_prefetch_reads_base = mem.accepted_prefetch_reads;
                 metric_writes_base = mem.accepted_writes;
                 metric_cycles_base = mem.cycles;
+                metric_pf_candidates_base = vif.stat_pf_candidates;
+                metric_pf_admitted_base = vif.stat_pf_admitted;
+                metric_pf_issued_base = vif.stat_pf_issued;
+                metric_pf_returned_base = vif.stat_pf_returned;
+                metric_pf_installed_base = vif.stat_pf_installed;
+                metric_pf_merged_base = vif.stat_pf_merged;
+                metric_pf_discarded_base = vif.stat_pf_discarded;
+                metric_pf_cancelled_base = vif.stat_pf_cancelled;
+                metric_pf_unused_evicted_base = vif.stat_pf_unused_evicted;
+                metric_pf_vc_bypass_base = vif.stat_pf_vc_bypass;
+                metric_pf_caused_writebacks_base =
+                    vif.stat_pf_caused_writebacks;
+                metric_pf_demand_block_cycles_base =
+                    vif.stat_pf_demand_block_cycles;
+                metric_pf_true_help_base = vif.stat_pf_true_help;
+                metric_pf_true_pollution_base = vif.stat_pf_true_pollution;
+                metric_pf_suppressed_quota_base =
+                    vif.stat_pf_suppressed_quota;
+                metric_pf_suppressed_unsafe_base =
+                    vif.stat_pf_suppressed_unsafe;
+                metric_pf_same_line_coalesced_base =
+                    vif.stat_pf_same_line_coalesced;
             end
         endtask
 
@@ -992,6 +1100,24 @@ module tb_l1d_cache_oop #(
             integer pollution;
             integer dropped;
             integer service_cycles;
+            integer pf_candidates;
+            integer pf_admitted;
+            integer pf_issued;
+            integer pf_returned;
+            integer pf_installed;
+            integer pf_merged;
+            integer pf_discarded;
+            integer pf_cancelled;
+            integer pf_unused_evicted;
+            integer pf_vc_bypass;
+            integer pf_caused_writebacks;
+            integer pf_demand_block_cycles;
+            integer pf_true_help;
+            integer pf_true_pollution;
+            integer pf_suppressed_quota;
+            integer pf_suppressed_unsafe;
+            integer pf_same_line_coalesced;
+            integer timely_useful;
             begin
                 wait_for_quiescence();
                 hits = vif.stat_cpu_hits - metric_hits_base;
@@ -1009,28 +1135,102 @@ module tb_l1d_cache_oop #(
                 pollution = vif.stat_prefetch_pollution - metric_pollution_base;
                 dropped = vif.stat_prefetch_dropped - metric_dropped_base;
                 service_cycles = mem.cycles - metric_cycles_base;
+                pf_candidates = vif.stat_pf_candidates -
+                                metric_pf_candidates_base;
+                pf_admitted = vif.stat_pf_admitted - metric_pf_admitted_base;
+                pf_issued = vif.stat_pf_issued - metric_pf_issued_base;
+                pf_returned = vif.stat_pf_returned - metric_pf_returned_base;
+                pf_installed = vif.stat_pf_installed -
+                               metric_pf_installed_base;
+                pf_merged = vif.stat_pf_merged - metric_pf_merged_base;
+                pf_discarded = vif.stat_pf_discarded -
+                               metric_pf_discarded_base;
+                pf_cancelled = vif.stat_pf_cancelled -
+                               metric_pf_cancelled_base;
+                pf_unused_evicted = vif.stat_pf_unused_evicted -
+                                    metric_pf_unused_evicted_base;
+                pf_vc_bypass = vif.stat_pf_vc_bypass -
+                               metric_pf_vc_bypass_base;
+                pf_caused_writebacks = vif.stat_pf_caused_writebacks -
+                                       metric_pf_caused_writebacks_base;
+                pf_demand_block_cycles = vif.stat_pf_demand_block_cycles -
+                                         metric_pf_demand_block_cycles_base;
+                pf_true_help = vif.stat_pf_true_help -
+                               metric_pf_true_help_base;
+                pf_true_pollution = vif.stat_pf_true_pollution -
+                                    metric_pf_true_pollution_base;
+                pf_suppressed_quota = vif.stat_pf_suppressed_quota -
+                                      metric_pf_suppressed_quota_base;
+                pf_suppressed_unsafe = vif.stat_pf_suppressed_unsafe -
+                                       metric_pf_suppressed_unsafe_base;
+                pf_same_line_coalesced = vif.stat_pf_same_line_coalesced -
+                                         metric_pf_same_line_coalesced_base;
+                timely_useful = useful;
+                if (PREFETCH_POLICY == 1)
+                    useful = timely_useful + pf_merged;
                 if (hits + misses != accesses) begin
                     $display("FAIL workload accounting name=%s accesses=%0d hits_plus_misses=%0d",
                              workload_name, accesses, hits + misses);
                     errors = errors + 1;
                 end
-                if (demand_reads != misses - victim_hits) begin
+                if ((PREFETCH_POLICY == 0 &&
+                     demand_reads != misses - victim_hits) ||
+                    (PREFETCH_POLICY == 1 &&
+                     demand_reads + pf_merged != misses - victim_hits)) begin
                     $display("FAIL demand read accounting name=%s demand_reads=%0d misses_minus_victim=%0d",
                              workload_name, demand_reads,
                              misses - victim_hits);
                     errors = errors + 1;
                 end
-                if (prefetch_reads != fills) begin
+                if (PREFETCH_POLICY == 0 && prefetch_reads != fills) begin
                     $display("FAIL prefetch read/fill accounting name=%s prefetch_reads=%0d fills=%0d",
                              workload_name, prefetch_reads, fills);
                     errors = errors + 1;
                 end
                 unused_resident = count_unused_resident();
-                if (fills != useful + useless + unused_resident) begin
+                if (PREFETCH_POLICY == 0 &&
+                    fills != useful + useless + unused_resident) begin
                     $display("FAIL prefetch conservation name=%s fills=%0d useful=%0d useless=%0d resident=%0d",
                              workload_name, fills, useful, useless,
                              unused_resident);
                     errors = errors + 1;
+                end
+                if (PREFETCH_POLICY == 1) begin
+                    if (pf_issued > pf_admitted ||
+                        pf_admitted > pf_candidates) begin
+                        $display("FAIL optimized candidate accounting name=%s candidates=%0d admitted=%0d issued=%0d",
+                                 workload_name, pf_candidates, pf_admitted,
+                                 pf_issued);
+                        errors = errors + 1;
+                    end
+                    if (prefetch_reads != pf_issued ||
+                        pf_issued != pf_returned) begin
+                        $display("FAIL optimized prefetch issue/drain accounting name=%s reads=%0d issued=%0d returned=%0d",
+                                 workload_name, prefetch_reads, pf_issued,
+                                 pf_returned);
+                        errors = errors + 1;
+                    end
+                    if (pf_returned !=
+                        pf_installed + pf_merged + pf_discarded) begin
+                        $display("FAIL optimized response accounting name=%s returned=%0d installed=%0d merged=%0d discarded=%0d",
+                                 workload_name, pf_returned, pf_installed,
+                                 pf_merged, pf_discarded);
+                        errors = errors + 1;
+                    end
+                    if (fills != pf_installed ||
+                        pf_installed != timely_useful + pf_unused_evicted +
+                            unused_resident ||
+                        useless != pf_unused_evicted) begin
+                        $display("FAIL optimized install accounting name=%s fills=%0d installed=%0d useful=%0d unused_evicted=%0d resident=%0d merged=%0d",
+                                 workload_name, fills, pf_installed, timely_useful,
+                                 pf_unused_evicted, unused_resident, pf_merged);
+                        errors = errors + 1;
+                    end
+                    if (pf_caused_writebacks != 0) begin
+                        $display("FAIL optimized prefetch caused writeback name=%s count=%0d",
+                                 workload_name, pf_caused_writebacks);
+                        errors = errors + 1;
+                    end
                 end
                 if (writes != writebacks) begin
                     $display("FAIL writeback accounting name=%s mem_writes=%0d writebacks=%0d",
@@ -1042,26 +1242,65 @@ module tb_l1d_cache_oop #(
                          (monitor.watchdog_errors != watchdog_base) ||
                          (vif.duplicate_line_errors != duplicate_base);
                 status = failed ? "FAIL" : "PASS";
-                $display("WORKLOAD_RESULT schema=2 name=%s config_id=%s trace_id=%s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=%0d protocol=%0d duplicate_lines=%0d status=%s next_line=%0d mem_latency=%0d mem_bp=%0d cpu_bp=%0d latency_min=%0d latency_max=%0d latency_avg_x100=%0d",
-                         workload_name, run_config_id, run_trace_id,
-                         NUM_SETS, NUM_WAYS, LINE_BYTES,
-                         NUM_SETS*NUM_WAYS*LINE_BYTES, VICTIM_ENTRIES,
-                         VICTIM_ENTRIES*LINE_BYTES,
-                         (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
-                         case_prefetch_enable, accesses, hits, misses,
-                         victim_hits, demand_reads, prefetch_reads,
-                         demand_reads + prefetch_reads, writes,
-                         (demand_reads + prefetch_reads) * LINE_BYTES,
-                         writes * LINE_BYTES, writebacks, fills, useful,
-                         useless, unused_resident, pollution, dropped,
-                         useful, service_cycles,
-                         monitor.watchdog_errors - watchdog_base,
-                         monitor.protocol_errors - protocol_base,
-                         vif.duplicate_line_errors - duplicate_base, status,
-                         case_next_line_enable, MEM_LATENCY,
-                         MEM_BACKPRESSURE_MODE, CPU_BACKPRESSURE_MODE,
-                         (monitor.latency_count == 0) ? 0 : monitor.latency_min,
-                         monitor.latency_max, monitor.latency_avg_x100());
+                if (PREFETCH_POLICY == 0) begin
+                    $display("WORKLOAD_RESULT schema=2 name=%s config_id=%s trace_id=%s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=%0d protocol=%0d duplicate_lines=%0d status=%s next_line=%0d mem_latency=%0d mem_bp=%0d cpu_bp=%0d latency_min=%0d latency_max=%0d latency_avg_x100=%0d",
+                             workload_name, run_config_id, run_trace_id,
+                             NUM_SETS, NUM_WAYS, LINE_BYTES,
+                             NUM_SETS*NUM_WAYS*LINE_BYTES, VICTIM_ENTRIES,
+                             VICTIM_ENTRIES*LINE_BYTES,
+                             (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                             case_prefetch_enable, accesses, hits, misses,
+                             victim_hits, demand_reads, prefetch_reads,
+                             demand_reads + prefetch_reads, writes,
+                             (demand_reads + prefetch_reads) * LINE_BYTES,
+                             writes * LINE_BYTES, writebacks, fills, useful,
+                             useless, unused_resident, pollution, dropped,
+                             useful, service_cycles,
+                             monitor.watchdog_errors - watchdog_base,
+                             monitor.protocol_errors - protocol_base,
+                             vif.duplicate_line_errors - duplicate_base,
+                             status, case_next_line_enable, MEM_LATENCY,
+                             MEM_BACKPRESSURE_MODE, CPU_BACKPRESSURE_MODE,
+                             (monitor.latency_count == 0) ? 0 :
+                                 monitor.latency_min,
+                             monitor.latency_max,
+                             monitor.latency_avg_x100());
+                end else begin
+                    $display("WORKLOAD_RESULT schema=3 name=%s config_id=%s trace_id=%s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=%0d replay_service_cycles=%0d watchdogs=%0d protocol=%0d duplicate_lines=%0d status=%s pf_candidates=%0d pf_admitted=%0d pf_issued=%0d pf_returned=%0d pf_installed=%0d pf_merged=%0d pf_discarded=%0d pf_cancelled=%0d pf_unused_evicted=%0d pf_unused_resident=%0d pf_vc_bypass=%0d pf_caused_writebacks=%0d pf_demand_block_cycles=%0d pf_true_help=%0d pf_true_pollution=%0d pf_suppressed_quota=%0d pf_suppressed_unsafe=%0d pf_same_line_coalesced=%0d pf_controller_state=%0d pf_mshr_valid=%0d pf_mshr_addr=%016h pf_mshr_confidence=%0d next_line=%0d mem_latency=%0d mem_bp=%0d cpu_bp=%0d latency_min=%0d latency_max=%0d latency_avg_x100=%0d",
+                             workload_name, run_config_id, run_trace_id,
+                             NUM_SETS, NUM_WAYS, LINE_BYTES,
+                             NUM_SETS*NUM_WAYS*LINE_BYTES, VICTIM_ENTRIES,
+                             VICTIM_ENTRIES*LINE_BYTES,
+                             (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                             case_prefetch_enable, accesses, hits, misses,
+                             victim_hits, demand_reads, prefetch_reads,
+                             demand_reads + prefetch_reads, writes,
+                             (demand_reads + prefetch_reads) * LINE_BYTES,
+                             writes * LINE_BYTES, writebacks, fills, useful,
+                             useless, unused_resident, pollution, dropped,
+                             timely_useful, pf_merged, service_cycles,
+                             monitor.watchdog_errors - watchdog_base,
+                             monitor.protocol_errors - protocol_base,
+                             vif.duplicate_line_errors - duplicate_base,
+                             status, pf_candidates, pf_admitted, pf_issued,
+                             pf_returned, pf_installed, pf_merged,
+                             pf_discarded, pf_cancelled, pf_unused_evicted,
+                             unused_resident, pf_vc_bypass,
+                             pf_caused_writebacks, pf_demand_block_cycles,
+                             pf_true_help, pf_true_pollution,
+                             pf_suppressed_quota, pf_suppressed_unsafe,
+                             pf_same_line_coalesced,
+                             vif.debug_pf_controller_state,
+                             vif.debug_pf_mshr_valid,
+                             vif.debug_pf_mshr_addr,
+                             vif.debug_pf_mshr_confidence,
+                             case_next_line_enable, MEM_LATENCY,
+                             MEM_BACKPRESSURE_MODE, CPU_BACKPRESSURE_MODE,
+                             (monitor.latency_count == 0) ? 0 :
+                                 monitor.latency_min,
+                             monitor.latency_max,
+                             monitor.latency_avg_x100());
+                end
             end
         endtask
 
@@ -1414,6 +1653,7 @@ module tb_l1d_cache_oop #(
 
         task external_prefetch_candidates();
             integer i;
+            integer demand;
             logic [ADDR_WIDTH-1:0] base;
             begin
                 if (ENABLE_PREFETCH == 0) begin
@@ -1424,10 +1664,17 @@ module tb_l1d_cache_oop #(
                 for (i = 0; i < 8; i = i + 1) begin
                     driver.external_prefetch(base + i*LINE_BYTES);
                     repeat (6) @(posedge vif.clk);
-                    load_expect(base + i*LINE_BYTES, SIZE_DOUBLE, 1'b0,
-                                "external_prefetch_load");
+                    // PROBE refills one token per 16 demand accesses.  Keep
+                    // demand traffic moving while a one-entry external skid
+                    // applies legitimate backpressure; otherwise a serial
+                    // producer would wait for ready while also withholding
+                    // the accesses needed to replenish the token bucket.
+                    for (demand = 0; demand < 16; demand = demand + 1) begin
+                        load_expect(base + i*LINE_BYTES, SIZE_DOUBLE, 1'b0,
+                                    "external_prefetch_load");
+                    end
                 end
-                report_workload("external_prefetch_matrix_candidates", 8);
+                report_workload("external_prefetch_matrix_candidates", 128);
             end
         endtask
 
@@ -1617,14 +1864,27 @@ module tb_l1d_cache_oop #(
         string trace_path;
 
         clk = 1'b0;
+        producer_profile = PRODUCER_PROFILE;
+        producer_gap = PRODUCER_GAP;
+        producer_plusarg_status =
+            $value$plusargs("PRODUCER_PROFILE=%d", producer_profile);
+        producer_plusarg_status =
+            $value$plusargs("PRODUCER_GAP=%d", producer_gap);
         sb = new();
         mem = new(bus, sb);
-        driver = new(bus, sb);
+        driver = new(bus, sb, producer_profile, producer_gap);
         monitor = new(bus);
         seq = new(bus, sb, mem, driver, monitor);
         driver.drive_defaults();
         bus.rst_n = 1'b0;
         bus.duplicate_line_errors = 0;
+
+        if (producer_profile < 0 || producer_profile > 2) begin
+            $fatal(1, "PRODUCER_PROFILE must be 0, 1, or 2");
+        end
+        if (producer_gap < 0) begin
+            $fatal(1, "PRODUCER_GAP must be non-negative");
+        end
 
         if ($test$plusargs("VCD")) begin
             $dumpfile("sim/l1d_cache_oop.vcd");

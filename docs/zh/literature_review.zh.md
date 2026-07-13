@@ -52,27 +52,33 @@ Jouppi 的工作也研究了 prefetch buffer 和 stream buffer。其中的关键
 - 独立 prefetch/stream buffer 减少直接污染 L1，但需要第二次查询和提升路径；
 - 直接安装到 L1 在预测正确时延迟低，但可能驱逐有用 demand 数据。
 
-当前 RTL 是 one-block-lookahead next-line baseline，直接安装到 L1。它与
-ChampSim `next_line` 的候选生成一致：观察 block `N` 后生成 `N+1`。这种
-设计比独立 stream buffer 更容易污染，因此 RTL 为 prefetched line 保存
-metadata，并记录 useful、useless 和 displacement 事件。
+冻结的 policy-0 RTL 是原始 one-block-lookahead next-line baseline：它与
+ChampSim `next_line` 的候选生成一致，即观察 block `N` 后生成 `N+1`。
+Optimized 默认则使用 4-entry Gaze-lite 相邻 stream detector、adaptive admission、
+安全 cold direct-L1 insertion、shadow feedback 和单 PF MSHR。两者都保留 direct-L1
+data placement，因此仍需 prefetched-line metadata 以及 useful/useless/displacement
+event 来控制和测量 pollution。
 
 Chen 和 Baer 的硬件 prefetch 研究及后续综述区分了 accuracy、
 coverage、timeliness 和 bandwidth cost。只统计 useful prefetch 并不
-充分。完整的未来评价应计算以下指标。当前严格的配对 replay 已计算
-除独立 in-flight timeliness 之外的所有项；在当前 blocking 模型中，
-`timely_useful=useful` 且 `late_useful=0` 只是结构性 proxy：
+充分。严格 paired replay 计算以下指标。历史 schema 2 使用结构性
+timely/late proxy；schema 3 会独立记录 demand present/accept/response 与 PF
+lifecycle event：
 
 - `accuracy = useful prefetches / filled prefetches`；
 - `L1 coverage = (baseline L1 misses - prefetch-on L1 misses) / baseline L1 misses`；
-- `lower-memory coverage = (baseline demand reads - prefetch-on demand reads) / baseline demand reads`；
+- legacy `lower_coverage = (baseline demand-owned reads - prefetch-on demand-owned
+  reads) / baseline demand-owned reads`。存在 MSHR merge 时，必须把 merged
+  PF-owned read 加回后才能解读 required physical read；
 - `timeliness = timely useful / (timely useful + late useful)`，其中 late
   prefetch 指 demand 首次拉高 valid 时该 prefetch 仍在 flight；
 - `bandwidth overhead = (prefetch-on bytes - baseline bytes) / baseline bytes`；
 - true L1 pollution 是“baseline 为 L1 hit、prefetch-on 为 L1 miss”的逐 demand 事件；
 - true lower-memory pollution 是“baseline 不读下级内存、prefetch-on demand 需要读下级内存”的逐 demand 事件。
 
-所有比例在分母为 0 时必须记为 `N/A`，不能记为 0。当前
+所有比例在分母为 0 时必须记为 `N/A`，不能记为 0。同理，
+`useful / fills` 特指 fill accuracy；merge-only P3 run 的 fill accuracy 可为
+N/A，同时 `useful / issued` 为 100%。当前
 `stat_prefetch_pollution` 只是压力 proxy，因为被 prefetch 移出 L1 的行
 仍可能存在 victim cache 中。真正污染需要与关闭 prefetch 的同 trace 运行
 逐访问配对；aggregate miss delta 只能说明净损益，不能识别具体污染事件。
@@ -93,8 +99,34 @@ over-prefetch 抑制的价值。
   pollution/drop 的单周期事件；
 - 用于离线分析和硬件控制环的累计计数器。
 
-预测策略因此与核心 miss/eviction FSM 分离，后续 prefetcher 不需要修改
-CPU 或下级内存协议。
+该接口现已接入实现的 Gaze-lite 相邻 stream detector 和轻量 feedback
+controller。Candidate generation 仍是 metadata-only，CPU 和下级内存协议不变。
+
+### 已实现的自适应 Direct-L1 策略
+
+Optimized policy 用有界机制实现文献思路，不复制大型学习表：
+
+- 四 entry stream table 仅确认相邻 `+1/-1` stream，使用两 entry candidate
+  FIFO，保留 stream-generation 归因，candidate 在 16 次 demand 后过期，
+  且不跨 4 KiB page；
+- OFF/PROBE/ON controller 使用两 token bucket、1/16 PROBE/弱 ON rate、
+  1/8 正常 ON rate、连续两个负 epoch 滞回和 512-demand OFF cooldown；
+- direct-L1 insertion 是 cold insertion，并受 clean-victim 安全性、每 set 一条
+  unused speculative line、response-time revalidation 和 unused-line VC bypass 约束；
+- demand-only tag/dirty shadow L1/VC 在不复制 line data 的情况下提供在线
+  causal help/pollution 分类；
+- 单个 metadata-only PF MSHR 实现 hit-under-prefetch、同地址 load/store
+  merge、立即 response capture 与有界 discard，同时保留一 outstanding
+  lower-memory 协议。
+
+Controller 评估以 cycle-like 为单位的 `saved` 和 `cost`。Penalty 初值为
+8 cycles，使用 1/8 EWMA 校准。Level 2 通过统一 feedback 接口使用 raw
+useful/pollution proxy；level 3 将该接口切换为 shadow causal event，并加入
+late-merge credit、blocked demand cycle、speculative issue cost 和归因 write-back cost。
+
+数据始终保持 direct-L1 放置。Stream table、candidate queue、shadow model 和
+PF MSHR 只包含地址、tag、dirty bit、confidence、generation 与 control
+metadata；返回数据只出现在普通 transient refill register 中。
 
 ## 当前 RTL 审查结论
 
@@ -108,17 +140,18 @@ CPU 或下级内存协议。
 - 显式 prefetched metadata 和反馈事件；
 - 可替换的 prefetch candidate 接口。
 
-当前 baseline 已包含分开的 demand/prefetch 下级内存计数、paired 逐
-demand true-pollution 归因、line-uniqueness assertion 和 randomized
-golden-memory reference model。剩余工作是：
+当前实现已包含分开的 demand/prefetch 下级内存计数、完整 schema-3
+lifecycle 归因、paired 逐 demand true-pollution 归因、在线 shadow causal
+feedback、line-uniqueness assertion 和 randomized golden-memory reference model。
+剩余工作是：
 
 - 增加独立 prefetch buffer 放置方案，与直接 L1 安装对比；
-- 测量独立的 issue/fill/accept timeliness 和完整 latency distribution；
-- 增加支持 backpressure 的 prefetch 调度与取消；
+- 将 lifecycle timing 扩展为多种 CPU timing model 下的完整分位数分布；
 - 增加 victim entry 的 0/4/8 配置；零 entry 仍需 bypass 实现；
 - 比较 round-robin 与 LRU victim replacement；
 - 在现有 simulation assertion 之上增加 dirty-data-preservation formal property；
-- blocking baseline 稳定后再考虑 MSHR/refill buffer。
+- 评估是否有必要增加多 demand MSHR；已实现的单 PF MSHR 故意不将
+  demand cache 变为完全 non-blocking。
 
 ## Proposal 引用审查
 

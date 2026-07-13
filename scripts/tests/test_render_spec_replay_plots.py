@@ -160,6 +160,36 @@ class ReplayPlotTests(unittest.TestCase):
         )
         self.assertEqual(len(geometry_labels), 2)
 
+    def test_same_window_with_different_prefetch_or_producer_is_not_duplicate(self) -> None:
+        common = {
+            "benchmark": "708.sqlite_r",
+            "command": "0",
+            "window": "0",
+            "sets": 4,
+            "ways": 2,
+            "line_bytes": 16,
+            "victim_entries": 4,
+            "timing_profile": "fixed-latency2-periodic-ready",
+            "prefetch_policy": 1,
+            "pf_opt_level": 3,
+            "producer_gap": 0,
+            "cycles_on_minus_off": -1,
+            "cycle_class": "helpful",
+        }
+        rows = write_plot_outputs(
+            [
+                {**common, "producer_profile": "sequential"},
+                {**common, "producer_profile": "zero-bubble"},
+            ],
+            self.classification,
+            self.svg,
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row["producer_profile"] for row in rows},
+            {"sequential", "zero-bubble"},
+        )
+
     def test_analyzer_registers_outputs_and_removes_them_after_failure(self) -> None:
         fixture = CampaignFixture(self.root)
         out_dir = self.root / "analysis"

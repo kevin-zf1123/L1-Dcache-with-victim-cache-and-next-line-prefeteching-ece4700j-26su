@@ -73,6 +73,22 @@ scripts/run_spec_trace_replay.sh \
   build/spec2026/replay/logs
 ```
 
+Replay sensitivity controls are fail-closed environment inputs:
+
+| Variable | Default | Allowed values |
+| --- | --- | --- |
+| `L1D_REPLAY_SCOPE` | `full` | `full` four-config matrix or paired off/on only |
+| `L1D_PREFETCH_POLICY` / `L1D_PF_OPT_LEVEL` | `1` / `3` | legacy `0/0`, optimized `1/1..3` |
+| `L1D_PRODUCER_PROFILE` | `zero-bubble` | `sequential`, `zero-bubble`, `fixed-gap` |
+| `L1D_PRODUCER_GAP` | `0` | fixed-gap `1`, `2`, `4`, or `8` |
+| `L1D_MEM_LATENCY` | `2` | non-negative integer |
+| `L1D_MEM_READY_MODE` | `periodic` | `always-ready`, `periodic`, `deterministic-random` |
+| `L1D_SIDECAR_SCHEMA` | `3` | `2` or `3` |
+
+The elaborated latency/ready values are also passed as runtime provenance
+plusargs. The testbench rejects a mismatch, and each campaign manifest records
+the derived timing profile.
+
 `capture_spec_qemu_windows.py` performs a source-event count pass and a fresh
 snapshot capture pass per timed command. Long ROIs receive five source windows
 of 5,000 warmup plus 5,000 measurement events; short ROIs are replayed whole.
@@ -117,9 +133,10 @@ simulation binaries, simulator, command/cwd identity, and exact command-to-
 artifact path binding. It checks the declared per-window four-configuration
 matrix, exact off/on pairing, counter and sidecar-event conservation, exact
 trace/sidecar demand identity, zero protocol/watchdog/duplicate-line errors,
-and sidecar-derived true L1/lower-memory help and pollution. `timely_useful=useful` and
-`late_useful=0` are structural consequences of this blocking replay model,
-not an independent prefetch-latency measurement.
+and sidecar-derived true L1/lower-memory help and pollution. In the retained
+schema-2 legacy campaign, `timely_useful=useful` and `late_useful=0` were
+structural proxies. The optimized schema-3 campaign below replaces that proxy
+with demand and PF lifecycle timing.
 
 Every validated pair also produces `classification.csv` and
 `cycles-on-minus-off.svg`. Classification is deliberately one-dimensional:
@@ -127,7 +144,84 @@ Every validated pair also produces `classification.csv` and
 harmful. Other metrics remain visible in the paired and aggregate tables and
 do not silently change that label.
 
-## Current Authoritative Results (2026-07-13)
+## Optimized P0–P3 Campaign (2026-07-13)
+
+The final optimized campaign reuses the same 25 attributable windows and equal
+2-way, 4-set, 16-byte-line, VC4 paired geometry. It changes the producer to a
+true zero-bubble source: request `i+1` remains valid while response `i` is
+pending and transfers on the first ready edge. It also upgrades the sidecars
+and result rows to schema 3, while the analyzer continues to accept historical
+schema-2 evidence.
+
+All four policy campaigns validated 100/100 runs and 25/25 exact pairs:
+
+| Policy / level | Cycles off | Cycles on | Delta | Byte overhead | Harmful / neutral / helpful | PF issued / merged / installed | PF-caused WB |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Frozen legacy `0/0` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Safe next-line P1 `1/1` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Adaptive stream P2 `1/2` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Shadow + PF MSHR P3 `1/3` | 850,547 | **849,823** | **-724** | **0** | **0 / 7 / 18** | **544 / 544 / 0** | **0** |
+
+P1 and P2 correctly refuse to consume a zero-bubble single-cycle opportunity
+because their two-cycle idle guard cannot hide a blocking prefetch. P3 instead
+uses response-cycle background issue only when the already-present next demand
+matches the candidate and a tag-only L1/VC lookup proves it absent. All 544
+issued reads merged with that same-line demand: demand-owned reads fell from
+59,275 to 58,731, total read bytes remained 948,400, write bytes remained
+300,736, and there were no speculative installs or attributed dirty
+write-backs.
+
+The P3 result passes the main-profile hard gates:
+
+- aggregate cycle delta is negative;
+- read+write bandwidth overhead is 0%, below 10%;
+- 25/25 windows are non-degrading, exceeding the 20/25 requirement;
+- maximum slowdown is 0% and the best window saves 80 cycles;
+- prefetch-caused dirty write-back is zero; and
+- P3 aggregate cycles are lower than legacy with equal bandwidth.
+
+The complete paired sensitivity matrix also passed validation. The table
+reports each policy's on-minus-off cycle delta; all P3 byte deltas and
+prefetch-caused write-backs were zero.
+
+The strengthened drain check also passed every schema-3 row: an admitted
+request must issue or cancel before reporting, and every issue must return to
+one install, merge, or discard outcome.
+
+| Producer / memory profile | Legacy cycle delta | Legacy byte overhead | P3 cycle delta | P3 harmful / neutral / helpful | P3 issued / merged |
+| --- | ---: | ---: | ---: | --- | ---: |
+| Sequential, latency 2, periodic ready | +328,996 | +672,032 (53.80%) | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 1, latency 2, periodic ready | +328,996 | +672,032 (53.80%) | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 2, latency 2, periodic ready | +280,654 | +672,032 (53.80%) | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 4, latency 2, periodic ready | +190,854 | +672,032 (53.80%) | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 8, latency 2, periodic ready | +13,745 | +672,032 (53.80%) | 0 | 0 / 25 / 0 | 0 / 0 |
+| Zero-bubble, latency 0, always ready | 0 | 0 | **-570** | 0 / 2 / 23 | 570 / 570 |
+| Zero-bubble, latency 8, deterministic random ready | 0 | 0 | **-859** | 1 / 9 / 15 | 422 / 422 |
+
+The optimized engine therefore spends no traffic in gaps that cannot hide a
+request, while the frozen blocking engine still performs 44,193 speculative
+reads in every sequential/fixed-gap profile. Under the latency-8 profile, the
+single harmful P3 window was +71 cycles (+0.1282%), below the 5% guardrail;
+the aggregate still saved 859 cycles. Across the main and all sensitivity
+profiles, P3 cycles were lower than or equal to optimized-off and lower than
+or equal to legacy, with equal or lower bandwidth. This interprets the
+legacy-comparison gate as Pareto non-inferiority in bandwidth plus a strict
+cycle improvement whenever legacy performs speculative work.
+
+The address-free public results are in
+[the optimized evidence directory](evidence/2026-07-13-optimized/README.md).
+These results preserve, rather than replace, the harmful sequential legacy
+baseline below. The separate optimized Vivado 2024.2.1 campaign has now passed:
+11 XSim logs contain 83 schema-3 workload rows with closed lifecycle
+conservation, and four synthesis configurations produced all 12 expected PPA
+reports. Its OOP workload matrix uses the sequential producer; the directed
+`tb_l1d_cache_optimized_p3` test supplies cross-simulator true-zero-bubble
+coverage. Therefore the performance claim in this section still comes from
+the local true-zero-bubble trace campaign, not from the OOP matrix. The
+post-synthesis PPA and its setup-timing, I/O-overfull, and vectorless-power
+limitations are reported in [the Phase 3 Vivado report](phase3_vivado_report.md).
+
+## Legacy Next-Line Authoritative Baseline (2026-07-13)
 
 The complete replacement flow passed. Four benchmark plans contain five timed-
 command capture units and 25 sampled windows. Every count/capture snapshot and

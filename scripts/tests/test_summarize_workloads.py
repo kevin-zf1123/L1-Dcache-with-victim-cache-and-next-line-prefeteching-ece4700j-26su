@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import subprocess
 import tempfile
 import unittest
@@ -50,6 +51,47 @@ def valid_result() -> dict[str, str]:
     }
 
 
+def valid_schema3_result() -> dict[str, str]:
+    fields = valid_result()
+    fields.update(
+        {
+            "schema": "3",
+            # One lower-level miss is satisfied by the in-flight PF MSHR, so
+            # it is a late useful prefetch rather than a demand-issued read.
+            "demand_mem_reads": "0",
+            "prefetch_mem_reads": "4",
+            "mem_reads": "4",
+            "read_bytes": "64",
+            "useless_evicted": "1",
+            "timely_useful": "1",
+            "late_useful": "1",
+            "pf_candidates": "5",
+            "pf_admitted": "4",
+            "pf_issued": "4",
+            "pf_returned": "4",
+            "pf_installed": "3",
+            "pf_merged": "1",
+            "pf_discarded": "0",
+            "pf_cancelled": "1",
+            "pf_unused_evicted": "1",
+            "pf_unused_resident": "1",
+            "pf_vc_bypass": "1",
+            "pf_caused_writebacks": "0",
+            "pf_demand_block_cycles": "2",
+            "pf_true_help": "1",
+            "pf_true_pollution": "0",
+            "pf_suppressed_quota": "2",
+            "pf_suppressed_unsafe": "1",
+            "pf_same_line_coalesced": "1",
+            "pf_controller_state": "2",
+            "pf_mshr_valid": "0",
+            "pf_mshr_addr": "00000000deadbeef",
+            "pf_mshr_confidence": "3",
+        }
+    )
+    return fields
+
+
 def result_line(fields: dict[str, str]) -> str:
     return "WORKLOAD_RESULT " + " ".join(
         f"{key}={value}" for key, value in fields.items()
@@ -81,8 +123,11 @@ class SummarizeWorkloadsTests(unittest.TestCase):
     def run_script(self, fields: dict[str, str]) -> subprocess.CompletedProcess[str]:
         log = self.root / "fixture.log"
         log.write_text(result_line(fields), encoding="utf-8")
+        return self.run_logs(log)
+
+    def run_logs(self, *logs: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(self.script), str(log)],
+            [str(self.script), *(str(log) for log in logs)],
             cwd=self.root,
             check=False,
             text=True,
@@ -169,6 +214,70 @@ class SummarizeWorkloadsTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertIn("schema,name,config_id,trace_id", lines[0])
         self.assertTrue(lines[1].startswith("2,fixture,2w_s4_vc4_pf1,"))
+
+    def test_schema3_requires_lifecycle_and_diagnostic_fields(self) -> None:
+        for required in (
+            "pf_candidates",
+            "pf_returned",
+            "pf_unused_resident",
+            "pf_true_help",
+            "pf_mshr_addr",
+        ):
+            with self.subTest(required=required):
+                fields = valid_schema3_result()
+                fields.pop(required)
+                completed = self.run_script(fields)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(f"missing required field {required}", completed.stdout)
+                self.assertFalse(self.output.exists())
+
+    def test_schema3_lifecycle_conservation_is_enforced(self) -> None:
+        cases = (
+            (
+                {"pf_admitted": "5", "pf_cancelled": "0"},
+                "pf_admitted must be <= pf_issued + pf_cancelled after drain",
+            ),
+            ({"pf_returned": "3"}, "pf_issued = pf_returned after drain"),
+            (
+                {"pf_discarded": "1"},
+                "pf_returned = pf_installed + pf_merged + pf_discarded",
+            ),
+            (
+                {"pf_unused_resident": "0"},
+                "pf_installed = timely_useful + pf_unused_evicted + pf_unused_resident",
+            ),
+            ({"late_useful": "0"}, "late_useful = pf_merged"),
+        )
+        for updates, expected in cases:
+            with self.subTest(expected=expected):
+                fields = valid_schema3_result()
+                fields.update(updates)
+                completed = self.run_script(fields)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(expected, completed.stdout)
+                self.assertFalse(self.output.exists())
+
+    def test_schema2_and_schema3_logs_share_one_csv(self) -> None:
+        schema2 = valid_result()
+        schema2["name"] = "legacy_fixture"
+        schema2_log = self.root / "schema2.log"
+        schema2_log.write_text(result_line(schema2), encoding="utf-8")
+
+        schema3 = valid_schema3_result()
+        schema3["name"] = "optimized_fixture"
+        schema3["config_id"] = "2w_s4_vc4_opt_pf1"
+        schema3_log = self.root / "schema3.log"
+        schema3_log.write_text(result_line(schema3), encoding="utf-8")
+
+        completed = self.run_logs(schema2_log, schema3_log)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        with self.output.open(encoding="utf-8", newline="") as csv_file:
+            rows = list(csv.DictReader(csv_file))
+        self.assertEqual([row["schema"] for row in rows], ["2", "3"])
+        self.assertIn("pf_candidates", rows[0])
+        self.assertEqual(rows[0]["pf_candidates"], "")
+        self.assertEqual(rows[1]["pf_candidates"], "5")
+        self.assertEqual(rows[1]["pf_mshr_addr"], "00000000deadbeef")
 
 
 if __name__ == "__main__":

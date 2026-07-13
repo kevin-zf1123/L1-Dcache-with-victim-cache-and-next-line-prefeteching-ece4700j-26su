@@ -1,0 +1,5 @@
+policy,prefetch_policy,pf_opt_level,pairs,accesses,off_cycles,on_cycles,cycles_on_minus_off,bytes_on_minus_off,bandwidth_overhead,harmful,neutral,helpful,on_pf_candidates,on_pf_admitted,on_pf_issued,on_pf_returned,on_pf_installed,on_pf_merged,on_pf_discarded,on_pf_caused_writebacks,on_pf_demand_block_cycles
+legacy,0,0,25,125511,850547,850547,0,0,0.000000000,0,25,0,59250,0,0,0,0,0,0,0,0
+p1,1,1,25,125511,850547,850547,0,0,0.000000000,0,25,0,570,0,0,0,0,0,0,0,0
+p2,1,2,25,125511,850547,850547,0,0,0.000000000,0,25,0,500,0,0,0,0,0,0,0,0
+p3,1,3,25,125511,850547,849823,-724,0,0.000000000,0,7,18,1007,544,544,544,0,544,0,0,1822

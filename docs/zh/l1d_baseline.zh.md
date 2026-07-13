@@ -2,9 +2,17 @@
 
 ## 当前状态
 
-本文档是 baseline L1 数据缓存的中文说明副本；英文
-`docs/l1d_baseline.md` 是权威版本。当前 RTL 实现了 blocking、
-write-back、write-allocate 数据缓存，包含：
+本文档是 L1 数据缓存的中文说明副本；英文
+`docs/l1d_baseline.md` 是权威版本。至 2026-07-13，`l1d_cache`
+是一个 elaboration-time wrapper，可选择两个 write-back、write-allocate
+engine：
+
+- `PREFETCH_POLICY=0` 选择冻结的 legacy blocking next-line engine；
+- `PREFETCH_POLICY=1` 选择 optimized direct-L1 engine，也是默认值；
+- `PF_OPT_LEVEL=1/2/3` 分别选择安全 next-line、自适应相邻 stream、
+  shadow feedback + 单 PF MSHR；默认为 3。
+
+两个 engine 共同支持：
 
 - RV64 load/store 请求约定，使用 64 位字节地址和 XLEN 数据宽度；
 - byte、halfword、word、word-unsigned 和 doubleword load 语义，并支持
@@ -15,24 +23,39 @@ write-back、write-allocate 数据缓存，包含：
 - CPU 与缓存行内存侧 ready/valid 接口；
 - 管理脏行驱逐和缓存行分配的 FSM；
 - 参数化全相联 victim cache；
-- next-line prefetch，以及基础的有效性和污染计数器；
+- 不增加长期 line-sized buffer 的 direct-L1 prefetch；
+- legacy 计数器，以及 schema-3 candidate、issue、return、install、merge、
+  discard、suppression、controller、shadow 和 block-cost telemetry；
 - Icarus Verilog 自检测试和 Vivado batch 入口。
 
 Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真和综合
 结果为准。
+
+最终主 profile replay 在相同 25 个 zero-bubble window 上验证了四个 policy
+level。P3 将 aggregate service cycles 降低 724，byte overhead 为零、harmful
+window 为零、prefetch-caused write-back 为零。P1、P2 与冻结 legacy 为
+neutral，因为它们没有在 zero-bubble opportunity 中 issue blocking prefetch。详见
+[optimized 无地址证据](../evidence/2026-07-13-optimized/README.md)。
 
 ## 源码结构
 
 | 路径 | 用途 |
 | --- | --- |
 | `src/l1d_sram.sv` | 单端口同步 SRAM 推断 wrapper |
-| `src/l1d_next_line_prefetch.sv` | 可替换的单 entry next-line candidate generator |
-| `src/l1d_cache.sv` | 缓存 datapath、FSM、victim cache、prefetcher 和计数器 |
+| `src/l1d_next_line_prefetch.sv` | 冻结的单 entry legacy next-line candidate generator |
+| `src/l1d_cache_legacy.sv` | 冻结的 legacy blocking next-line engine |
+| `src/l1d_stream_prefetch.sv` | 四 entry 相邻 stream detector 与两 entry metadata-only candidate FIFO |
+| `src/l1d_prefetch_controller.sv` | 带滞回的 OFF/PROBE/ON controller 与 token bucket |
+| `src/l1d_shadow_cache.sv` | Demand-only tag/dirty counterfactual L1/VC model |
+| `src/l1d_cache_optimized.sv` | 安全 direct-L1 insertion、lifecycle telemetry、shadow feedback 与单 PF MSHR |
+| `src/l1d_cache.sv` | Legacy/optimized elaboration-time wrapper；optimized level 3 为默认 |
 | `src/tb_l1d_cache.sv` | 自检 testbench 和缓存行内存模型 |
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | 功能与 synthetic workload 初步回归 |
 | `scripts/summarize_workloads.sh` | 将 workload 日志记录转换为 CSV |
-| `scripts/validate_workload_results.py` | fail-closed 的 schema-2 字段与 counter 守恒验证器 |
+| `scripts/validate_workload_results.py` | fail-closed 的 schema-2/schema-3 字段与 counter 守恒验证器 |
+| `scripts/run_prefetch_unit_tests.sh` | Stream detector 与 controller 定向回归 |
+| `scripts/run_p3_tests.sh` | P3 shadow/MSHR、zero-bubble、TTL、EWMA 与 response-lifetime 回归 |
 | `scripts/run_vivado.tcl` | Vivado 仿真、综合、资源、时序与功耗报告 |
 | `scripts/run_remote_vivado.py` | 用于 Windows host 的 Paramiko 远程 Vivado runner |
 | `scripts/generate_phase3_traces.py` | 确定性 Phase 3 trace generator |
@@ -49,27 +72,27 @@ Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真
 
 所有 SystemVerilog 文件均位于 `src/` 下。
 
-## 架构与 Block Diagram 审查
+## 架构与 Block Diagram
 
-组员绘制的原图包含了正确的高层组件，但若要准确描述当前 RTL，需要做以下
-修正：
+Optimized 默认路径保留 CPU 和下级内存协议，但将 speculative
+control 与 demand service 分离：
 
 - CPU request 和 response 分别使用独立的 ready/valid handshake；
   `cpu_req_ready` 属于 request channel，而 `cpu_rsp_valid` 和
   `cpu_rsp_ready` 属于 response channel；
 - hit/miss 由 tag、valid metadata 和全相联 victim lookup 决定，不是由
   data array 决定；
-- next-line 地址是 `line_address + LINE_BYTES`，不是 byte address `+1`；
-  prefetcher 只产生 candidate，不直接访问内存；
+- candidate 只含地址和 attribution metadata；返回数据仅使用现有
+  transient refill register，然后 merge demand、直接安装 L1 或 discard；
 - victim entry 保存完整 line address、line data、valid、dirty 和
   prefetched metadata；victim hit 会同时交换数据与 metadata；
 - dirty victim replacement 通过 controller write-back state 发送，不是
   victim cache 直接访问内存；
-- event counter 当前集成在 `l1d_cache` 内，不是独立 hardware monitor
-  module；
-- 当前 blocking 设计只有一条串行下级内存请求路径，因此图中的 bus
-  arbiter 实际是 FSM request selection，而非独立 multi-master
-  interconnect。
+- demand SRAM access 始终优先；PF read 在途时，无关 L1/VC hit
+  仍可正常完成；
+- 下级内存仍最多只有一个 outstanding read，不引入 transaction ID；
+- tag-only shadow cache 在实际 demand outcome 后更新，不在 CPU response
+  关键路径上。
 
 修正后的 implementation-level diagram 如下。为避免 Mermaid 中文渲染问题，
 图中统一使用英文：
@@ -79,19 +102,21 @@ flowchart TB
     CPU["CPU Core"]
     DRAM["Lower Memory / DRAM Model"]
 
-    subgraph L1D["Blocking L1 Data Cache"]
-        SELECT["Request Selection<br/>CPU > External Prefetch > Next-Line"]
-        FSM["Cache Controller FSM<br/>Lookup / Allocate / Swap / Write-Back"]
+    subgraph L1D["l1d_cache Wrapper"]
+        POLICY["Elaboration Policy<br/>Legacy or Optimized P1/P2/P3"]
+        FSM["Demand FSM<br/>Lookup / Swap / Fill / Write-Back"]
         SRAM["Synchronous Tag and Data SRAMs<br/>Way 0 .. NUM_WAYS-1"]
         META["L1 Metadata<br/>Valid / Dirty / Prefetched / Replacement"]
         VC["Fully Associative Victim Cache<br/>Line Address + Data + Metadata"]
-        PF["Next-Line Candidate Queue<br/>Demand Line + LINE_BYTES"]
-        MON["Event Pulses and Counters<br/>Integrated in Controller"]
-        MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
+        STREAM["Gaze-lite Stream Table<br/>Address-only Candidate FIFOs"]
+        CTRL["OFF / PROBE / ON<br/>Token and Cost Controller"]
+        MSHR["Single PF MSHR<br/>Metadata Only"]
+        SHADOW["Demand-only Shadow L1/VC<br/>Tags and Metadata Only"]
+        MEMIF["One-outstanding Line Memory<br/>Demand Priority"]
     end
 
-    CPU -->|"Request: valid/ready, address, op size, unsigned flag, data"| SELECT
-    SELECT -->|"Selected demand or prefetch request"| FSM
+    CPU -->|"Request/response ready-valid"| POLICY
+    POLICY --> FSM
     FSM -->|"Response: valid/ready, data, error cause"| CPU
 
     FSM -->|"Indexed synchronous read/write"| SRAM
@@ -99,19 +124,22 @@ flowchart TB
     FSM <-->|"Metadata update and replacement choice"| META
     FSM <-->|"Associative lookup, eviction, and full-line swap"| VC
 
-    FSM -->|"Completed demand fill"| PF
-    PF -->|"Best-effort aligned candidate"| SELECT
-    FSM -->|"Hit, miss, victim, write-back, and prefetch events"| MON
-
-    FSM -->|"One line request at a time"| MEMIF
+    FSM -->|"Demand observations and PF-use feedback"| STREAM
+    STREAM -->|"Candidate metadata"| CTRL
+    CTRL -->|"Admit when safe"| MSHR
+    MSHR -->|"Merge or direct-L1 install"| FSM
+    FSM -->|"Actual outcome"| SHADOW
+    SHADOW -->|"Causal help/pollution"| CTRL
+    FSM -->|"Demand read/write-back"| MEMIF
+    MSHR -->|"Opportunistic PF read"| MEMIF
     MEMIF -->|"Read request or dirty line write-back"| DRAM
     DRAM -->|"Complete-line read response"| MEMIF
-    MEMIF -->|"Fill response"| FSM
+    MEMIF -->|"Immediate response capture"| FSM
 ```
 
-`SELECT`、`META`、`MON` 和 `MEMIF` 是 `l1d_cache.sv` 内部的概念边界；
-当前 baseline 中只有 SRAM wrapper 和 next-line generator 是独立 RTL
-module instance。
+Optimized 路径不允许 speculative line 驱逐 dirty demand data，也不允许
+引发 dirty victim-cache write-back。Prefetch cold insertion，每 set 最多一条
+unused speculative line；该 line 被替换时直接 discard，不进入 VC。
 
 ## 参数
 
@@ -124,9 +152,17 @@ module instance。
 | `NUM_WAYS` | 2 | `1` 表示直接映射，`2` 表示 2 路 |
 | `VICTIM_ENTRIES` | 4 | 非零的 2 次幂，目标范围为 4 至 8 |
 | `ENABLE_PREFETCH` | 1 | elaboration-time 的 built-in/external prefetch 接收开关；仍受 runtime enable 控制 |
+| `PREFETCH_POLICY` | 1 | `0` 冻结 legacy 行为；`1` 选择 optimized engine |
+| `PF_OPT_LEVEL` | 3 | `1` safe next-line；`2` adaptive stream；`3` shadow feedback + PF MSHR |
 
-当前每个 set 使用 round-robin 替换。对于 2 路配置，这等价于选择最近一次
-被选中 way 之后的 way；invalid way 始终优先。
+Demand 替换是每 set round-robin。Optimized prefetch admission 依次选择
+invalid way、unused-prefetched way，然后仅当 confidence=3 且 VC 有 invalid
+entry 时选择 clean demand way。Prefetch fill cold insertion，立即成为下一 victim。
+
+External `valid && ready` 表示对齐 candidate 进入一 entry external skid；
+之后仍可 TTL 过期、cancel、suppress 或在 response 返回后 discard。Legacy
+policy 0 保留历史 handshake 语义。Optimized 模式中 `cfg_next_line_enable`
+控制内建 stream detector，`cfg_prefetch_enable` 仍是 runtime master。
 
 ## 接口约定
 
@@ -141,7 +177,9 @@ module instance。
   doubleword load 会忽略该字段；
 - `cpu_req_wdata`：未移位的 store 数据，低位字节由 `cpu_req_size` 选择。
 
-缓存是 blocking 结构，同一时间只处理一个请求。`cpu_rsp_valid` 会保持到
+同一时间 demand engine 只接收一个请求。Optimized level 3 中，PF read
+在途时无关 L1/VC hit 可完成，同地址 demand miss 则 merge 到 PF MSHR。
+`cpu_rsp_valid` 会保持到
 `cpu_rsp_ready` 接收响应。load 在 `cpu_rsp_rdata` 返回 RV64 架构结果：
 `LB/LH/LW` 符号扩展，`LBU/LHU/LWU` 零扩展，`LD` 返回完整 64 位。store
 也会产生完成响应，返回值是按 store size 选出的写后值，调用方通常忽略。
@@ -278,17 +316,59 @@ golden-memory scoreboard、未对齐 demand 与 external/pending prefetch 的
 生成的 `.vvp` 和日志位于 `sim/`。Icarus 会输出关于 `always_*` constant
 select 的提示信息，但编译和全部自检均成功。
 
-每个 workload 都会输出一行机器可读的 `WORKLOAD_RESULT schema=2`。
+每个 optimized workload 都会输出一行机器可读的
+`WORKLOAD_RESULT schema=3`；显式选中的冻结 legacy policy 输出 schema 2。
 `scripts/summarize_workloads.sh` 将这些记录汇总到被忽略的
 `sim/workload_results.csv`。记录字段包括 access、hit、miss、victim hit、
 完整 geometry/capacity、分别统计的 demand/prefetch 下级读、read/write
 bytes、真实 prefetch fills、useful/useless-evicted/unused-resident 守恒、
 drop/protocol counter，以及 replay service cycle。
 
-## Vivado 验证
+## Vivado 验证证据
 
-当前 RV64 Vivado 证据记录在 `docs/phase3_vivado_report.md` 中。
-2026-07-13 的无旧报告混入替代运行使用远程 Vivado 2024.2.1，并在 XSim 与
+### Optimized P3 证据
+
+最终 optimized 远程 campaign 已在 Vivado 2024.2.1 下通过。它生成了
+11 份 XSim log：8 个 class-based OOP workload point 和 3 个定向
+auxiliary top。8 份 OOP log 包含 83 行 `WORKLOAD_RESULT schema=3`；
+每行都报告 `status=PASS`、watchdog/protocol/duplicate-line error 为零，
+并在 drain 后满足 prefetch 生命周期守恒。3 份 auxiliary log 通过了
+76 个 stream/controller check、62 个 PF-MSHR check 与 optimized P3 edge
+scenario。同一次运行综合了 4 个受控配置，并下载了全部
+12 份 utilization/timing/power report。最终 manifest 报告 `PASS`、
+无 finding、远程退出状态为 0、无下载失败，并对一份 901,858-byte
+代表性 VCD 记录了哈希。这表示 simulation/流程/artifact 验证通过，
+而不是 100 MHz timing 闭合声明。
+
+OOP matrix 使用 sequential producer，它是功能与生命周期证据。
+真正的 zero-bubble 操作由 `tb_l1d_cache_optimized_p3`
+（远程名为 `p3_prefetch_edges`）在 Icarus 和 XSim 中跨仿真器测试。
+P3 主要性能结果来自本地真正 zero-bubble 的 25-window trace campaign，
+而不是 sequential OOP result row。
+
+当前综合后 PPA 如下：
+
+| 配置 | LUT | LUT as memory | FF | Block RAM tile | Bonded IOB / 可用数 | 10 ns 下 WNS | 近似 Fmax | Vectorless power |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 5,679 | 57 | 2,897 | 2 | 1,447 / 106 | -1.019 ns | 90.752 MHz | 0.124 W |
+| `2w_s4_vc4_pf0` | 7,137 | 372 | 3,214 | 0 | 1,447 / 106 | -2.130 ns | 82.440 MHz | 0.125 W |
+| `2w_s4_vc8_pf0` | 7,891 | 372 | 4,227 | 0 | 1,447 / 106 | -2.500 ns | 80.000 MHz | 0.128 W |
+| `2w_s4_vc4_pf1` | 10,882 | 372 | 4,757 | 0 | 1,510 / 106 | -9.342 ns | 51.701 MHz | 0.139 W |
+
+与匹配的 `2w_s4_vc4_pf0` 相比，启用 optimized P3 增加 3,745 个
+LUT（52.473%）和 1,543 个 FF（48.009%），WNS 恶化 7.212 ns，
+综合后 Fmax 估算下降 30.739 MHz，vectorless power 增加 0.014 W。
+4 个配置都未通过 100 MHz setup timing，但 hold 都通过。这些是
+综合后数据，不是 implementation/post-route 结果。Raw cache top 还需要
+1,447 或 1,510 个 bonded I/O，而可用数只有 106，因此当前综合形式
+并不是可放置的板级 top。Vectorless power confidence 为 `Low`；
+基于实际 activity 的功耗分析仍待完成。完整当前与历史表格见
+`docs/phase3_vivado_report.md`。
+
+### 先前 legacy 证据与复现
+
+先前 legacy-engine RV64 Vivado 证据记录在 `docs/phase3_vivado_report.md` 中。
+2026-07-13 的无旧报告混入 legacy 替代运行使用远程 Vivado 2024.2.1，并在 XSim 与
 synthesis 中共用显式 geometry。运行成功退出，并扫描了恰好 22 份
 log/report：8 份 simulation log、12 份 synthesis report、Vivado log 与
 Vivado journal。代表性 waveform 另行验证。最终生成的证据 manifest
@@ -302,15 +382,16 @@ vivado -mode batch -source scripts/run_vivado.tcl
 ```
 
 脚本默认目标器件为 `xc7a35tcpg236-1`，可用环境变量 `L1D_PART` 覆盖。
-脚本运行 class-based OOP XSim 矩阵、trace replay、低/高 latency next-line
-prefetch case，并使用 10 ns 时钟约束综合四种主要硬件配置，在
+脚本运行 class-based OOP XSim 矩阵、trace replay、低/高 latency optimized
+prefetch case、3 个定向 auxiliary top，并使用 10 ns 时钟约束
+综合四种主要硬件配置，在
 `build/vivado/reports/<configuration>/` 下生成：
 
 - `utilization.rpt`；
 - `timing_summary.rpt`；
 - `power.rpt`。
 
-仿真日志和代表性 VCD 会复制到 `build/vivado/reports/`。当前 Phase 3 综合
+仿真日志和代表性 VCD 会复制到 `build/vivado/reports/`。先前 legacy Phase 3 综合
 结果如下：
 
 | 配置 | LUT | FF | Block RAM tile | 10 ns 下 WNS | 综合后近似 Fmax | Vectorless power |
@@ -320,7 +401,7 @@ prefetch case，并使用 10 ns 时钟约束综合四种主要硬件配置，在
 | 2 路，每路 4 sets，VC8，关闭 prefetch | 5,783 | 3,004 | 0 | -1.516 ns | 86.8 MHz | 0.106 W |
 | 2 路，每路 4 sets，VC4，开启 prefetch | 6,222 | 2,407 | 0 | -1.626 ns | 86.0 MHz | 0.111 W |
 
-这些当前 RV64 配置的逻辑 L1 data capacity 均为 128 bytes，且都
+这些 legacy RV64 配置的逻辑 L1 data capacity 均为 128 bytes，且都
 未满足 100 MHz 综合约束。Vivado 为 direct-mapped array 推断了 2 个
 block RAM tile，却将所有 2-way 配置中深度更浅的每路 array 映射为
 distributed logic/register。逻辑 capacity 已受控，但物理 memory mapping
@@ -332,12 +413,15 @@ distributed logic/register。逻辑 capacity 已受控，但物理 memory mappin
 文件，采用默认 operating condition，且置信度为 `Low`。这些数据只能作为
 早期相对估算。顶层 I/O 数量也很高，因此不能把它们视为板级功耗预测。
 
+这些历史报告不表征 optimized P3。升级后的 11-log XSim 和四 geometry
+synthesis/PPA 运行现已完成，并在上文单独报告；历史 legacy 数据保持不变。
+
 Windows 上应使用纯 ASCII 工程路径。Vivado 仿真可以在中文用户目录下运行，
 但综合子进程无法重新打开包含非 ASCII 字符的工程路径。
 
 最终签核前仍需检查所有 FSM 路径的 XSim 波形，并执行 implementation/
 post-route timing。为了获得有意义的功耗比较，还应使用 workload trace
-产生的代表性 switching activity 重新运行 `report_power`。当前代表性通过
+产生的代表性 switching activity 重新运行 `report_power`。代表性通过的 optimized
 VCD 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。机器可读的验证记录为
 `build/vivado/evidence_manifest.json`。
 
@@ -454,21 +538,35 @@ hash 完整。每个 count/capture snapshot 还会先清除 SPEC `compare.cmd` �
 均会哈希。逐 benchmark plan 绑定原始 timed-command 文件、连续 command index
 及完整 comparison plan 的精确互斥分区。Campaign provenance 会哈希实际 QEMU
 binary、不可变 VM/firmware input、target ELF、plugin 与全部 host capture source；
-完整临时证据图必须先通过验证，才能发布 PASS。Replay runner 只消费这些 manifest，拒绝 stale 或额外 trace，
-编译四个明确 geometry，记录 binary/simulator/command/cwd hash 与 identity，
-写入包含所有 demand outcome 与 prefetch issue/fill event 的 schema-2 sidecar，生成
-严格 replay campaign 并调用 `summarize_spec_replay.py`。Analyzer 验证 artifact 与
-command path 绑定、trace/sidecar demand identity、geometry、timing identity、schema-2
-counter 与 sidecar event 守恒、唯一严格 off/on pair，以及真实 L1/lower-memory
-help/pollution。Direct-mapped 与 VC8
-配置是独立比较点，不是 prefetch pair。有效 pair 还会生成
-`classification.csv` 和 `cycles-on-minus-off.svg`；仅按
-`cycles_on_minus_off` 的符号分类：负值为 helpful、零为 neutral、正值为
-harmful。当前 blocking model 中
-`timely_useful=useful`、`late_useful=0` 是结构性口径，不是独立 latency
-measurement；真正的 issue/fill/accept timeliness 仍属于 future work。
+完整临时证据图必须先通过验证，才能发布 PASS。Replay runner 只消费
+这些 manifest，拒绝 stale 或额外 trace，编译四个明确 geometry，记录
+binary/simulator/command/cwd hash 与 identity，并调用
+`summarize_spec_replay.py`。当前默认值为 optimized P3、真正的 zero-bubble
+和 schema 3。Schema-3 sidecar 记录 demand present/accept/response，以及
+prefetch candidate/admit/issue/return/install/use/evict/cancel/discard/merge、controller、
+suppression 和 write-back attribution event。Analyzer 也接受保留的 schema-2 legacy
+证据，并针对每个 schema 验证对应的 lifecycle 守恒规则。
 
-#### 2026 年 7 月 13 日权威结果
+Direct-mapped 与 VC8 配置是独立比较点，不是 prefetch pair。有效 pair
+会生成 `classification.csv` 和 `cycles-on-minus-off.svg`；仅按
+`cycles_on_minus_off` 的符号分类：负值为 helpful、零为 neutral、正值为
+harmful。系统已测量 aggregate lifecycle 和 demand latency，但 PF event row 还没有
+共享 transaction ID，因此逐 prefetch candidate-to-issue-to-return latency 仍是独立的
+future measurement。
+
+当前 optimized 主结果和 sensitivity 结果是新默认的权威证据，记录在
+[optimized 证据包](../evidence/2026-07-13-optimized/README.md)。要复现下方冻结的
+sequential legacy 结果，需要显式覆盖：
+
+```bash
+L1D_PREFETCH_POLICY=0 L1D_PF_OPT_LEVEL=0 \
+L1D_PRODUCER_PROFILE=sequential L1D_SIDECAR_SCHEMA=2 \
+scripts/run_spec_trace_replay.sh \
+  build/spec2026/qemu-private/campaign_manifest.json \
+  build/spec2026/replay-legacy/logs
+```
+
+#### 2026 年 7 月 13 日冻结 legacy baseline
 
 私有 campaign 已在 `708.sqlite_r`、`721.gcc_r`、`767.nest_r` 和
 `777.zstd_r` 上通过。5 个 command unit 生成 25 个采样 window，
@@ -615,8 +713,8 @@ vvp sim/two_way_vc4_trace.vvp \
   +TRACE_ID=historical_782_lbm_r +CONFIG_ID=2w_s4_vc4_pf0
 ```
 
-原始运行通过并产生了下列旧 schema-1 记录；当前 testbench 会改为输出
-字段更完整的 schema-2 记录：
+原始运行通过并产生了下列旧 schema-1 记录；冻结 legacy policy 输出
+字段更完整的 schema-2 记录，optimized 默认输出 schema 3：
 
 ```text
 WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
@@ -648,7 +746,7 @@ useful 或 non-useful 行为、局部循环稳定命中，以及 victim cache �
 冲突 working set 的保留。这些是 synthetic microbenchmark，不能替代
 SPEC trace。
 
-当前 schema-2 在 2026-07-13 对严格 2-way、4-set、VC4 off/on pair 的结果为：
+冻结 legacy schema-2 在 2026-07-13 对严格 2-way、4-set、VC4 off/on pair 的结果为：
 
 | Profile | Prefetch | Hits | Misses | Victim hits | Demand reads | Prefetch reads | Fills | Useful | Useless evicted | Unused resident | Pollution proxy | Service cycles |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -674,7 +772,7 @@ off/on 逐 demand replay sidecar 计算。
 配置，victim cache 能保留三个 line 的单 set working set，因此只有最初
 三个 access 到达下级内存。
 
-对每个 trace 区间，`WORKLOAD_RESULT schema=2` 记录 `sets`、`ways`、
+对每个冻结 legacy trace 区间，`WORKLOAD_RESULT schema=2` 记录 `sets`、`ways`、
 `line_bytes`、`l1_bytes`、`victim_entries`、`victim_bytes`、`total_bytes`、
 `prefetch`、`accesses`、`hits`、`misses`、`victim_hits`、
 `demand_mem_reads` 和 `prefetch_mem_reads`。
@@ -697,7 +795,8 @@ entry；需要先增加零 entry bypass，才能在未来进行 0/4/8 sweep。
 
 ## 当前限制与后续工作
 
-- 同时只允许一个 CPU 未完成请求，没有 MSHR 或 hit-under-miss；
+- 同时只允许一个 CPU 未完成请求。Optimized P3 有一个 metadata-only PF
+  MSHR 和 hit-under-prefetch，但没有通用 demand MSHR 或 demand hit-under-miss；
 - 下级接口没有错误响应和独立写确认；
 - 替换策略为 round-robin，而不是真正 LRU；
 - prefetch 为 best-effort，在持续 demand 流量下可能饥饿；
@@ -707,5 +806,6 @@ entry；需要先增加零 entry bypass，才能在未来进行 0/4/8 sweep。
 - coherence、atomic、显式 fence/flush/invalidate 命令、ECC、MMU/TLB
   地址转换、PMP/PMA 检查和 uncached MMIO region 不属于该 L1D baseline，
   需要由外围系统逻辑或后续 RTL 处理；
-- XSim 行为回归与综合后报告已经完成；最终签核仍需波形检查、
-  implementation/post-route timing 和基于真实 activity 的功耗分析。
+- 先前 legacy 与 optimized P3 XSim/综合后报告均已完成。手工检查
+  全部路径波形、implementation/post-route timing 和基于实际 activity 的
+  功耗分析仍是最终签核的待完成项。

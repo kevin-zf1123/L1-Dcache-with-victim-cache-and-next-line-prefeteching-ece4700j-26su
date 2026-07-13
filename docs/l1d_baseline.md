@@ -2,9 +2,17 @@
 
 ## Status
 
-This document is the authoritative design and usage description for the
-baseline L1 data cache. The current RTL implements a blocking, write-back,
-write-allocate cache with:
+This document is the authoritative design and usage description for the L1
+data cache. As of 2026-07-13, `l1d_cache` is an elaboration-time wrapper around
+two write-back, write-allocate engines:
+
+- `PREFETCH_POLICY=0` selects the frozen legacy blocking next-line engine;
+- `PREFETCH_POLICY=1` selects the optimized direct-L1 engine and is the
+  default; and
+- `PF_OPT_LEVEL=1/2/3` selects safe next-line, adaptive adjacent-stream, or
+  shadow-feedback plus single-PF-MSHR behavior. Level 3 is the default.
+
+Both engines provide:
 
 - an RV64 load/store request contract with 64-bit byte addresses and XLEN data;
 - byte, halfword, word, word-unsigned, and doubleword load semantics with
@@ -16,24 +24,40 @@ write-allocate cache with:
 - ready/valid CPU and line-memory interfaces;
 - dirty eviction and line allocation FSM control;
 - a parameterized fully associative victim cache;
-- next-line prefetching with basic usefulness and pollution counters; and
+- direct-L1 prefetching without a persistent line-sized prefetch buffer;
+- legacy counters plus schema-3 candidate, issue, return, install, merge,
+  discard, suppression, controller, shadow, and blocking-cost telemetry; and
 - self-checking Icarus Verilog tests plus a Vivado batch entry point.
 
 Icarus Verilog is used only for fast preliminary functional checks. Vivado
 simulation and synthesis are the final project verification targets.
+
+The final main-profile replay validated all four policy levels over the same
+25 zero-bubble windows. P3 reduced aggregate service cycles by 724 with zero
+byte overhead, zero harmful windows, and zero prefetch-caused write-backs;
+P1, P2, and frozen legacy were neutral because they issued no blocking
+prefetch in the zero-bubble opportunity. See the
+[address-free optimized evidence](evidence/2026-07-13-optimized/README.md).
 
 ## Source Layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/l1d_sram.sv` | Single-port synchronous SRAM inference wrapper |
-| `src/l1d_next_line_prefetch.sv` | Replaceable one-entry next-line candidate generator |
-| `src/l1d_cache.sv` | Cache datapath, FSM, victim cache, prefetcher, counters |
+| `src/l1d_next_line_prefetch.sv` | Frozen one-entry legacy next-line candidate generator |
+| `src/l1d_cache_legacy.sv` | Frozen legacy blocking next-line engine |
+| `src/l1d_stream_prefetch.sv` | Four-entry adjacent-stream detector and two-entry metadata-only candidate FIFO |
+| `src/l1d_prefetch_controller.sv` | Hysteretic OFF/PROBE/ON controller and token bucket |
+| `src/l1d_shadow_cache.sv` | Demand-only tag/dirty counterfactual L1/VC model |
+| `src/l1d_cache_optimized.sv` | Safe direct-L1 insertion, lifecycle telemetry, shadow feedback, and single PF MSHR |
+| `src/l1d_cache.sv` | Elaboration-time legacy/optimized wrapper; optimized level 3 is default |
 | `src/tb_l1d_cache.sv` | Self-checking testbench and line-memory model |
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
-| `scripts/validate_workload_results.py` | Fail-closed schema-2 field and counter-conservation validator |
+| `scripts/validate_workload_results.py` | Fail-closed schema-2/schema-3 field and counter-conservation validator |
+| `scripts/run_prefetch_unit_tests.sh` | Stream-detector and controller directed regression |
+| `scripts/run_p3_tests.sh` | P3 shadow/MSHR, zero-bubble, TTL, EWMA, and response-lifetime regression |
 | `scripts/run_vivado.tcl` | Vivado simulation, synthesis, utilization, timing, power |
 | `scripts/run_remote_vivado.py` | Paramiko remote Vivado runner for the Windows host |
 | `scripts/generate_phase3_traces.py` | Deterministic Phase 3 trace generator |
@@ -51,28 +75,29 @@ simulation and synthesis are the final project verification targets.
 All SystemVerilog files remain under `src/` as required by the repository
 layout.
 
-## Architecture and Block-Diagram
+## Architecture and Block Diagram
 
-The team-drawn original diagram contains the right high-level components, but
-the following corrections are required for it to represent the current RTL:
+The optimized default preserves the CPU and lower-memory protocols but splits
+speculative control from demand service:
 
 - the CPU request and response channels each have their own ready/valid
   handshake; `cpu_req_ready` belongs to the request channel and
   `cpu_rsp_valid`/`cpu_rsp_ready` belong to the response channel;
 - hit/miss determination comes from tag, valid metadata, and the fully
   associative victim lookup, not from the data array;
-- the next-line address is `line_address + LINE_BYTES`, not byte address
-  `+1`; the prefetcher produces a candidate and does not access memory
-  directly;
+- candidates contain addresses and attribution metadata only; returned line
+  data uses the existing transient refill register and either merges with a
+  waiting demand, installs directly into L1, or is discarded;
 - a victim-cache entry stores the complete line address, line data, valid,
   dirty, and prefetched metadata. A victim hit swaps both data and metadata;
 - dirty victim replacement is sent through the controller's write-back state,
   not directly from the victim cache to memory;
-- event counters are currently integrated in `l1d_cache`, rather than a
-  separate hardware-monitor module; and
-- the current blocking design has one serialized lower-memory request path.
-  The apparent bus arbiter is therefore FSM request selection, not a separate
-  multi-master interconnect.
+- demand SRAM access always has priority; a PF read may remain in flight while
+  unrelated L1/VC hits complete;
+- lower memory still permits at most one outstanding read and has no
+  transaction identifier; and
+- the tag-only shadow cache is updated after the actual demand outcome and is
+  not on the CPU response path.
 
 The implementation-level diagram is:
 
@@ -81,19 +106,21 @@ flowchart TB
     CPU["CPU Core"]
     DRAM["Lower Memory / DRAM Model"]
 
-    subgraph L1D["Blocking L1 Data Cache"]
-        SELECT["Request Selection<br/>CPU > External Prefetch > Next-Line"]
-        FSM["Cache Controller FSM<br/>Lookup / Allocate / Swap / Write-Back"]
+    subgraph L1D["l1d_cache Wrapper"]
+        POLICY["Elaboration Policy<br/>Legacy or Optimized P1/P2/P3"]
+        FSM["Demand FSM<br/>Lookup / Swap / Fill / Write-Back"]
         SRAM["Synchronous Tag and Data SRAMs<br/>Way 0 .. NUM_WAYS-1"]
         META["L1 Metadata<br/>Valid / Dirty / Prefetched / Replacement"]
         VC["Fully Associative Victim Cache<br/>Line Address + Data + Metadata"]
-        PF["Next-Line Candidate Queue<br/>Demand Line + LINE_BYTES"]
-        MON["Event Pulses and Counters<br/>Integrated in Controller"]
-        MEMIF["Serialized Line-Memory Interface<br/>Read Fill or Dirty Write-Back"]
+        STREAM["Gaze-lite Stream Table<br/>Address-only Candidate FIFOs"]
+        CTRL["OFF / PROBE / ON<br/>Token and Cost Controller"]
+        MSHR["Single PF MSHR<br/>Metadata Only"]
+        SHADOW["Demand-only Shadow L1/VC<br/>Tags and Metadata Only"]
+        MEMIF["One-outstanding Line Memory<br/>Demand Priority"]
     end
 
-    CPU -->|"Request: valid/ready, address, op size, unsigned flag, data"| SELECT
-    SELECT -->|"Selected demand or prefetch request"| FSM
+    CPU -->|"Request/response ready-valid"| POLICY
+    POLICY --> FSM
     FSM -->|"Response: valid/ready, data, error cause"| CPU
 
     FSM -->|"Indexed synchronous read/write"| SRAM
@@ -101,19 +128,23 @@ flowchart TB
     FSM <-->|"Metadata update and replacement choice"| META
     FSM <-->|"Associative lookup, eviction, and full-line swap"| VC
 
-    FSM -->|"Completed demand fill"| PF
-    PF -->|"Best-effort aligned candidate"| SELECT
-    FSM -->|"Hit, miss, victim, write-back, and prefetch events"| MON
-
-    FSM -->|"One line request at a time"| MEMIF
+    FSM -->|"Demand observations and PF-use feedback"| STREAM
+    STREAM -->|"Candidate metadata"| CTRL
+    CTRL -->|"Admit when safe"| MSHR
+    MSHR -->|"Merge or direct-L1 install"| FSM
+    FSM -->|"Actual outcome"| SHADOW
+    SHADOW -->|"Causal help/pollution"| CTRL
+    FSM -->|"Demand read/write-back"| MEMIF
+    MSHR -->|"Opportunistic PF read"| MEMIF
     MEMIF -->|"Read request or dirty line write-back"| DRAM
     DRAM -->|"Complete-line read response"| MEMIF
-    MEMIF -->|"Fill response"| FSM
+    MEMIF -->|"Immediate response capture"| FSM
 ```
 
-`SELECT`, `META`, `MON`, and `MEMIF` are conceptual boundaries inside
-`l1d_cache.sv`; only the SRAM wrapper and next-line generator are separate RTL
-module instances in the present baseline.
+The optimized path never lets a speculative line evict dirty demand data or
+cause a dirty victim-cache write-back. Prefetch installation is cold, each set
+may contain at most one unused speculative line, and an unused speculative
+victim is discarded instead of entering the victim cache.
 
 ## Configurable Parameters
 
@@ -126,10 +157,19 @@ module instances in the present baseline.
 | `NUM_WAYS` | 2 | `1` for direct-mapped, `2` for 2-way |
 | `VICTIM_ENTRIES` | 4 | Non-zero power of two; intended range is 4 to 8 |
 | `ENABLE_PREFETCH` | 1 | Elaboration-time enable for built-in and external prefetch acceptance; runtime enables still apply |
+| `PREFETCH_POLICY` | 1 | `0` freezes legacy behavior; `1` selects the optimized engine |
+| `PF_OPT_LEVEL` | 3 | `1` safe next-line; `2` adaptive stream; `3` shadow feedback plus PF MSHR |
 
-The current replacement policy is round-robin per set. With two ways this is
-equivalent to selecting the way after the most recently selected way. Invalid
-ways are always preferred.
+Demand replacement is round-robin per set. Optimized prefetch admission uses
+invalid way, then an unused-prefetched way, then (only at confidence 3) a clean
+demand way when the victim cache has an invalid entry. A prefetch fill is
+inserted cold and becomes the next replacement victim.
+
+External `valid && ready` means that the aligned candidate entered the
+one-entry external skid. It may later expire, be cancelled, be suppressed, or
+have its response discarded. Legacy policy 0 retains the historical external
+handshake semantics. `cfg_next_line_enable` controls the built-in stream
+detector in optimized mode; `cfg_prefetch_enable` remains the runtime master.
 
 ## Interface Contract
 
@@ -146,7 +186,9 @@ clock edge. The request fields are:
 - `cpu_req_wdata`: unshifted store data in the low bytes selected by
   `cpu_req_size`.
 
-The cache is blocking and accepts one request at a time. A response remains
+The demand engine accepts one request at a time. Under optimized level 3, an
+unrelated L1/VC hit may complete while a prefetch read is in flight; a same-line
+demand miss merges into that PF MSHR. A response remains
 valid in `cpu_rsp_valid` until accepted with `cpu_rsp_ready`. Loads return the
 RV64 architectural result in `cpu_rsp_rdata`: `LB/LH/LW` sign-extend,
 `LBU/LHU/LWU` zero-extend, and `LD` returns all 64 bits. Stores also produce
@@ -304,7 +346,8 @@ Generated `.vvp` files and logs are written under `sim/`. Icarus emits a known
 informational message about constant selects in `always_*`; compilation and
 all self-checking tests complete successfully.
 
-Each workload emits one machine-readable `WORKLOAD_RESULT schema=2` line.
+Each optimized workload emits one machine-readable `WORKLOAD_RESULT schema=3`
+line; an explicitly selected frozen legacy policy emits schema 2.
 `scripts/summarize_workloads.sh` collects these records into the ignored
 `sim/workload_results.csv`. The recorded fields include accesses, hits,
 misses, victim hits, complete geometry and capacities, separate demand and
@@ -312,10 +355,51 @@ prefetch lower-memory reads, read/write bytes, true prefetch fills,
 useful/useless-evicted/unused-resident conservation, drop/protocol counters,
 and replay service cycles.
 
-## Vivado Verification
+## Vivado Verification Evidence
 
-The current RV64 Vivado evidence is recorded in
-`docs/phase3_vivado_report.md`. A stale-report-free replacement run on
+### Optimized P3 evidence
+
+The final optimized remote campaign passed under Vivado 2024.2.1. It produced
+11 XSim logs: eight class-based OOP workload points and three directed
+auxiliary tops. The eight OOP logs contain 83 `WORKLOAD_RESULT schema=3` rows;
+all report `status=PASS`, zero watchdog/protocol/duplicate-line errors, and
+closed prefetch lifecycle conservation after drain. The three auxiliary logs
+pass 76 stream/controller checks, 62 PF-MSHR checks, and the optimized P3 edge
+scenarios. The same run synthesized four controlled configurations and
+downloaded all 12 utilization/timing/power reports. The final manifest reports
+`PASS`, no findings, remote exit status 0, no download failures, and a hashed
+901,858-byte representative VCD. This is a simulation/flow/artifact-validation
+pass, not a 100 MHz timing-closure claim.
+
+The OOP matrix uses the sequential producer and is functional/lifecycle
+evidence. True zero-bubble operation is tested across Icarus and XSim by
+`tb_l1d_cache_optimized_p3` (`p3_prefetch_edges` remotely). The main P3
+performance result comes from the local true-zero-bubble, 25-window trace
+campaign, not from the sequential OOP result rows.
+
+The current post-synthesis PPA is:
+
+| Configuration | LUTs | LUT as memory | FFs | Block RAM tiles | Bonded IOB / available | WNS at 10 ns | Approx. Fmax | Vectorless power |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 5,679 | 57 | 2,897 | 2 | 1,447 / 106 | -1.019 ns | 90.752 MHz | 0.124 W |
+| `2w_s4_vc4_pf0` | 7,137 | 372 | 3,214 | 0 | 1,447 / 106 | -2.130 ns | 82.440 MHz | 0.125 W |
+| `2w_s4_vc8_pf0` | 7,891 | 372 | 4,227 | 0 | 1,447 / 106 | -2.500 ns | 80.000 MHz | 0.128 W |
+| `2w_s4_vc4_pf1` | 10,882 | 372 | 4,757 | 0 | 1,510 / 106 | -9.342 ns | 51.701 MHz | 0.139 W |
+
+Against matching `2w_s4_vc4_pf0`, enabling optimized P3 adds 3,745 LUTs
+(52.473%) and 1,543 FFs (48.009%), worsens WNS by 7.212 ns, lowers the
+post-synthesis Fmax estimate by 30.739 MHz, and adds 0.014 W of vectorless
+power. Every configuration fails 100 MHz setup timing but passes hold. These
+are post-synthesis, not implementation/post-route, values. The raw cache top
+also requires 1,447 or 1,510 bonded I/Os against 106 available, so it is not a
+placeable board-level top as synthesized. Vectorless power confidence is
+`Low`; activity-driven power remains outstanding. Full current and historical
+tables are in `docs/phase3_vivado_report.md`.
+
+### Prior legacy evidence and reproduction
+
+The prior legacy-engine RV64 Vivado evidence is recorded in
+`docs/phase3_vivado_report.md`. A stale-report-free legacy replacement run on
 2026-07-13 used
 remote Vivado 2024.2.1 and the explicit geometry shared by XSim and
 synthesis. It exited successfully and scanned exactly 22 log/report files:
@@ -332,8 +416,9 @@ vivado -mode batch -source scripts/run_vivado.tcl
 
 The script defaults to `xc7a35tcpg236-1`; set environment variable `L1D_PART`
 to override the FPGA part. It runs the class-based OOP XSim matrix, trace
-replay, low/high latency next-line prefetch cases, and synthesis for the four
-major hardware configurations with the 10 ns clock constraint. Reports are
+replay, low/high latency optimized prefetch cases, three directed auxiliary
+tops, and synthesis for the four major hardware configurations with the 10 ns
+clock constraint. Reports are
 generated under `build/vivado/reports/<configuration>/`:
 
 - `utilization.rpt`;
@@ -341,7 +426,7 @@ generated under `build/vivado/reports/<configuration>/`:
 - `power.rpt`.
 
 Simulation logs and the representative VCD are copied to
-`build/vivado/reports/`. The current Phase 3 synthesis results are:
+`build/vivado/reports/`. The prior legacy Phase 3 synthesis results are:
 
 | Configuration | LUTs | FFs | Block RAM tiles | WNS at 10 ns | Approx. post-synth Fmax | Vectorless power |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -350,7 +435,7 @@ Simulation logs and the representative VCD are copied to
 | 2-way, 4 sets/way, VC8, prefetch off | 5,783 | 3,004 | 0 | -1.516 ns | 86.8 MHz | 0.106 W |
 | 2-way, 4 sets/way, VC4, prefetch on | 6,222 | 2,407 | 0 | -1.626 ns | 86.0 MHz | 0.111 W |
 
-These current RV64 configurations all contain 128 bytes of logical L1 data
+These legacy RV64 configurations all contain 128 bytes of logical L1 data
 and do not meet the 100 MHz synthesis constraint. Vivado inferred two block
 RAM tiles for the direct-mapped arrays, but mapped the shallower per-way
 arrays of every 2-way configuration into distributed logic and registers.
@@ -364,6 +449,10 @@ activity file, default operating conditions, and `Low` confidence. They are
 useful only as early relative estimates. The very high top-level I/O count
 also makes these figures unsuitable as board-level power predictions.
 
+These historical reports do not characterize optimized P3. The upgraded
+11-log XSim and four-geometry synthesis/PPA run is now complete and is reported
+separately above; the historical legacy numbers remain unchanged.
+
 On Windows, use an ASCII-only project path. Vivado simulation worked under a
 Chinese user profile, but the synthesis child process could not reopen the
 project when its path contained non-ASCII characters.
@@ -371,7 +460,7 @@ project when its path contained non-ASCII characters.
 Before final project sign-off, inspect XSim waveforms for every FSM path and
 run implementation/post-route timing. For meaningful power comparison, rerun
 `report_power` with representative switching activity from the workload
-traces. The current representative passing VCD is
+traces. The representative passing optimized VCD is
 `build/vivado/reports/2w_s4_vc4_pf1.vcd`. The machine-readable validation
 record is `build/vivado/evidence_manifest.json`.
 
@@ -503,23 +592,38 @@ hashed. Per-benchmark plans bind the original timed-command file, dense command
 indices, and an exact disjoint partition of the full comparison plan. Campaign
 provenance hashes the executing QEMU binary, immutable VM/firmware inputs,
 target ELF, plugin, and every host capture source; a temporary complete graph
-must validate before PASS publication. The replay runner consumes only those manifests, rejects stale
-or extra traces, compiles four explicit geometries, records binary/simulator/
-command/cwd hashes and identity, writes schema-2 sidecars with every demand
-outcome plus prefetch issue/fill events, creates a strict replay campaign, and
-invokes `summarize_spec_replay.py`. The analyzer validates artifact and command
-path binding, exact trace/sidecar demand identity, geometry, timing identity,
-schema-2 counters and sidecar event conservation, the one exact off/on pair,
-and true L1/lower-memory help and pollution. The direct-mapped and VC8
-configurations are standalone comparison points, not prefetch pairs.
-Validated pairs also produce `classification.csv` and
-`cycles-on-minus-off.svg`; the sign of `cycles_on_minus_off` alone defines
-helpful (negative), neutral (zero), or harmful (positive).
-In this blocking model,
-`timely_useful=useful` is structural and `late_useful=0` is not an independent
-latency observation; real issue/fill/accept timeliness remains future work.
+must validate before PASS publication. The replay runner consumes only those
+manifests, rejects stale or extra traces, compiles four explicit geometries,
+records binary/simulator/command/cwd hashes and identity, and invokes
+`summarize_spec_replay.py`. Its defaults are optimized P3, true zero-bubble,
+and schema 3. Schema-3 sidecars record demand present/accept/response plus
+prefetch candidate/admit/issue/return/install/use/evict/cancel/discard/merge,
+controller, suppression, and write-back-attribution events. The analyzer also
+accepts retained schema-2 legacy evidence and validates the appropriate
+lifecycle conservation rules for each schema.
 
-#### Authoritative July 13, 2026 result
+The direct-mapped and VC8 configurations are standalone comparison points,
+not prefetch pairs. Validated pairs produce `classification.csv` and
+`cycles-on-minus-off.svg`; the sign of `cycles_on_minus_off` alone defines
+helpful (negative), neutral (zero), or harmful (positive). Aggregate lifecycle
+and demand latency are measured, but PF event rows do not yet carry a shared
+transaction ID, so per-prefetch candidate-to-issue-to-return latency remains a
+separate future measurement.
+
+The current optimized main and sensitivity results are authoritative for the
+new default and are recorded in
+[the optimized evidence package](evidence/2026-07-13-optimized/README.md). To
+reproduce the frozen sequential legacy result below, use explicit overrides:
+
+```bash
+L1D_PREFETCH_POLICY=0 L1D_PF_OPT_LEVEL=0 \
+L1D_PRODUCER_PROFILE=sequential L1D_SIDECAR_SCHEMA=2 \
+scripts/run_spec_trace_replay.sh \
+  build/spec2026/qemu-private/campaign_manifest.json \
+  build/spec2026/replay-legacy/logs
+```
+
+#### Frozen legacy July 13, 2026 baseline
 
 The private campaign passed for `708.sqlite_r`, `721.gcc_r`, `767.nest_r`, and
 `777.zstd_r`. Five command units produced 25 sampled windows with matching
@@ -672,7 +776,8 @@ vvp sim/two_way_vc4_trace.vvp \
 ```
 
 The original run passed and produced the following legacy schema-1 record;
-the current testbench emits a wider schema-2 record instead:
+the frozen legacy policy emits a wider schema-2 record, while the optimized
+default emits schema 3:
 
 ```text
 WORKLOAD_RESULT name=trace_replay ways=2 vc=4 prefetch=0 accesses=999992 hits=327155 misses=672837 victim_hits=23347 mem_reads=649490 mem_writes=380607 useful=0 useless=0 pollution=0 dropped=0 cycles=9175526
@@ -709,8 +814,8 @@ next-line usefulness or non-usefulness, stable localized hits, and victim
 retention of the complete conflict working set. They are synthetic
 microbenchmarks, not substitutes for SPEC traces.
 
-The current schema-2 results for the strict 2-way, four-set, VC4 off/on pair
-on July 13, 2026 are:
+The frozen legacy schema-2 results for the strict 2-way, four-set, VC4 off/on
+pair on July 13, 2026 are:
 
 | Profile | Prefetch | Hits | Misses | Victim hits | Demand reads | Prefetch reads | Fills | Useful | Useless evicted | Unused resident | Pollution proxy | Service cycles |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -737,7 +842,7 @@ it doubles lower-memory reads and increases cycles without removing a demand
 miss. The victim cache retains the three-line, single-set working set for the
 2-way configuration, so only the first three accesses reach lower memory.
 
-For each trace region, `WORKLOAD_RESULT schema=2` records `sets`, `ways`,
+For each frozen legacy trace region, `WORKLOAD_RESULT schema=2` records `sets`, `ways`,
 `line_bytes`, `l1_bytes`, `victim_entries`, `victim_bytes`, `total_bytes`,
 `prefetch`, `accesses`, `hits`, `misses`, `victim_hits`,
 `demand_mem_reads`, and `prefetch_mem_reads`.
@@ -761,7 +866,9 @@ a future 0/4/8 sweep remains future work.
 
 ## Current Limitations and Next Steps
 
-- One CPU request can be outstanding; there are no MSHRs or hit-under-miss.
+- One CPU request can be outstanding. Optimized P3 has one metadata-only PF
+  MSHR and hit-under-prefetch, but no general demand MSHR or demand
+  hit-under-miss.
 - The lower memory interface has no error response and no write acknowledgment.
 - Replacement is round-robin rather than true LRU.
 - Prefetching is best-effort and can starve under continuous demand traffic.
@@ -772,6 +879,6 @@ a future 0/4/8 sweep remains future work.
 - Coherence, atomics, explicit fence/flush/invalidate commands, ECC, MMU/TLB
   translation, PMP/PMA checks, and uncached MMIO regions are outside this L1D
   baseline and must be handled by surrounding system logic or future RTL.
-- XSim behavioral regression and post-synthesis reports are complete;
-  waveform review, implementation/post-route timing, and activity-based power
-  analysis remain required for final sign-off.
+- Prior legacy and optimized P3 XSim/post-synthesis reports are complete.
+  Manual all-path waveform review, implementation/post-route timing, and
+  activity-based power analysis remain required for final sign-off.

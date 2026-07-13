@@ -1,0 +1,15 @@
+profile,variant,producer_profile,producer_gap,timing_profile,cycles_off,cycles_on,cycle_delta,byte_delta,bandwidth_overhead,harmful,neutral,helpful,pf_candidates,pf_admitted,pf_issued,pf_merged,pf_installed,pf_cancelled,pf_caused_writebacks
+sequential,legacy,sequential,0,latency2-periodic,977392,1306388,328996,672032,0.537997464,25,0,0,44193,44193,44193,0,44193,0,0
+sequential,p3,sequential,0,latency2-periodic,977392,977392,0,0,0.000000000,0,25,0,500,0,0,0,0,0,0
+gap1,legacy,fixed-gap,1,latency2-periodic,977392,1306388,328996,672032,0.537997464,25,0,0,44193,44193,44193,0,44193,0,0
+gap1,p3,fixed-gap,1,latency2-periodic,977392,977392,0,0,0.000000000,0,25,0,500,0,0,0,0,0,0
+gap2,legacy,fixed-gap,2,latency2-periodic,1101373,1382027,280654,672032,0.537997464,25,0,0,44193,44193,44193,0,44193,0,0
+gap2,p3,fixed-gap,2,latency2-periodic,1101373,1101373,0,0,0.000000000,0,25,0,500,0,0,0,0,0,0
+gap4,legacy,fixed-gap,4,latency2-periodic,1353861,1544715,190854,672032,0.537997464,24,0,1,44193,44193,44193,0,44193,0,0
+gap4,p3,fixed-gap,4,latency2-periodic,1353861,1353861,0,0,0.000000000,0,25,0,1594,1391,0,0,0,1391,0
+gap8,legacy,fixed-gap,8,latency2-periodic,1854635,1868380,13745,672032,0.537997464,17,0,8,44193,44193,44193,0,44193,0,0
+gap8,p3,fixed-gap,8,latency2-periodic,1854635,1854635,0,0,0.000000000,0,25,0,1594,1391,0,0,0,1391,0
+latency0-always,legacy,zero-bubble,0,latency0-always-ready,721825,721825,0,0,0.000000000,0,25,0,59250,0,0,0,0,0,0
+latency0-always,p3,zero-bubble,0,latency0-always-ready,721825,721255,-570,0,0.000000000,0,2,23,1035,570,570,570,0,0,0
+latency8-random,legacy,zero-bubble,0,latency8-deterministic-random-ready,1224305,1224305,0,0,0.000000000,0,25,0,59250,0,0,0,0,0,0
+latency8-random,p3,zero-bubble,0,latency8-deterministic-random-ready,1224305,1223446,-859,0,0.000000000,1,9,15,906,422,422,422,0,0,0

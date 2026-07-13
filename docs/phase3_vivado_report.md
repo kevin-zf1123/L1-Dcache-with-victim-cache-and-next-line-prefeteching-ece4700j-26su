@@ -15,13 +15,95 @@ The current replacement now meets that rule. The stale-free Vivado run and the
 private process-attributable SPEC capture/replay/analyzer chain all report
 `PASS`. The historical tables remain invalid and are retained only as history.
 
-## Current Replacement Evidence (2026-07-13)
+## Optimized P3 Verification Status (2026-07-13)
+
+The adaptive direct-L1 implementation has passed the local Icarus matrix,
+directed P3 regression, true zero-bubble replay, and 82 Python analyzer/runner
+tests. The Vivado flow has been upgraded to compile the wrapper with
+`PREFETCH_POLICY=1`, `PF_OPT_LEVEL=3`, validate schema-3 records, run eight OOP
+workload points plus three directed auxiliary XSim tops, and synthesize the
+four controlled geometries.
+
+The final local main-profile replay passed 100/100 runs and 25/25 exact pairs
+for each of legacy, P1, P2, and P3. P3 changed aggregate cycles from 850,547
+to 849,823 (`-724`), kept total bytes unchanged, produced 18 helpful and seven
+neutral windows with no harmful window, merged all 544 issued prefetches, and
+caused no dirty write-back. The public roll-up is
+[here](evidence/2026-07-13-optimized/README.md).
+
+The sequential, fixed-gap 1/2/4/8, latency-0/always-ready, and
+latency-8/deterministic-random sensitivity campaigns also passed all 700 runs
+and 350 exact pairs. P3 had zero byte overhead in every profile. It was neutral
+in all sequential/fixed-gap windows and saved 570 and 859 aggregate cycles in
+the latency-0 and latency-8 zero-bubble profiles respectively. The final local
+regression comprised ten cache simulations, 20/20 workload rows, 62 P3 MSHR
+checks, ten optimized edge scenarios, 76 stream/controller checks, and 82
+Python tests; all passed.
+
+The optimized remote campaign also reports `PASS`. Vivado 2024.2.1 produced
+11 XSim logs: eight class-based OOP workload points and three directed
+auxiliary tops. The eight OOP logs contain 83 `WORKLOAD_RESULT schema=3` rows;
+every row reports `status=PASS`, zero watchdog/protocol/duplicate-line errors,
+and closed candidate/admit/issue/return/install/merge/discard/cancel lifecycle
+conservation at drain. The auxiliary logs report 76 stream/controller checks,
+62 PF-MSHR checks, and the optimized P3 edge scenarios as passing. The same
+run synthesized four controlled configurations and downloaded all 12 expected
+utilization/timing/power reports. The evidence manifest was generated at
+`2026-07-13T06:58:25.192439Z`, reports `PASS` with no findings, records remote
+exit status 0 and no download failures, and hashes the Vivado log, journal,
+and a 901,858-byte representative VCD. Here `PASS` means that simulation,
+lifecycle, flow-completion, and artifact validation passed; it does not mean
+that the 100 MHz timing constraint closed.
+
+The OOP workload matrix uses the sequential producer; it is functional and
+lifecycle evidence, not a zero-bubble performance measurement. True
+zero-bubble behavior is exercised across Icarus and XSim by the directed
+`tb_l1d_cache_optimized_p3` test (`p3_prefetch_edges` in the remote matrix).
+The performance claims above remain based on the local true-zero-bubble,
+25-window trace campaign, not on the sequential OOP rows.
+
+All four optimized-wrapper configurations contain 128 bytes of logical L1
+data. Their current post-synthesis reports are:
+
+| Configuration | Slice LUTs | LUT as memory | FFs | Block RAM tiles | Bonded IOB / available | WNS at 10 ns | Approx. Fmax | Vectorless power | Dynamic | Static |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 5,679 | 57 | 2,897 | 2 | 1,447 / 106 | -1.019 ns | 90.752 MHz | 0.124 W | 0.053 W | 0.070 W |
+| `2w_s4_vc4_pf0` | 7,137 | 372 | 3,214 | 0 | 1,447 / 106 | -2.130 ns | 82.440 MHz | 0.125 W | 0.055 W | 0.070 W |
+| `2w_s4_vc8_pf0` | 7,891 | 372 | 4,227 | 0 | 1,447 / 106 | -2.500 ns | 80.000 MHz | 0.128 W | 0.058 W | 0.070 W |
+| `2w_s4_vc4_pf1` | 10,882 | 372 | 4,757 | 0 | 1,510 / 106 | -9.342 ns | 51.701 MHz | 0.139 W | 0.068 W | 0.070 W |
+
+The matching P3 enable comparison is `2w_s4_vc4_pf1` versus
+`2w_s4_vc4_pf0`:
+
+| Metric | Matching PF0 | P3 PF1 | PF1 - PF0 |
+| --- | ---: | ---: | ---: |
+| Slice LUTs | 7,137 | 10,882 | +3,745 (+52.473%) |
+| FFs | 3,214 | 4,757 | +1,543 (+48.009%) |
+| LUT as memory | 372 | 372 | 0 |
+| Block RAM tiles | 0 | 0 | 0 |
+| Bonded IOB | 1,447 | 1,510 | +63 (+4.354%) |
+| WNS at 10 ns | -2.130 ns | -9.342 ns | -7.212 ns |
+| Approx. Fmax | 82.440 MHz | 51.701 MHz | -30.739 MHz (-37.287%) |
+| Total vectorless power | 0.125 W | 0.139 W | +0.014 W (+11.200%) |
+| Dynamic power | 0.055 W | 0.068 W | +0.013 W (+23.636%) |
+
+These numbers are estimates from synthesis, not implementation or post-route
+sign-off. Every configuration fails 100 MHz setup timing, although all four
+hold checks pass. The cache interface is exposed directly as the synthesis
+top, so the reported 1,447 or 1,510 bonded I/Os exceed the selected device's
+106 I/Os; the design is not a placeable board-level top in this form. Power
+uses vectorless activity propagation and has `Low` confidence, so it does not
+replace an activity-driven power run. The large optimized PF1 area and timing
+cost is therefore a valid post-synthesis comparison against its matching PF0,
+but not a post-route implementation result.
+
+## Prior Legacy Replacement Evidence (2026-07-13)
 
 The replacement flow uses remote Vivado 2024.2.1, part
 `xc7a35tcpg236-1`, a 10 ns constraint, and the same explicit geometry in XSim
 and synthesis. `scripts/run_vivado.tcl` deletes the prior report directory
-before each run. `scripts/run_remote_vivado.py` also clears the local download,
-requires exactly eight simulation logs and four synthesis directories with
+before each run. The earlier remote runner also cleared the local download and
+required exactly eight simulation logs and four synthesis directories with
 utilization/timing/power reports, checks every `WORKLOAD_RESULT schema=2` row
 for geometry, timing, `PASS`, and zero watchdog/protocol/duplicate-line
 errors, and writes `build/vivado/evidence_manifest.json` with source and
@@ -57,7 +139,7 @@ The eight simulation points are:
 | `2w_s4_vc4_pf1_high_latency_random_bp` | prefetch on, latency 8, randomized memory backpressure |
 
 All four main L1s contain 128 bytes; this isolates logical L1 capacity when
-comparing direct-mapped and 2-way behavior. The current post-synthesis reports
+comparing direct-mapped and 2-way behavior. The prior legacy post-synthesis reports
 are:
 
 | Configuration | LUTs | FFs | Block RAM tiles | WNS at 10 ns | Approx. Fmax | Vectorless power | Dynamic | Static |
@@ -76,7 +158,7 @@ mapping is not: LUT/FF/timing differences cannot be attributed solely to
 associativity. A physically matched experiment would need an explicit common
 RAM style or primitive mapping.
 
-The representative current waveform is
+The representative legacy waveform is
 `build/vivado/reports/2w_s4_vc4_pf1.vcd`.
 
 The attributable private SPEC campaign also passed on 2026-07-13. It covered
@@ -286,9 +368,9 @@ internal DUT signals such as CPU, memory, prefetch, statistics, and
 
 ## Remaining Gaps
 
-The current RTL supports the direct-L1D next-line prefetch baseline and
-external candidate injection. The broader Phase 2 policy matrix remains a
-design gap:
+The current RTL supports the frozen next-line baseline, adaptive direct-L1
+stream prefetching, external candidate injection, shadow feedback, and one PF
+MSHR. The broader placement/replacement policy matrix remains a design gap:
 
 - no `3:1` or `7:1` capacity reservation policy, because the current RTL only
   supports `NUM_WAYS=1` or `NUM_WAYS=2` and has no group-level slot
@@ -297,9 +379,8 @@ design gap:
 - no separate prefetch buffer or direct victim-cache prefetch placement;
 - no LRU or pointer-based replacement option;
 - paired replay sidecars now provide true L1/lower-memory help and pollution,
-  but there is no independent issue/fill/accept timeliness measurement or full
-  latency distribution beyond the current min/max/average fields;
-- no demand-caused versus prefetch-caused dirty write-back split; and
+  but PF events have no shared transaction identity for a per-prefetch
+  candidate/issue/return latency distribution; and
 - no post-route timing or activity-based power analysis.
 
 The historical invalid campaign covered labels `708`, `721`, `767`, and

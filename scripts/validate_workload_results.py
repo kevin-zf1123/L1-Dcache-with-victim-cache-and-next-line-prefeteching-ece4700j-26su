@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate schema-2 WORKLOAD_RESULT logs and emit canonical CSV."""
+"""Validate schema-2/3 WORKLOAD_RESULT logs and emit canonical CSV."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Mapping, Sequence, TextIO
 
 
 RESULT_PREFIX = "WORKLOAD_RESULT "
-FIELDS = (
+BASE_FIELDS = (
     "schema",
     "name",
     "config_id",
@@ -50,8 +50,36 @@ FIELDS = (
     "duplicate_lines",
     "status",
 )
-STRING_FIELDS = {"name", "config_id", "trace_id", "status"}
-INTEGER_FIELDS = tuple(field for field in FIELDS if field not in STRING_FIELDS)
+V3_FIELDS = (
+    "pf_candidates",
+    "pf_admitted",
+    "pf_issued",
+    "pf_returned",
+    "pf_installed",
+    "pf_merged",
+    "pf_discarded",
+    "pf_cancelled",
+    "pf_unused_evicted",
+    "pf_unused_resident",
+    "pf_vc_bypass",
+    "pf_caused_writebacks",
+    "pf_demand_block_cycles",
+    "pf_true_help",
+    "pf_true_pollution",
+    "pf_suppressed_quota",
+    "pf_suppressed_unsafe",
+    "pf_same_line_coalesced",
+    "pf_controller_state",
+    "pf_mshr_valid",
+    "pf_mshr_addr",
+    "pf_mshr_confidence",
+)
+FIELDS = BASE_FIELDS + V3_FIELDS
+STRING_FIELDS = {"name", "config_id", "trace_id", "status", "pf_mshr_addr"}
+BASE_INTEGER_FIELDS = tuple(
+    field for field in BASE_FIELDS if field not in STRING_FIELDS
+)
+V3_INTEGER_FIELDS = tuple(field for field in V3_FIELDS if field not in STRING_FIELDS)
 PREFETCH_FIELDS = (
     "prefetch_mem_reads",
     "fills",
@@ -88,9 +116,13 @@ def parse_result(line: str, context: str) -> dict[str, str]:
         if key in row:
             _fail(context, f"duplicate field {key}")
         row[key] = value
-    for field in FIELDS:
+    for field in BASE_FIELDS:
         if field not in row:
             _fail(context, f"missing required field {field}")
+    if re.fullmatch(r"[0-9]+", row["schema"]) and int(row["schema"], 10) == 3:
+        for field in V3_FIELDS:
+            if field not in row:
+                _fail(context, f"missing required field {field}")
     return row
 
 
@@ -104,14 +136,26 @@ def _equal(context: str, expression: str, actual: int, expected: int) -> None:
 
 def validate_result(row: Mapping[str, str], context: str) -> None:
     values: dict[str, int] = {}
-    for field in INTEGER_FIELDS:
+    for field in BASE_INTEGER_FIELDS:
         raw = row[field]
         if not re.fullmatch(r"[0-9]+", raw):
             _fail(context, f"non-integer field {field}: {raw!r}")
         values[field] = int(raw, 10)
 
-    if values["schema"] != 2:
-        _fail(context, f"schema must be 2, got {values['schema']}")
+    schema = values["schema"]
+    if schema not in (2, 3):
+        _fail(context, f"schema must be 2 or 3, got {schema}")
+    if schema == 3:
+        for field in V3_INTEGER_FIELDS:
+            raw = row[field]
+            if not re.fullmatch(r"[0-9]+", raw):
+                _fail(context, f"non-integer field {field}: {raw!r}")
+            values[field] = int(raw, 10)
+        if not re.fullmatch(r"[0-9A-Fa-f]+", row["pf_mshr_addr"]):
+            _fail(
+                context,
+                f"non-hexadecimal field pf_mshr_addr: {row['pf_mshr_addr']!r}",
+            )
     if row["status"] != "PASS":
         _fail(context, f"status must be PASS, got {row['status']!r}")
     if values["prefetch"] not in (0, 1):
@@ -143,24 +187,45 @@ def validate_result(row: Mapping[str, str], context: str) -> None:
     )
     if values["victim_hits"] > values["misses"]:
         _fail(context, "conservation failure victim_hits <= misses")
-    _equal(
-        context,
-        "demand_mem_reads = misses - victim_hits",
-        values["demand_mem_reads"],
-        values["misses"] - values["victim_hits"],
-    )
+    if schema == 2:
+        _equal(
+            context,
+            "demand_mem_reads = misses - victim_hits",
+            values["demand_mem_reads"],
+            values["misses"] - values["victim_hits"],
+        )
+    else:
+        if values["pf_admitted"] > values["pf_issued"] + values["pf_cancelled"]:
+            _fail(
+                context,
+                "pf_admitted must be <= pf_issued + pf_cancelled after drain",
+            )
+        _equal(
+            context,
+            "demand_mem_reads + pf_merged = misses - victim_hits",
+            values["demand_mem_reads"] + values["pf_merged"],
+            values["misses"] - values["victim_hits"],
+        )
     _equal(
         context,
         "mem_reads = demand_mem_reads + prefetch_mem_reads",
         values["mem_reads"],
         values["demand_mem_reads"] + values["prefetch_mem_reads"],
     )
-    _equal(
-        context,
-        "prefetch_mem_reads = fills",
-        values["prefetch_mem_reads"],
-        values["fills"],
-    )
+    if schema == 2:
+        _equal(
+            context,
+            "prefetch_mem_reads = fills",
+            values["prefetch_mem_reads"],
+            values["fills"],
+        )
+    else:
+        _equal(
+            context,
+            "prefetch_mem_reads = pf_issued",
+            values["prefetch_mem_reads"],
+            values["pf_issued"],
+        )
     _equal(
         context,
         "read_bytes = mem_reads * line_bytes",
@@ -179,14 +244,62 @@ def validate_result(row: Mapping[str, str], context: str) -> None:
         values["mem_writes"],
         values["writebacks"],
     )
-    _equal(
-        context,
-        "fills = useful + useless_evicted + unused_resident",
-        values["fills"],
-        values["useful"]
-        + values["useless_evicted"]
-        + values["unused_resident"],
-    )
+    if schema == 2:
+        _equal(
+            context,
+            "fills = useful + useless_evicted + unused_resident",
+            values["fills"],
+            values["useful"]
+            + values["useless_evicted"]
+            + values["unused_resident"],
+        )
+    else:
+        _equal(
+            context,
+            "pf_issued = pf_returned after drain",
+            values["pf_issued"],
+            values["pf_returned"],
+        )
+        _equal(
+            context,
+            "pf_returned = pf_installed + pf_merged + pf_discarded",
+            values["pf_returned"],
+            values["pf_installed"]
+            + values["pf_merged"]
+            + values["pf_discarded"],
+        )
+        _equal(
+            context,
+            "pf_installed = timely_useful + pf_unused_evicted + pf_unused_resident",
+            values["pf_installed"],
+            values["timely_useful"]
+            + values["pf_unused_evicted"]
+            + values["pf_unused_resident"],
+        )
+        _equal(
+            context,
+            "fills = pf_installed",
+            values["fills"],
+            values["pf_installed"],
+        )
+        _equal(
+            context,
+            "pf_unused_evicted = useless_evicted",
+            values["pf_unused_evicted"],
+            values["useless_evicted"],
+        )
+        _equal(
+            context,
+            "pf_unused_resident = unused_resident",
+            values["pf_unused_resident"],
+            values["unused_resident"],
+        )
+        _equal(
+            context,
+            "late_useful = pf_merged",
+            values["late_useful"],
+            values["pf_merged"],
+        )
     _equal(
         context,
         "useful = timely_useful + late_useful",

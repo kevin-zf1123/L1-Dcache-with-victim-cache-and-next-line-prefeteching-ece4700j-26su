@@ -19,6 +19,32 @@
 
 ## 验证与高级功能
 
+### 自适应 Direct-L1 Prefetcher（P0–P3）
+
+- [x] 在 `PREFETCH_POLICY=0` 后保留原 blocking next-line engine，并将
+  optimized policy level 3 设为 wrapper 默认。
+- [x] 增加真正的 zero-bubble、sequential 和固定 gap 1/2/4/8 producer。
+- [x] 将 replay sidecar 与守恒检查升级为 schema 3，同时保留 schema-2
+  输入兼容性。
+- [x] 增加 candidate/admit/issue/return/install/use/evict/cancel/discard/merge、
+  suppression、controller、shadow、write-back 归因和 blocked-cycle 可观测性。
+- [x] 实现 P1 安全 cold insertion、每 set 一条 unused line quota、dirty guard、
+  response revalidation、VC bypass、TTL、独立 external skid、idle guard 和
+  token admission。
+- [x] 实现 P2 四 entry Gaze-lite 相邻 stream detection 和带滞回的
+  OFF/PROBE/ON controller。
+- [x] 实现 P3 demand-only tag/dirty shadow L1/VC 与单 metadata-only PF MSHR，
+  包括 hit-under-prefetch、load/store merge 和有界 discard。
+- [x] 为 stream/controller、安全 insertion、shadow attribution、zero-bubble merge、
+  TTL、EWMA、response backpressure、runtime disable 与 discard/revalidation 路径
+  增加定向和 randomized Icarus 回归。
+- [x] 完成并发布最终 25-window legacy/P1/P2/P3 zero-bubble campaign，
+  并检查所有 performance 与 bandwidth 门槛。
+- [x] 完成 sequential、fixed-gap 1/2/4/8、latency-0/always-ready 和
+  latency-8/random-backpressure paired sensitivity campaign。
+- [x] 运行 optimized P3 XSim matrix（11 份 log / 83 行 schema-3 record）与
+  四配置 Vivado synthesis/PPA campaign（12 份 report）。
+
 - [x] 增加 deterministic randomized golden-memory scoreboard。
 - [x] 验证 RV64 load/store size、符号/零扩展和未对齐错误。
 - [x] 验证 CPU/external/next-line 在重叠请求下的 handshake 必须互斥。
@@ -36,7 +62,10 @@
 - [ ] 增加独立 prefetch buffer 放置方案。
 - [x] 增加 paired true-pollution 分析和分开统计的 demand/prefetch 内存带宽
   测量；RTL displacement counter 仍明确作为 proxy。
-- [ ] 增加独立的 issue/fill/accept prefetch timeliness 测量。
+- [x] 增加独立 candidate/accept/issue/return/install/merge/discard prefetch
+  lifecycle counter 与 event record。
+- [ ] 增加逐 prefetch transaction identity 和 candidate-to-issue-to-return
+  latency distribution。
 - [x] 增加 SPEC CPU 2017/2026 区间 trace replay driver。
 - [x] 运行历史 `782.lbm_r` extraction/replay 流程检查（不是权威 benchmark
   证据）。
@@ -46,7 +75,8 @@
   address-space 归因。
 - [x] 输出统一 workload schema 并实现严格 paired-run 分析。
 - [x] 通过 paired replay sidecar 增加逐 demand true-pollution 归因。
-- [ ] 增加独立的逐 demand prefetch timeliness 分析。
+- [x] 增加逐 demand present/accept/response latency 和 prefetch lifecycle sidecar
+  分析。
 - [x] 使用验证后的 process-scoped 流程 capture 并 replay 获许可
   SPEC 区间。
 - [x] 对有效 window 分类，并在 `docs/evidence/2026-07-13/` 发布
@@ -57,7 +87,7 @@
 - [x] 对 direct-mapped 和 2-way 配置运行 RV64 Vivado 仿真。
 - [x] 对 VC4、VC8、next-line prefetch 和 trace replay 运行 Vivado OOP workload 矩阵。
 - [ ] 检查所有 hit、miss、swap、fill 和 write-back 波形。
-- [x] 捕获代表性的通过 next-line prefetch VCD artifact。
+- [x] 捕获代表性的通过 prefetch-on VCD artifact。
 - [x] 对 RV64 RTL 综合并记录 LUT、FF、推断存储和时序报告。
 - [x] 添加基线 10 ns 时钟约束。
 - [x] 根据 RV64 Vivado STA 报告计算近似综合后 Fmax。

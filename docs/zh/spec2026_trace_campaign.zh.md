@@ -66,6 +66,21 @@ scripts/run_spec_trace_replay.sh \
   build/spec2026/replay/logs
 ```
 
+Replay sensitivity control 是 fail-closed 的环境输入：
+
+| 变量 | 默认值 | 允许值 |
+| --- | --- | --- |
+| `L1D_REPLAY_SCOPE` | `full` | `full` 四配置 matrix，或仅 paired off/on |
+| `L1D_PREFETCH_POLICY` / `L1D_PF_OPT_LEVEL` | `1` / `3` | legacy `0/0`，optimized `1/1..3` |
+| `L1D_PRODUCER_PROFILE` | `zero-bubble` | `sequential`、`zero-bubble`、`fixed-gap` |
+| `L1D_PRODUCER_GAP` | `0` | fixed-gap `1`、`2`、`4` 或 `8` |
+| `L1D_MEM_LATENCY` | `2` | 非负整数 |
+| `L1D_MEM_READY_MODE` | `periodic` | `always-ready`、`periodic`、`deterministic-random` |
+| `L1D_SIDECAR_SCHEMA` | `3` | `2` 或 `3` |
+
+Elaboration 后的 latency/ready 值还会作为 runtime provenance plusarg 传入。
+Testbench 会拒绝不匹配，每个 campaign manifest 也会记录派生 timing profile。
+
 `capture_spec_qemu_windows.py` 会对每个 timed command 先运行 source-event count pass，
 再运行新的 snapshot capture pass。长 ROI 生成五个每个含“5,000 source warmup +
 5,000 source measurement”的 percentile window；短 ROI 整体 replay。Window manifest
@@ -105,15 +120,87 @@ binary、simulator、command/cwd identity 和精确 command-to-artifact path 绑
 每个 window 声明的四配置矩阵、严格 off/on pairing、counter/sidecar-event 守恒、
 trace/sidecar demand identity、零 protocol/watchdog/duplicate-line error，并从 sidecar
 得出真实 L1/lower-memory help 与 pollution。
-`timely_useful=useful`、`late_useful=0` 是当前 blocking replay model 的结构性
-结果，不是独立的 prefetch latency measurement。
+在保留的 schema-2 legacy campaign 中，`timely_useful=useful`、
+`late_useful=0` 是结构性 proxy。下方 optimized schema-3 campaign 用 demand 与
+PF lifecycle timing 取代该 proxy。
 
 每个有效 pair 还会生成 `classification.csv` 和 `cycles-on-minus-off.svg`。
 分类刻意只使用一个维度：`cycles_on_minus_off < 0` 为 helpful，等于零为
 neutral，大于零为 harmful。其他指标仍保留在 paired 与 aggregate 表中，不会
 暗中改变该标签。
 
-## 当前权威结果（2026-07-13）
+## Optimized P0–P3 Campaign（2026-07-13）
+
+最终 optimized campaign 复用相同 25 个可归因 window，以及相同的 2-way、
+4-set、16-byte-line、VC4 paired geometry。Producer 改为真正的 zero-bubble
+source：当 response `i` 尚未完成时，request `i+1` 已保持 valid，并在第一个
+ready edge 传输。Sidecar 和 result row 升级为 schema 3，analyzer 仍可读取
+历史 schema-2 证据。
+
+四个 policy campaign 均验证通过 100/100 runs 和 25/25 精确 pair：
+
+| Policy / level | Cycles off | Cycles on | Delta | Byte overhead | Harmful / neutral / helpful | PF issued / merged / installed | PF-caused WB |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 冻结 legacy `0/0` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Safe next-line P1 `1/1` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Adaptive stream P2 `1/2` | 850,547 | 850,547 | 0 | 0 | 0 / 25 / 0 | 0 / 0 / 0 | 0 |
+| Shadow + PF MSHR P3 `1/3` | 850,547 | **849,823** | **-724** | **0** | **0 / 7 / 18** | **544 / 544 / 0** | **0** |
+
+P1 和 P2 会正确拒绝 zero-bubble 中的单 cycle opportunity，因为它们的
+2-cycle idle guard 无法隐藏 blocking prefetch。P3 只在已出现的下一 demand
+与 candidate 同地址，且 tag-only L1/VC lookup 证明该行不存在时，才在
+response cycle 后台 issue。544 个 issued read 全部与同地址 demand merge：
+demand-owned read 从 59,275 降到 58,731，总 read byte 保持 948,400，
+write byte 保持 300,736，且没有 speculative install 或归因 dirty write-back。
+
+P3 通过主 profile 的所有硬门槛：
+
+- aggregate cycle delta 为负；
+- read+write bandwidth overhead 为 0%，低于 10%；
+- 25/25 window 不退化，超过 20/25 要求；
+- 最大 slowdown 为 0%，最佳 window 节省 80 cycles；
+- prefetch-caused dirty write-back 为零；
+- P3 aggregate cycles 低于 legacy，bandwidth 相同。
+
+完整的 paired sensitivity matrix 也全部通过验证。下表给出每个
+policy 的 on-minus-off cycle delta；所有 P3 byte delta 和
+prefetch-caused write-back 都为零。
+
+加强后的 drain check 也通过了每条 schema-3 row：admitted request 必须在
+报告前 issue 或 cancel，每个 issue 必须 return 到唯一的 install、merge 或
+discard outcome。
+
+| Producer / memory profile | Legacy cycle delta | Legacy byte overhead | P3 cycle delta | P3 harmful / neutral / helpful | P3 issued / merged |
+| --- | ---: | ---: | ---: | --- | ---: |
+| Sequential、latency 2、periodic ready | +328,996 | +672,032（53.80%） | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 1、latency 2、periodic ready | +328,996 | +672,032（53.80%） | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 2、latency 2、periodic ready | +280,654 | +672,032（53.80%） | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 4、latency 2、periodic ready | +190,854 | +672,032（53.80%） | 0 | 0 / 25 / 0 | 0 / 0 |
+| Fixed gap 8、latency 2、periodic ready | +13,745 | +672,032（53.80%） | 0 | 0 / 25 / 0 | 0 / 0 |
+| Zero-bubble、latency 0、always ready | 0 | 0 | **-570** | 0 / 2 / 23 | 570 / 570 |
+| Zero-bubble、latency 8、确定性 random ready | 0 | 0 | **-859** | 1 / 9 / 15 | 422 / 422 |
+
+因此，optimized engine 不会在无法隐藏请求的 gap 中消耗流量，而冻结的
+blocking engine 在每个 sequential/fixed-gap profile 中仍执行 44,193 次
+speculative read。在 latency-8 profile 中，P3 唯一的 harmful window 为
++71 cycles（+0.1282%），低于 5% guardrail；aggregate 仍节省 859 cycles。
+在主 profile 与全部 sensitivity profile 中，P3 cycle 不高于 optimized-off
+且不高于 legacy，bandwidth 相同或更低。这里将 legacy-comparison
+gate 解释为 bandwidth 上的 Pareto 不退化，并要求在 legacy 实际执行
+speculative work 时获得严格 cycle 改善。
+
+无地址的公开结果位于
+[optimized 证据目录](../evidence/2026-07-13-optimized/README.md)。该结果保留而不是覆盖
+下方有害的 sequential legacy baseline。独立的 optimized Vivado 2024.2.1
+campaign 现已通过：11 份 XSim log 包含 83 行生命周期守恒全部闭合的
+schema-3 workload row，4 个综合配置产生了预期的全部 12 份 PPA
+report。其 OOP workload matrix 使用 sequential producer；定向
+`tb_l1d_cache_optimized_p3` 测试提供了跨仿真器的真正 zero-bubble
+覆盖。因此本节性能结论仍来自本地真正 zero-bubble trace campaign，
+而不是 OOP matrix。综合后 PPA 及其 setup-timing 未闭合、I/O 超额与
+vectorless-power 局限记录在 [Phase 3 Vivado 报告](../phase3_vivado_report.md)。
+
+## Legacy Next-Line 权威 Baseline（2026-07-13）
 
 完整的替代流程已通过。4 个 benchmark plan 包含 5 个 timed-command
 capture unit 和 25 个采样 window。每个 count/capture snapshot 与 SPEC

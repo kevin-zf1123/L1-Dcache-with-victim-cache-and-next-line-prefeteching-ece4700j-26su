@@ -20,10 +20,18 @@ set_property target_language Verilog [current_project]
 add_files -norecurse [list \
     [file join $src_dir l1d_sram.sv] \
     [file join $src_dir l1d_next_line_prefetch.sv] \
+    [file join $src_dir l1d_stream_prefetch.sv] \
+    [file join $src_dir l1d_prefetch_controller.sv] \
+    [file join $src_dir l1d_shadow_cache.sv] \
+    [file join $src_dir l1d_cache_legacy.sv] \
+    [file join $src_dir l1d_cache_optimized.sv] \
     [file join $src_dir l1d_cache.sv]]
 add_files -fileset sim_1 -norecurse [list \
     [file join $src_dir tb_l1d_cache.sv] \
-    [file join $src_dir tb_l1d_cache_oop.sv]]
+    [file join $src_dir tb_l1d_cache_oop.sv] \
+    [file join $src_dir tb_l1d_prefetch_units.sv] \
+    [file join $src_dir tb_l1d_cache_p3.sv] \
+    [file join $src_dir tb_l1d_cache_optimized_p3.sv]]
 add_files -fileset constrs_1 -norecurse \
     [file join $constraints_dir l1d_baseline.xdc]
 
@@ -67,23 +75,23 @@ write_run_all_tcl $run_all_tcl
 
 set simulation_configurations [list \
     [list dm_s8_vc4_pf0 \
-        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=dm_s8_vc4_pf0"] \
+        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=dm_s8_vc4_pf0"] \
     [list 2w_s4_vc4_pf0 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf0"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf0"] \
     [list 2w_s4_vc8_pf0 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc8_pf0"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=8 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc8_pf0"] \
     [list 2w_s4_vc4_pf1 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
     [list trace_replay_smoke_2w_s4_vc4_pf0 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
         "-testplusarg TRACE=$smoke_trace -testplusarg TRACE_ID=smoke -testplusarg CONFIG_ID=2w_s4_vc4_pf0"] \
     [list trace_replay_generated_pointer_2w_s4_vc4_pf1 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=2 MEM_BACKPRESSURE_MODE=1 CPU_BACKPRESSURE_MODE=0" \
         "-testplusarg TRACE=$generated_pointer_trace -testplusarg TRACE_ID=generated_pointer -testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
     [list 2w_s4_vc4_pf1_low_latency \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=0 MEM_BACKPRESSURE_MODE=0 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=0 MEM_BACKPRESSURE_MODE=0 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"] \
     [list 2w_s4_vc4_pf1_high_latency_random_bp \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"]]
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"]]
 
 foreach configuration $simulation_configurations {
     lassign $configuration name generics more_options
@@ -111,15 +119,44 @@ foreach configuration $simulation_configurations {
     }
 }
 
+# Run the focused metadata/controller/shadow and PF-MSHR suites in XSim as
+# independent tops.  These complement the workload harness with assertions for
+# candidate TTL/coalescing, controller hysteresis, causal shadow outcomes,
+# response capture, hit-under-prefetch, merge, discard, and set quota.
+foreach auxiliary [list \
+    [list prefetch_units tb_l1d_prefetch_units] \
+    [list p3_prefetch_mshr tb_l1d_cache_p3] \
+    [list p3_prefetch_edges tb_l1d_cache_optimized_p3]] {
+    lassign $auxiliary name auxiliary_top
+    puts "Running Vivado auxiliary simulation: $name"
+    set_property top $auxiliary_top [get_filesets sim_1]
+    set_property generic {} [get_filesets sim_1]
+    set_property -dict [list \
+        xsim.simulate.xsim.more_options {} \
+        xsim.simulate.custom_tcl $run_all_tcl \
+        xsim.simulate.log_all_signals false] \
+        [get_filesets sim_1]
+    update_compile_order -fileset sim_1
+    launch_simulation -simset sim_1 -mode behavioral
+    catch {close_sim}
+    set sim_log [file join $build_dir l1d_baseline.sim sim_1 behav xsim simulate.log]
+    if {[file exists $sim_log]} {
+        file copy -force $sim_log \
+            [file join $report_root "${name}_simulation.log"]
+    }
+}
+set_property top tb_l1d_cache_oop [get_filesets sim_1]
+update_compile_order -fileset sim_1
+
 set synthesis_configurations [list \
     [list dm_s8_vc4_pf0 \
-        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
+        "NUM_WAYS=1 NUM_SETS=8 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4"] \
     [list 2w_s4_vc4_pf0 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=4"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4"] \
     [list 2w_s4_vc8_pf0 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 VICTIM_ENTRIES=8"] \
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=0 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=8"] \
     [list 2w_s4_vc4_pf1 \
-        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 VICTIM_ENTRIES=4"]]
+        "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4"]]
 
 foreach configuration $synthesis_configurations {
     lassign $configuration name generics

@@ -28,15 +28,23 @@ from pathlib import Path
 DEFAULT_HOST = "192.168.1.101"
 DEFAULT_USER = "王朱峯"
 DEFAULT_VIVADO = "/cygdrive/e/software/Xilinx/Vivado/2024.2/bin/vivado.bat"
-DEFAULT_REMOTE_ROOT = "C:/Users/kevin/l1d_codex_ascii_20260701"
+DEFAULT_REMOTE_ROOT = "C:/Users/kevin/l1d_codex_ascii_20260713_optimized"
 DEFAULT_TCL = "scripts/run_vivado.tcl"
 
 DEFAULT_UPLOADS = [
     "src/l1d_sram.sv",
     "src/l1d_next_line_prefetch.sv",
+    "src/l1d_stream_prefetch.sv",
+    "src/l1d_prefetch_controller.sv",
+    "src/l1d_shadow_cache.sv",
+    "src/l1d_cache_legacy.sv",
+    "src/l1d_cache_optimized.sv",
     "src/l1d_cache.sv",
     "src/tb_l1d_cache.sv",
     "src/tb_l1d_cache_oop.sv",
+    "src/tb_l1d_prefetch_units.sv",
+    "src/tb_l1d_cache_p3.sv",
+    "src/tb_l1d_cache_optimized_p3.sv",
     "scripts/run_vivado.tcl",
     "constraints/l1d_baseline.xdc",
     "traces/smoke.trace",
@@ -87,6 +95,9 @@ SIMULATION_CONFIGURATIONS = {
         "prefetch": 1, "mem_latency": 8, "mem_bp": 2, "cpu_bp": 0,
     },
 }
+for _geometry in SIMULATION_CONFIGURATIONS.values():
+    _geometry["prefetch_policy"] = 1
+    _geometry["pf_opt_level"] = 3
 
 SYNTHESIS_CONFIGURATIONS = {
     name: SIMULATION_CONFIGURATIONS[name]
@@ -96,6 +107,12 @@ SYNTHESIS_CONFIGURATIONS = {
         "2w_s4_vc8_pf0",
         "2w_s4_vc4_pf1",
     )
+}
+
+AUXILIARY_SIMULATIONS = {
+    "prefetch_units": "directed prefetch-unit checks",
+    "p3_prefetch_mshr": "directed P3 PF-MSHR checks",
+    "p3_prefetch_edges": "P3 flight/backpressure, skid TTL, EWMA",
 }
 
 BASE_WORKLOADS = (
@@ -145,6 +162,8 @@ SYNTHESIS_PARAMETER_FIELDS = {
     "NUM_WAYS": "ways",
     "VICTIM_ENTRIES": "victim_entries",
     "ENABLE_PREFETCH": "prefetch",
+    "PREFETCH_POLICY": "prefetch_policy",
+    "PF_OPT_LEVEL": "pf_opt_level",
 }
 
 REQUIRED_EVIDENCE_ARTIFACTS = (
@@ -301,8 +320,16 @@ def scan_logs(local_root: Path, rel_paths: list[str]) -> tuple[int, list[str]]:
                     f"{line[:160]}"
                 )
                 break
-        if path.name.endswith("_simulation.log") and "ALL OOP TESTS PASSED" not in text:
-            findings.append(f"{path}: missing ALL OOP TESTS PASSED")
+        simulation_suffix = "_simulation.log"
+        if path.name.endswith(simulation_suffix):
+            simulation_name = path.name[: -len(simulation_suffix)]
+            expected_pass_marker = AUXILIARY_SIMULATIONS.get(
+                simulation_name, "ALL OOP TESTS PASSED"
+            )
+            if expected_pass_marker not in text:
+                findings.append(
+                    f"{path}: missing PASS marker {expected_pass_marker!r}"
+                )
 
     print(f"scanned {checked} downloaded log/report files", flush=True)
     for finding in findings:
@@ -390,6 +417,78 @@ def parse_workload_results(path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def validate_optimized_lifecycle(
+    row: dict[str, str], context: str
+) -> list[str]:
+    """Fail closed on drained schema-3 optimized-prefetch lifecycle state."""
+    fields = (
+        "pf_admitted",
+        "pf_issued",
+        "pf_returned",
+        "pf_installed",
+        "pf_merged",
+        "pf_discarded",
+        "pf_cancelled",
+        "timely_useful",
+        "pf_unused_evicted",
+        "pf_unused_resident",
+        "pf_caused_writebacks",
+        "pf_mshr_valid",
+    )
+    findings: list[str] = []
+    values: dict[str, int] = {}
+    for field in fields:
+        raw = row.get(field)
+        if raw is None:
+            findings.append(f"{context}: missing optimized lifecycle field {field}")
+        elif not re.fullmatch(r"[0-9]+", raw):
+            findings.append(
+                f"{context}: {field}={raw!r}, expected non-negative decimal integer"
+            )
+        else:
+            values[field] = int(raw, 10)
+
+    if len(values) != len(fields):
+        return findings
+
+    if values["pf_admitted"] > values["pf_issued"] + values["pf_cancelled"]:
+        findings.append(
+            f"{context}: pf_admitted must be <= pf_issued + pf_cancelled "
+            "after drain"
+        )
+    if values["pf_issued"] != values["pf_returned"]:
+        findings.append(
+            f"{context}: lifecycle conservation failure "
+            "pf_issued == pf_returned"
+        )
+    if values["pf_returned"] != (
+        values["pf_installed"] + values["pf_merged"] + values["pf_discarded"]
+    ):
+        findings.append(
+            f"{context}: lifecycle conservation failure pf_returned == "
+            "pf_installed + pf_merged + pf_discarded"
+        )
+    if values["pf_installed"] != (
+        values["timely_useful"]
+        + values["pf_unused_evicted"]
+        + values["pf_unused_resident"]
+    ):
+        findings.append(
+            f"{context}: lifecycle conservation failure pf_installed == "
+            "timely_useful + pf_unused_evicted + pf_unused_resident"
+        )
+    if values["pf_caused_writebacks"] != 0:
+        findings.append(
+            f"{context}: pf_caused_writebacks="
+            f"{values['pf_caused_writebacks']}, expected 0"
+        )
+    if values["pf_mshr_valid"] != 0:
+        findings.append(
+            f"{context}: pf_mshr_valid={values['pf_mshr_valid']}, expected 0"
+        )
+    return findings
+
+
 def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, object]]:
     report_root = local_root / "build" / "vivado" / "reports"
     findings: list[str] = []
@@ -399,7 +498,9 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
         "artifacts": {},
     }
 
-    expected_logs = {f"{name}_simulation.log" for name in SIMULATION_CONFIGURATIONS}
+    expected_logs = {
+        f"{name}_simulation.log" for name in SIMULATION_CONFIGURATIONS
+    } | {f"{name}_simulation.log" for name in AUXILIARY_SIMULATIONS}
     actual_logs = {path.name for path in report_root.glob("*_simulation.log")}
     if actual_logs != expected_logs:
         findings.append(
@@ -428,7 +529,7 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
             findings.append(str(exc))
             rows = []
         if not rows:
-            findings.append(f"{log}: no WORKLOAD_RESULT schema=2 rows")
+            findings.append(f"{log}: no WORKLOAD_RESULT rows")
 
         expected_workloads = SIMULATION_WORKLOADS[name]
         actual_workloads = [row.get("name", "<missing>") for row in rows]
@@ -462,7 +563,7 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
             ):
                 expected_config_id = "2w_s4_vc4_pf1"
             expected_fields = {
-                "schema": 2,
+                "schema": 3,
                 "config_id": expected_config_id,
                 "sets": geometry["sets"],
                 "ways": geometry["ways"],
@@ -489,6 +590,8 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
                     findings.append(
                         f"{context}: {field}={row.get(field)!r}, expected {expected!r}"
                     )
+            if row.get("schema") == "3":
+                findings.extend(validate_optimized_lifecycle(row, context))
         evidence["simulations"].append(
             {
                 "config_id": name,
@@ -497,6 +600,24 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
                 "sha256": sha256(log),
                 "workload_results": len(rows),
                 "workloads": actual_workloads,
+            }
+        )
+
+    for name, pass_marker in AUXILIARY_SIMULATIONS.items():
+        log = report_root / f"{name}_simulation.log"
+        if not log.is_file():
+            continue
+        text = log.read_text(encoding="utf-8", errors="replace")
+        if pass_marker not in text:
+            findings.append(f"{log}: missing PASS marker {pass_marker!r}")
+        evidence["simulations"].append(
+            {
+                "config_id": name,
+                "geometry": None,
+                "log": str(log.relative_to(local_root)),
+                "sha256": sha256(log),
+                "workload_results": 0,
+                "workloads": [],
             }
         )
 

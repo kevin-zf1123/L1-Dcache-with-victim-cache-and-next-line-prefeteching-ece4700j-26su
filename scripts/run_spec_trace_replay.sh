@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 CAPTURE_CAMPAIGN="${1:-${ROOT_DIR}/build/spec2026/qemu-private/campaign_manifest.json}"
 LOG_DIR="${2:-${ROOT_DIR}/build/spec2026/replay/logs}"
-REPLAY_ROOT="$(cd "$(dirname "${LOG_DIR}")" && pwd 2>/dev/null || dirname "${LOG_DIR}")"
+mkdir -p "$(dirname "${LOG_DIR}")"
+REPLAY_ROOT="$(cd "$(dirname "${LOG_DIR}")" && pwd)"
 BIN_DIR="${REPLAY_ROOT}/bin"
 DECOMPRESS_DIR="${REPLAY_ROOT}/decompressed"
 SIDECAR_DIR="${REPLAY_ROOT}/sidecars"
@@ -14,6 +15,61 @@ RUN_ROWS="${REPLAY_ROOT}/run_rows.tsv"
 REPLAY_MANIFEST="${REPLAY_ROOT}/campaign_manifest.json"
 ANALYSIS_DIR="${REPLAY_ROOT}/analysis"
 readonly TRACE_LINE_BYTES=4096
+
+PREFETCH_POLICY="${L1D_PREFETCH_POLICY:-1}"
+PF_OPT_LEVEL="${L1D_PF_OPT_LEVEL:-3}"
+PRODUCER_PROFILE="${L1D_PRODUCER_PROFILE:-zero-bubble}"
+PRODUCER_GAP="${L1D_PRODUCER_GAP:-0}"
+SIDECAR_SCHEMA="${L1D_SIDECAR_SCHEMA:-3}"
+MEM_LATENCY="${L1D_MEM_LATENCY:-2}"
+MEM_READY_MODE="${L1D_MEM_READY_MODE:-periodic}"
+REPLAY_SCOPE="${L1D_REPLAY_SCOPE:-full}"
+
+case "${PREFETCH_POLICY}" in 0|1) ;; *)
+    echo "L1D_PREFETCH_POLICY must be 0 or 1" >&2; exit 2 ;; esac
+case "${PF_OPT_LEVEL}" in 0|1|2|3) ;; *)
+    echo "L1D_PF_OPT_LEVEL must be in 0..3" >&2; exit 2 ;; esac
+if [[ "${PREFETCH_POLICY}" == 0 && "${PF_OPT_LEVEL}" != 0 ]]; then
+    echo "legacy L1D_PREFETCH_POLICY=0 requires L1D_PF_OPT_LEVEL=0" >&2
+    exit 2
+fi
+if [[ "${PREFETCH_POLICY}" == 1 && "${PF_OPT_LEVEL}" == 0 ]]; then
+    echo "optimized L1D_PREFETCH_POLICY=1 requires L1D_PF_OPT_LEVEL in 1..3" >&2
+    exit 2
+fi
+case "${PRODUCER_PROFILE}" in
+    sequential) PRODUCER_PROFILE_CODE=0 ;;
+    zero-bubble) PRODUCER_PROFILE_CODE=1 ;;
+    fixed-gap) PRODUCER_PROFILE_CODE=2 ;;
+    *) echo "L1D_PRODUCER_PROFILE must be sequential, zero-bubble, or fixed-gap" >&2; exit 2 ;;
+esac
+if [[ ! "${PRODUCER_GAP}" =~ ^[0-9]+$ ]]; then
+    echo "L1D_PRODUCER_GAP must be a non-negative integer" >&2
+    exit 2
+fi
+if [[ "${PRODUCER_PROFILE}" == fixed-gap ]]; then
+    case "${PRODUCER_GAP}" in 1|2|4|8) ;; *)
+        echo "fixed-gap L1D_PRODUCER_GAP must be 1, 2, 4, or 8" >&2; exit 2 ;; esac
+elif [[ "${PRODUCER_GAP}" != 0 ]]; then
+    echo "${PRODUCER_PROFILE} requires L1D_PRODUCER_GAP=0" >&2
+    exit 2
+fi
+case "${SIDECAR_SCHEMA}" in 2|3) ;; *)
+    echo "L1D_SIDECAR_SCHEMA must be 2 or 3" >&2; exit 2 ;; esac
+if [[ ! "${MEM_LATENCY}" =~ ^[0-9]+$ ]]; then
+    echo "L1D_MEM_LATENCY must be a non-negative integer" >&2
+    exit 2
+fi
+case "${MEM_READY_MODE}" in
+    always-ready) MEM_READY_MODE_CODE=0 ;;
+    periodic) MEM_READY_MODE_CODE=1 ;;
+    deterministic-random) MEM_READY_MODE_CODE=2 ;;
+    *)
+        echo "L1D_MEM_READY_MODE must be always-ready, periodic, or deterministic-random" >&2
+        exit 2 ;;
+esac
+case "${REPLAY_SCOPE}" in full|paired) ;; *)
+    echo "L1D_REPLAY_SCOPE must be full or paired" >&2; exit 2 ;; esac
 
 mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${DECOMPRESS_DIR}" "${SIDECAR_DIR}"
 
@@ -62,10 +118,19 @@ compile_case() {
         -P "tb_l1d_cache.NUM_SETS=${sets}" \
         -P "tb_l1d_cache.LINE_BYTES=${line_bytes}" \
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
+        -P "tb_l1d_cache.PREFETCH_POLICY=${PREFETCH_POLICY}" \
+        -P "tb_l1d_cache.PF_OPT_LEVEL=${PF_OPT_LEVEL}" \
+        -P "tb_l1d_cache.MEM_LATENCY=${MEM_LATENCY}" \
+        -P "tb_l1d_cache.MEM_READY_MODE=${MEM_READY_MODE_CODE}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
         -o "${BIN_DIR}/${name}.vvp" \
         "${ROOT_DIR}/src/l1d_sram.sv" \
         "${ROOT_DIR}/src/l1d_next_line_prefetch.sv" \
+        "${ROOT_DIR}/src/l1d_stream_prefetch.sv" \
+        "${ROOT_DIR}/src/l1d_prefetch_controller.sv" \
+        "${ROOT_DIR}/src/l1d_shadow_cache.sv" \
+        "${ROOT_DIR}/src/l1d_cache_legacy.sv" \
+        "${ROOT_DIR}/src/l1d_cache_optimized.sv" \
         "${ROOT_DIR}/src/l1d_cache.sv" \
         "${ROOT_DIR}/src/tb_l1d_cache.sv"
 }
@@ -136,24 +201,36 @@ PY
         "+TRACE_ID=${stem}" \
         "+CONFIG_ID=${config}" \
         "+ACCESS_SIDECAR=${sidecar_arg}" \
+        "+SIDECAR_SCHEMA=${SIDECAR_SCHEMA}" \
+        "+PRODUCER_PROFILE=${PRODUCER_PROFILE_CODE}" \
+        "+PRODUCER_GAP=${PRODUCER_GAP}" \
+        "+MEM_LATENCY=${MEM_LATENCY}" \
+        "+MEM_READY_MODE=${MEM_READY_MODE_CODE}" \
         +TRACE_SKIP_LOAD_CHECKS | tee "${log}"
-    if ! grep -q '^WORKLOAD_RESULT .* status=PASS$' "${log}"; then
-        echo "replay did not emit a PASS schema=2 result: ${log}" >&2
+    if ! grep -Eq '^WORKLOAD_RESULT .* status=PASS( |$)' "${log}"; then
+        echo "replay did not emit a PASS WORKLOAD_RESULT: ${log}" >&2
         return 2
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$(cd "$(dirname "${replay_trace}")" && pwd)/$(basename "${replay_trace}")" \
         "${config}" \
         "$(cd "$(dirname "${log}")" && pwd)/$(basename "${log}")" \
         "$(cd "$(dirname "${sidecar}")" && pwd)/$(basename "${sidecar}")" \
         "${sets}" "${ways}" "${line_bytes}" "${victim_entries}" "${prefetch}" \
         "${trace_arg}" "${sidecar_arg}" \
+        "${PREFETCH_POLICY}" "${PF_OPT_LEVEL}" "${PRODUCER_PROFILE}" \
+        "${PRODUCER_PROFILE_CODE}" "${PRODUCER_GAP}" "${SIDECAR_SCHEMA}" \
+        "${MEM_LATENCY}" "${MEM_READY_MODE}" "${MEM_READY_MODE_CODE}" \
         >> "${RUN_ROWS}"
 }
 
-compile_case dm_s8_vc4_pf0 1 8 16 0 4
+if [[ "${REPLAY_SCOPE}" == full ]]; then
+    compile_case dm_s8_vc4_pf0 1 8 16 0 4
+fi
 compile_case 2w_s4_vc4_pf0 2 4 16 0 4
-compile_case 2w_s4_vc8_pf0 2 4 16 0 8
+if [[ "${REPLAY_SCOPE}" == full ]]; then
+    compile_case 2w_s4_vc8_pf0 2 4 16 0 8
+fi
 compile_case 2w_s4_vc4_pf1 2 4 16 1 4
 
 traces=()
@@ -179,13 +256,22 @@ if [[ "${#traces[@]}" -eq 0 ]]; then
 fi
 
 for trace in "${traces[@]}"; do
-    run_replay dm_s8_vc4_pf0 "${trace}"
+    if [[ "${REPLAY_SCOPE}" == full ]]; then
+        run_replay dm_s8_vc4_pf0 "${trace}"
+    fi
     run_replay 2w_s4_vc4_pf0 "${trace}"
-    run_replay 2w_s4_vc8_pf0 "${trace}"
+    if [[ "${REPLAY_SCOPE}" == full ]]; then
+        run_replay 2w_s4_vc8_pf0 "${trace}"
+    fi
     run_replay 2w_s4_vc4_pf1 "${trace}"
 done
 
-actual_runs=$((4 * ${#traces[@]}))
+if [[ "${REPLAY_SCOPE}" == full ]]; then
+    configs_per_trace=4
+else
+    configs_per_trace=2
+fi
+actual_runs=$((configs_per_trace * ${#traces[@]}))
 actual_pairs=${#traces[@]}
 expected_runs="${L1D_EXPECTED_RUNS:-${actual_runs}}"
 expected_pairs="${L1D_EXPECTED_PAIRS:-${actual_pairs}}"
@@ -193,7 +279,7 @@ expected_pairs="${L1D_EXPECTED_PAIRS:-${actual_pairs}}"
 python3 - \
     "${CAPTURE_REPLAY_LIST}" "${RUN_ROWS}" "${REPLAY_MANIFEST}" \
     "${BIN_DIR}" "${expected_runs}" "${expected_pairs}" \
-    "${actual_runs}" "${actual_pairs}" <<'PY'
+    "${actual_runs}" "${actual_pairs}" "${REPLAY_SCOPE}" <<'PY'
 import hashlib
 import json
 import os
@@ -227,6 +313,9 @@ expected_runs = int(sys.argv[5])
 expected_pairs = int(sys.argv[6])
 declared_actual_runs = int(sys.argv[7])
 declared_actual_pairs = int(sys.argv[8])
+replay_scope = sys.argv[9]
+if replay_scope not in {"full", "paired"}:
+    raise SystemExit(f"invalid replay scope passed to manifest builder: {replay_scope}")
 
 replay_list = json.loads(replay_list_path.read_text(encoding="utf-8"))
 if replay_list.get("schema") != "l1d-qemu-replay-list-v2" or replay_list.get("status") != "PASS":
@@ -245,7 +334,9 @@ for replay in replay_list["replays"]:
 
 columns = (
     "trace config log sidecar sets ways line_bytes victim_entries prefetch "
-    "trace_arg sidecar_arg"
+    "trace_arg sidecar_arg prefetch_policy pf_opt_level producer_profile "
+    "producer_profile_code producer_gap sidecar_schema mem_latency "
+    "mem_ready_mode mem_ready_mode_code"
 ).split()
 rows = []
 for line_number, line in enumerate(rows_path.read_text(encoding="utf-8").splitlines(), 1):
@@ -259,12 +350,13 @@ if len(rows) != declared_actual_runs or len(rows) != expected_runs:
         f"expected_runs={expected_runs}"
     )
 
-expected_configs = {
-    "dm_s8_vc4_pf0",
-    "2w_s4_vc4_pf0",
-    "2w_s4_vc8_pf0",
-    "2w_s4_vc4_pf1",
-}
+paired_config_ids = ["2w_s4_vc4_pf0", "2w_s4_vc4_pf1"]
+standalone_config_ids = (
+    ["dm_s8_vc4_pf0", "2w_s4_vc8_pf0"]
+    if replay_scope == "full"
+    else []
+)
+expected_configs = set(paired_config_ids + standalone_config_ids)
 by_trace = defaultdict(set)
 for row in rows:
     trace_path = Path(row["trace"]).resolve()
@@ -278,7 +370,10 @@ if set(by_trace) != set(authoritative):
     raise SystemExit("replay run set differs from authoritative capture replay set")
 for trace_path, configs in by_trace.items():
     if configs != expected_configs:
-        raise SystemExit(f"incomplete four-config matrix for {trace_path}: {sorted(configs)}")
+        raise SystemExit(
+            f"incomplete {replay_scope} config matrix for {trace_path}: "
+            f"{sorted(configs)}"
+        )
 if len(by_trace) != declared_actual_pairs or len(by_trace) != expected_pairs:
     raise SystemExit(
         f"pair matrix mismatch: traces={len(by_trace)} actual_pairs={declared_actual_pairs} "
@@ -309,7 +404,13 @@ for row in rows:
     command = [
         str(vvp), str(binary), f"+TRACE={row['trace_arg']}",
         f"+TRACE_ID={trace_id}", f"+CONFIG_ID={config}",
-        f"+ACCESS_SIDECAR={row['sidecar_arg']}", "+TRACE_SKIP_LOAD_CHECKS",
+        f"+ACCESS_SIDECAR={row['sidecar_arg']}",
+        f"+SIDECAR_SCHEMA={row['sidecar_schema']}",
+        f"+PRODUCER_PROFILE={row['producer_profile_code']}",
+        f"+PRODUCER_GAP={row['producer_gap']}",
+        f"+MEM_LATENCY={row['mem_latency']}",
+        f"+MEM_READY_MODE={row['mem_ready_mode_code']}",
+        "+TRACE_SKIP_LOAD_CHECKS",
     ]
     command_sha256 = hashlib.sha256(
         json.dumps(command, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -323,6 +424,29 @@ for row in rows:
         if replay["warmup_events"] <= 0:
             raise SystemExit("sampled replay lacks demand warmup events")
         cold_warm_mode = "demand-warm-measure"
+    ready_mode_codes = {
+        "always-ready": 0,
+        "periodic": 1,
+        "deterministic-random": 2,
+    }
+    mem_latency = int(row["mem_latency"])
+    mem_ready_mode = row["mem_ready_mode"]
+    mem_ready_mode_code = int(row["mem_ready_mode_code"])
+    if mem_latency < 0:
+        raise SystemExit(f"negative memory latency in run row: {mem_latency}")
+    if ready_mode_codes.get(mem_ready_mode) != mem_ready_mode_code:
+        raise SystemExit(
+            "memory ready mode/code mismatch in run row: "
+            f"{mem_ready_mode}/{mem_ready_mode_code}"
+        )
+    ready_profile = {
+        "always-ready": "always-ready",
+        "periodic": "periodic-ready",
+        "deterministic-random": "deterministic-random-ready",
+    }[mem_ready_mode]
+    timing_profile = (
+        f"blocking-fixed-latency{mem_latency}-{ready_profile}"
+    )
     runs.append(
         {
             "benchmark": replay["benchmark"],
@@ -349,13 +473,20 @@ for row in rows:
             "line_bytes": int(row["line_bytes"]),
             "victim_entries": int(row["victim_entries"]),
             "prefetch": int(row["prefetch"]),
-            "timing_profile": "blocking-fixed-latency2-periodic-ready",
+            "prefetch_policy": int(row["prefetch_policy"]),
+            "pf_opt_level": int(row["pf_opt_level"]),
+            "producer_profile": row["producer_profile"],
+            "producer_gap": int(row["producer_gap"]),
+            "mem_latency": mem_latency,
+            "mem_ready_mode": mem_ready_mode,
+            "mem_ready_mode_code": mem_ready_mode_code,
+            "timing_profile": timing_profile,
             "cold_warm_mode": cold_warm_mode,
         }
     )
 
 manifest = {
-    "schema": "l1d-replay-campaign-v2",
+    "schema": "l1d-replay-campaign-v3",
     "status": "PASS",
     "artifact_hashes": True,
     "require_sidecars": True,
@@ -364,8 +495,9 @@ manifest = {
     "expected_pairs": expected_pairs,
     "actual_runs": len(runs),
     "actual_pairs": len(by_trace),
-    "paired_config_ids": ["2w_s4_vc4_pf0", "2w_s4_vc4_pf1"],
-    "standalone_config_ids": ["dm_s8_vc4_pf0", "2w_s4_vc8_pf0"],
+    "replay_scope": replay_scope,
+    "paired_config_ids": paired_config_ids,
+    "standalone_config_ids": standalone_config_ids,
     "capture_campaign": artifact(capture_campaign),
     "capture_replay_list": artifact(replay_list_path),
     "rtl": {"commit": git_commit, "dirty": git_dirty},

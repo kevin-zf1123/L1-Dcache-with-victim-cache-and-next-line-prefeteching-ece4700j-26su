@@ -29,6 +29,10 @@ CLASSIFICATION_FIELDS = (
     "line_bytes",
     "victim_entries",
     "timing_profile",
+    "prefetch_policy",
+    "pf_opt_level",
+    "producer_profile",
+    "producer_gap",
     "trace_id",
     "cycles_on_minus_off",
     "classification",
@@ -42,7 +46,17 @@ CLASSIFICATION_KEY_FIELDS = (
     "line_bytes",
     "victim_entries",
     "timing_profile",
+    "prefetch_policy",
+    "pf_opt_level",
+    "producer_profile",
+    "producer_gap",
 )
+LEGACY_CLASSIFICATION_DEFAULTS = {
+    "prefetch_policy": "0",
+    "pf_opt_level": "0",
+    "producer_profile": "sequential",
+    "producer_gap": "0",
+}
 CLASSIFICATION_COLORS = {
     "harmful": "#c0392b",
     "neutral": "#7f8c8d",
@@ -93,10 +107,12 @@ def classification_rows(
     identities: set[tuple[str, ...]] = set()
     for index, pair in enumerate(pairs):
         context = f"pairs[{index}]"
-        identity_values = {
-            field: str(_required(pair, field, context))
-            for field in CLASSIFICATION_KEY_FIELDS
-        }
+        identity_values = {}
+        for field in CLASSIFICATION_KEY_FIELDS:
+            if field in LEGACY_CLASSIFICATION_DEFAULTS and pair.get(field) in (None, ""):
+                identity_values[field] = LEGACY_CLASSIFICATION_DEFAULTS[field]
+            else:
+                identity_values[field] = str(_required(pair, field, context))
         identity = tuple(
             identity_values[field] for field in CLASSIFICATION_KEY_FIELDS
         )
@@ -226,7 +242,9 @@ def cycle_delta_svg(rows: Sequence[Mapping[str, Any]]) -> str:
         )
         geometry_label = (
             f"sets {row['sets']} / ways {row['ways']} / line {row['line_bytes']} / "
-            f"VC {row['victim_entries']} / timing {row['timing_profile']}"
+            f"VC {row['victim_entries']} / PF {row['prefetch_policy']}:{row['pf_opt_level']} / "
+            f"producer {row['producer_profile']}:{row['producer_gap']} / "
+            f"timing {row['timing_profile']}"
         )
         safe_identity = html.escape(identity_label, quote=True)
         safe_geometry = html.escape(geometry_label, quote=True)

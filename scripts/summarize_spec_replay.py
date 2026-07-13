@@ -3,7 +3,7 @@
 
 The analyzer deliberately has no filename inference and no numeric defaults.
 Every expected run comes from a machine-readable campaign manifest, and every
-log must contain exactly one ``WORKLOAD_RESULT schema=2`` record.  A campaign
+log must contain exactly one supported ``WORKLOAD_RESULT`` record.  A campaign
 is accepted only when each pair key has exactly one prefetch-off and one
 prefetch-on run, all counter conservation rules hold, and the trace artifacts
 match their declared SHA-256 digests.
@@ -11,7 +11,7 @@ match their declared SHA-256 digests.
 Canonical campaign manifest (paths are relative to the manifest)::
 
     {
-      "schema": "l1d-replay-campaign-v2",
+      "schema": "l1d-replay-campaign-v3",
       "runs": [{
         "benchmark": "708.sqlite_r",
         "command": 0,
@@ -26,6 +26,10 @@ Canonical campaign manifest (paths are relative to the manifest)::
         "line_bytes": 16,
         "victim_entries": 4,
         "prefetch": 0,
+        "prefetch_policy": 1,
+        "pf_opt_level": 3,
+        "producer_profile": "zero-bubble",
+        "producer_gap": 0,
         "timing_profile": "fixed-latency-10",
         "cold_warm_mode": "demand-warm-measure"
       }]
@@ -34,7 +38,10 @@ Canonical campaign manifest (paths are relative to the manifest)::
 Per-access sidecars are optional as a pair.  When both are present, exact L1
 and lower-memory help/pollution are computed and reconciled with counter
 deltas.  When neither is present, those fields are explicitly ``N/A``; a
-single-sided sidecar is an error.
+single-sided sidecar is an error.  Campaign/result/sidecar schema 2 remains
+read-compatible; schema 3 adds explicit producer/policy identity and lifecycle
+conservation for prefetch returns that merge or are discarded instead of
+being installed.
 """
 
 from __future__ import annotations
@@ -60,8 +67,15 @@ else:
 
 
 RESULT_PREFIX = "WORKLOAD_RESULT "
-CAMPAIGN_SCHEMAS = {2, "2", "l1d-replay-campaign-v2"}
-RESULT_SCHEMA = 2
+CAMPAIGN_SCHEMAS = {
+    2,
+    "2",
+    3,
+    "3",
+    "l1d-replay-campaign-v2",
+    "l1d-replay-campaign-v3",
+}
+RESULT_SCHEMAS = {2, 3}
 NA = "N/A"
 CANONICAL_PAIRED_CONFIG_IDS = {"2w_s4_vc4_pf0", "2w_s4_vc4_pf1"}
 CANONICAL_STANDALONE_CONFIG_IDS = {"dm_s8_vc4_pf0", "2w_s4_vc8_pf0"}
@@ -108,7 +122,35 @@ INT_RESULT_FIELDS = (
     "duplicate_lines",
 )
 
-RAW_COUNTER_FIELDS = tuple(field for field in INT_RESULT_FIELDS if field != "schema")
+V3_LIFECYCLE_COUNTER_FIELDS = (
+    "pf_candidates",
+    "pf_admitted",
+    "pf_issued",
+    "pf_returned",
+    "pf_installed",
+    "pf_merged",
+    "pf_discarded",
+    "pf_cancelled",
+    "pf_unused_evicted",
+    "pf_unused_resident",
+    "pf_vc_bypass",
+    "pf_caused_writebacks",
+    "pf_demand_block_cycles",
+    "pf_true_help",
+    "pf_true_pollution",
+    "pf_suppressed_quota",
+    "pf_suppressed_unsafe",
+    "pf_same_line_coalesced",
+)
+
+# parse_log normalizes schema-2 rows into the schema-3 lifecycle vocabulary so
+# downstream CSV and aggregate code has one stable shape.  The derived schema-2
+# values are deliberately conservative: the legacy blocking engine has no
+# merge/discard path and every issued request is installed.
+ALL_INT_RESULT_FIELDS = INT_RESULT_FIELDS + V3_LIFECYCLE_COUNTER_FIELDS
+RAW_COUNTER_FIELDS = tuple(
+    field for field in ALL_INT_RESULT_FIELDS if field != "schema"
+)
 PREFETCH_COUNTER_FIELDS = (
     "prefetch_mem_reads",
     "fills",
@@ -119,7 +161,7 @@ PREFETCH_COUNTER_FIELDS = (
     "dropped",
     "timely_useful",
     "late_useful",
-)
+) + V3_LIFECYCLE_COUNTER_FIELDS
 
 PAIR_KEY_FIELDS = (
     "benchmark",
@@ -130,6 +172,10 @@ PAIR_KEY_FIELDS = (
     "line_bytes",
     "victim_entries",
     "timing_profile",
+    "prefetch_policy",
+    "pf_opt_level",
+    "producer_profile",
+    "producer_gap",
 )
 AGGREGATE_KEY_FIELDS = (
     "sets",
@@ -138,6 +184,10 @@ AGGREGATE_KEY_FIELDS = (
     "victim_entries",
     "timing_profile",
     "cold_warm_mode",
+    "prefetch_policy",
+    "pf_opt_level",
+    "producer_profile",
+    "producer_gap",
 )
 
 
@@ -173,6 +223,10 @@ class ExpectedRun:
     prefetch: int
     timing_profile: str
     cold_warm_mode: str
+    prefetch_policy: int = 0
+    pf_opt_level: int = 0
+    producer_profile: str = "sequential"
+    producer_gap: int = 0
     capture_manifest: Path | None = None
     capture_window_index: int | None = None
     capture_window_kind: str | None = None
@@ -355,6 +409,7 @@ def load_campaign(path: Path) -> tuple[dict[str, Any], list[ExpectedRun]]:
     schema = _require(data, "schema", "manifest")
     if schema not in CAMPAIGN_SCHEMAS:
         _fail("manifest", f"unsupported campaign schema {schema!r}")
+    campaign_v3 = schema in {3, "3", "l1d-replay-campaign-v3"}
     if data.get("status") != "PASS" or data.get("artifact_hashes") is not True:
         _fail("manifest", "campaign must declare status=PASS and artifact_hashes=true")
     top_artifacts: dict[str, Artifact] = {}
@@ -470,7 +525,7 @@ def load_campaign(path: Path) -> tuple[dict[str, Any], list[ExpectedRun]]:
         policy_ids[field] = set(raw_ids)
     if policy_ids["paired_config_ids"] & policy_ids["standalone_config_ids"]:
         _fail("manifest", "paired and standalone config ID policies overlap")
-    if require_capture_manifests and (
+    if require_capture_manifests and not campaign_v3 and (
         policy_ids["paired_config_ids"] != CANONICAL_PAIRED_CONFIG_IDS
         or policy_ids["standalone_config_ids"]
         != CANONICAL_STANDALONE_CONFIG_IDS
@@ -501,6 +556,58 @@ def load_campaign(path: Path) -> tuple[dict[str, Any], list[ExpectedRun]]:
         prefetch = _int(_require(raw, "prefetch", context), context, "prefetch")
         if prefetch not in (0, 1):
             _fail(context, f"prefetch must be 0 or 1, got {prefetch}")
+        if campaign_v3:
+            prefetch_policy = _int(
+                _require(raw, "prefetch_policy", context),
+                context,
+                "prefetch_policy",
+            )
+            pf_opt_level = _int(
+                _require(raw, "pf_opt_level", context),
+                context,
+                "pf_opt_level",
+            )
+            producer_profile = _string(
+                _require(raw, "producer_profile", context),
+                context,
+                "producer_profile",
+            )
+            producer_gap = _int(
+                _require(raw, "producer_gap", context),
+                context,
+                "producer_gap",
+            )
+        else:
+            # These values describe the historical replay producer and legacy
+            # prefetch implementation.  They are explicit in all v3 manifests.
+            prefetch_policy = _int(
+                raw.get("prefetch_policy", 0), context, "prefetch_policy"
+            )
+            pf_opt_level = _int(
+                raw.get("pf_opt_level", 0), context, "pf_opt_level"
+            )
+            producer_profile = _string(
+                raw.get("producer_profile", "sequential"),
+                context,
+                "producer_profile",
+            )
+            producer_gap = _int(
+                raw.get("producer_gap", 0), context, "producer_gap"
+            )
+        if prefetch_policy not in (0, 1):
+            _fail(context, f"prefetch_policy must be 0 or 1, got {prefetch_policy}")
+        if pf_opt_level not in (0, 1, 2, 3):
+            _fail(context, f"pf_opt_level must be in 0..3, got {pf_opt_level}")
+        if campaign_v3 and prefetch_policy == 0 and pf_opt_level != 0:
+            _fail(context, "legacy prefetch_policy=0 requires pf_opt_level=0")
+        if campaign_v3 and prefetch_policy == 1 and pf_opt_level == 0:
+            _fail(context, "optimized prefetch_policy=1 requires pf_opt_level in 1..3")
+        if producer_profile not in {"sequential", "zero-bubble", "fixed-gap"}:
+            _fail(context, f"unsupported producer_profile {producer_profile!r}")
+        if producer_profile == "fixed-gap" and producer_gap not in {1, 2, 4, 8}:
+            _fail(context, "fixed-gap producer_gap must be one of 1, 2, 4, 8")
+        if producer_profile != "fixed-gap" and producer_gap != 0:
+            _fail(context, f"{producer_profile} producer_gap must be zero")
 
         trace_value = _require(raw, "trace", context)
         trace = _artifact(
@@ -628,6 +735,24 @@ def load_campaign(path: Path) -> tuple[dict[str, Any], list[ExpectedRun]]:
                 context,
                 "ACCESS_SIDECAR",
             )
+        if campaign_v3:
+            profile_code = {
+                "sequential": "0",
+                "zero-bubble": "1",
+                "fixed-gap": "2",
+            }[producer_profile]
+            expected_plusargs = {
+                "PRODUCER_PROFILE": profile_code,
+                "PRODUCER_GAP": str(producer_gap),
+            }
+            for plusarg, wanted in expected_plusargs.items():
+                actual = plusargs.get(plusarg)
+                if actual != wanted:
+                    _fail(
+                        context,
+                        f"simulation command +{plusarg}={actual!r} does not match "
+                        f"manifest value {wanted!r}",
+                    )
 
         capture_path: Path | None = None
         capture_index: int | None = None
@@ -709,6 +834,10 @@ def load_campaign(path: Path) -> tuple[dict[str, Any], list[ExpectedRun]]:
             cold_warm_mode=_string(
                 _require(raw, "cold_warm_mode", context), context, "cold_warm_mode"
             ),
+            prefetch_policy=prefetch_policy,
+            pf_opt_level=pf_opt_level,
+            producer_profile=producer_profile,
+            producer_gap=producer_gap,
             capture_manifest=capture_path,
             capture_window_index=capture_index,
             capture_window_kind=capture_window_kind,
@@ -839,7 +968,7 @@ def parse_workload_result(line: str, *, context: str = "WORKLOAD_RESULT") -> dic
 
 
 def parse_log(path: Path) -> tuple[dict[str, int], dict[str, str]]:
-    """Read exactly one schema-v2 result from a replay log."""
+    """Read exactly one schema-2/3 result and normalize lifecycle counters."""
 
     text = path.read_text(encoding="utf-8", errors="strict")
     lines = [line for line in text.splitlines() if line.startswith(RESULT_PREFIX)]
@@ -847,15 +976,52 @@ def parse_log(path: Path) -> tuple[dict[str, int], dict[str, str]]:
     if len(lines) != 1:
         _fail(context, f"expected exactly one WORKLOAD_RESULT line, found {len(lines)}")
     raw = parse_workload_result(lines[0], context=context)
+    if "schema" not in raw:
+        _fail(context, "missing required field 'schema'")
+    schema = _int(raw["schema"], context, "schema")
+    if schema not in RESULT_SCHEMAS:
+        _fail(context, f"unsupported WORKLOAD_RESULT schema {schema}")
     required = set(STRING_RESULT_FIELDS) | set(INT_RESULT_FIELDS)
+    if schema == 3:
+        required.update(V3_LIFECYCLE_COUNTER_FIELDS)
     missing = sorted(required - raw.keys())
     if missing:
-        _fail(context, f"missing schema=2 fields: {', '.join(missing)}")
+        _fail(context, f"missing schema={schema} fields: {', '.join(missing)}")
 
     counters = {field: _int(raw[field], context, field) for field in INT_RESULT_FIELDS}
+    if schema == 3:
+        counters.update(
+            {
+                field: _int(raw[field], context, field)
+                for field in V3_LIFECYCLE_COUNTER_FIELDS
+            }
+        )
+    else:
+        issued = counters["prefetch_mem_reads"]
+        installed = counters["fills"]
+        counters.update(
+            {
+                "pf_candidates": issued + counters["dropped"],
+                "pf_admitted": issued,
+                "pf_issued": issued,
+                "pf_returned": issued,
+                "pf_installed": installed,
+                "pf_merged": 0,
+                "pf_discarded": 0,
+                "pf_cancelled": 0,
+                "pf_unused_evicted": counters["useless_evicted"],
+                "pf_unused_resident": counters["unused_resident"],
+                "pf_vc_bypass": 0,
+                "pf_caused_writebacks": 0,
+                "pf_demand_block_cycles": 0,
+                "pf_true_help": 0,
+                "pf_true_pollution": 0,
+                "pf_suppressed_quota": 0,
+                "pf_suppressed_unsafe": 0,
+                "pf_same_line_coalesced": 0,
+            }
+        )
     strings = {field: raw[field] for field in STRING_RESULT_FIELDS}
-    if counters["schema"] != RESULT_SCHEMA:
-        _fail(context, f"unsupported WORKLOAD_RESULT schema {counters['schema']}")
     if counters["prefetch"] not in (0, 1):
         _fail(context, f"prefetch must be 0 or 1, got {counters['prefetch']}")
     return counters, strings
@@ -906,12 +1072,20 @@ def validate_counters(
     if counters["victim_hits"] > counters["misses"]:
         _fail(context, "victim_hits exceeds misses")
     demand_reads = counters["misses"] - counters["victim_hits"]
-    _check_equal(
-        context,
-        "demand_mem_reads = misses - victim_hits",
-        counters["demand_mem_reads"],
-        demand_reads,
-    )
+    if counters["schema"] == 2:
+        _check_equal(
+            context,
+            "demand_mem_reads = misses - victim_hits",
+            counters["demand_mem_reads"],
+            demand_reads,
+        )
+    else:
+        _check_equal(
+            context,
+            "demand_mem_reads + pf_merged = misses - victim_hits",
+            counters["demand_mem_reads"] + counters["pf_merged"],
+            demand_reads,
+        )
     _check_equal(
         context,
         "mem_reads = demand_mem_reads + prefetch_mem_reads",
@@ -920,9 +1094,36 @@ def validate_counters(
     )
     _check_equal(
         context,
-        "prefetch_mem_reads = fills",
+        "prefetch_mem_reads = pf_issued",
         counters["prefetch_mem_reads"],
+        counters["pf_issued"],
+    )
+    if counters["schema"] == 2:
+        _check_equal(
+            context,
+            "prefetch_mem_reads = fills",
+            counters["prefetch_mem_reads"],
+            counters["fills"],
+        )
+    _check_equal(
+        context,
+        "pf_issued = pf_returned after drain",
+        counters["pf_issued"],
+        counters["pf_returned"],
+    )
+    _check_equal(
+        context,
+        "pf_returned = pf_installed + pf_merged + pf_discarded",
+        counters["pf_returned"],
+        counters["pf_installed"]
+        + counters["pf_merged"]
+        + counters["pf_discarded"],
+    )
+    _check_equal(
+        context,
+        "fills = pf_installed",
         counters["fills"],
+        counters["pf_installed"],
     )
     _check_equal(
         context,
@@ -942,21 +1143,69 @@ def validate_counters(
         counters["mem_writes"],
         counters["writebacks"],
     )
+    if counters["schema"] == 2:
+        _check_equal(
+            context,
+            "fills = useful + useless_evicted + unused_resident",
+            counters["fills"],
+            counters["useful"]
+            + counters["useless_evicted"]
+            + counters["unused_resident"],
+        )
+    else:
+        _check_equal(
+            context,
+            "fills = timely_useful + useless_evicted + unused_resident",
+            counters["fills"],
+            counters["timely_useful"]
+            + counters["useless_evicted"]
+            + counters["unused_resident"],
+        )
+        _check_equal(
+            context,
+            "pf_installed = timely_useful + pf_unused_evicted + pf_unused_resident",
+            counters["pf_installed"],
+            counters["timely_useful"]
+            + counters["pf_unused_evicted"]
+            + counters["pf_unused_resident"],
+        )
     _check_equal(
         context,
-        "fills = useful + useless_evicted + unused_resident",
-        counters["fills"],
-        counters["useful"]
-        + counters["useless_evicted"]
-        + counters["unused_resident"],
+        "pf_unused_evicted = useless_evicted",
+        counters["pf_unused_evicted"],
+        counters["useless_evicted"],
     )
+    _check_equal(
+        context,
+        "pf_unused_resident = unused_resident",
+        counters["pf_unused_resident"],
+        counters["unused_resident"],
+    )
+    if counters["pf_issued"] > counters["pf_admitted"]:
+        _fail(context, "pf_issued exceeds pf_admitted")
+    if counters["pf_admitted"] > counters["pf_candidates"]:
+        _fail(context, "pf_admitted exceeds pf_candidates")
+    if counters["pf_admitted"] > (
+        counters["pf_issued"] + counters["pf_cancelled"]
+    ):
+        _fail(
+            context,
+            "pf_admitted must be <= pf_issued + pf_cancelled after drain",
+        )
     _check_equal(
         context,
         "useful = timely_useful + late_useful",
         counters["useful"],
         counters["timely_useful"] + counters["late_useful"],
     )
-    if expected.timing_profile.startswith("blocking-") and counters["late_useful"] != 0:
+    if counters["schema"] == 3:
+        _check_equal(
+            context,
+            "late_useful = pf_merged",
+            counters["late_useful"],
+            counters["pf_merged"],
+        )
+    if counters["schema"] == 2 and expected.timing_profile.startswith("blocking-") and counters["late_useful"] != 0:
         _fail(
             context,
             "blocking replay cannot observe an independent late prefetch; late_useful must be zero",
@@ -1007,10 +1256,32 @@ def _parse_key_value_line(line: str, context: str) -> dict[str, str]:
     return result
 
 
-SIDECAR_FIELDS = frozenset(
+SIDECAR_V2_FIELDS = frozenset(
     {"schema", "event", "seq", "cycle", "addr", "op", "size", "outcome", "details"}
 )
-SIDECAR_EVENTS = frozenset({"demand", "prefetch_issue", "prefetch_fill"})
+SIDECAR_V3_FIELDS = SIDECAR_V2_FIELDS | {"latency"}
+SIDECAR_V2_EVENTS = frozenset({"demand", "prefetch_issue", "prefetch_fill"})
+SIDECAR_V3_EVENTS = frozenset(
+    {
+        "demand_present",
+        "demand_accept",
+        "demand_response",
+        "prefetch_candidate",
+        "prefetch_admit",
+        "prefetch_issue",
+        "prefetch_return",
+        "prefetch_fill",
+        "prefetch_install",
+        "prefetch_use",
+        "prefetch_evict",
+        "prefetch_cancel",
+        "prefetch_discard",
+        "prefetch_merge",
+        "prefetch_suppressed",
+        "prefetch_writeback",
+        "controller_state",
+    }
+)
 
 
 def parse_sidecar(
@@ -1018,7 +1289,7 @@ def parse_sidecar(
     *,
     line_bytes: int,
 ) -> tuple[list[DemandAccess], dict[str, int]]:
-    """Parse the closed schema-2 demand/prefetch sidecar event set."""
+    """Parse schema-2 demand rows or schema-3 lifecycle sidecar events."""
 
     if line_bytes <= 0 or (line_bytes & (line_bytes - 1)) != 0:
         raise ValueError("line_bytes must be a positive power of two")
@@ -1040,6 +1311,8 @@ def parse_sidecar(
     event_counts: Counter[str] = Counter()
     seen_seq: set[int] = set()
     last_seq: int | None = None
+    sidecar_schema: int | None = None
+    lifecycle_cycles: dict[int, dict[str, int]] = defaultdict(dict)
     for line_number, line in noncomment:
         context = f"sidecar {path}:{line_number}"
         if header is None:
@@ -1049,34 +1322,50 @@ def parse_sidecar(
             if len(values) != len(header):
                 _fail(context, f"expected {len(header)} TSV columns, got {len(values)}")
             row = dict(zip(header, values))
-        if set(row) != SIDECAR_FIELDS:
-            missing = sorted(SIDECAR_FIELDS - set(row))
-            extra = sorted(set(row) - SIDECAR_FIELDS)
+        schema = _int(_require(row, "schema", context), context, "schema")
+        if schema not in RESULT_SCHEMAS:
+            _fail(context, f"unsupported sidecar schema {schema}")
+        if sidecar_schema is None:
+            sidecar_schema = schema
+        elif schema != sidecar_schema:
+            _fail(context, f"mixed sidecar schemas {sidecar_schema} and {schema}")
+        expected_fields = SIDECAR_V2_FIELDS if schema == 2 else SIDECAR_V3_FIELDS
+        if set(row) != expected_fields:
+            missing = sorted(expected_fields - set(row))
+            extra = sorted(set(row) - expected_fields)
             _fail(
                 context,
-                f"sidecar fields differ from schema=2; missing={missing}, extra={extra}",
+                f"sidecar fields differ from schema={schema}; missing={missing}, extra={extra}",
             )
-        schema = _int(_require(row, "schema", context), context, "schema")
-        if schema != RESULT_SCHEMA:
-            _fail(context, f"unsupported sidecar schema {schema}")
         event = _string(_require(row, "event", context), context, "event")
-        if event not in SIDECAR_EVENTS:
+        supported_events = SIDECAR_V2_EVENTS if schema == 2 else SIDECAR_V3_EVENTS
+        if event not in supported_events:
             _fail(context, f"unsupported sidecar event {event!r}")
         event_counts[event] += 1
 
         cycle = _int(row["cycle"], context, "cycle")
         addr = _parse_addr(row["addr"], context)
         details = str(row["details"])
-        if details != "-":
+        if schema == 2 and details != "-":
             _fail(context, f"details must be '-', got {details!r}")
+        if schema == 3:
+            try:
+                latency = int(str(row["latency"]), 0)
+            except ValueError:
+                _fail(context, f"latency is not an integer: {row['latency']!r}")
+            if latency < -1:
+                _fail(context, f"latency must be >= -1, got {latency}")
 
-        if event != "demand":
+        demand_event = event == "demand" or event.startswith("demand_")
+        if not demand_event:
             try:
                 seq = int(str(row["seq"]), 0)
             except ValueError:
                 _fail(context, f"seq is not an integer: {row['seq']!r}")
             if seq != -1:
                 _fail(context, f"{event} seq must be -1, got {seq}")
+            if event == "controller_state":
+                continue
             if str(row["op"]) != "prefetch":
                 _fail(context, f"{event} op must be 'prefetch'")
             size = _int(row["size"], context, "size", minimum=1)
@@ -1087,10 +1376,15 @@ def parse_sidecar(
                 )
             if addr % line_bytes != 0:
                 _fail(context, f"{event} address is not line-aligned: 0x{addr:x}")
-            expected_outcome = (
-                "lower_memory" if event == "prefetch_issue" else "l1_hit"
-            )
-            if str(row["outcome"]) != expected_outcome:
+            if schema == 2:
+                expected_outcome = (
+                    "lower_memory" if event == "prefetch_issue" else "l1_hit"
+                )
+            elif event == "prefetch_issue":
+                expected_outcome = "lower_memory"
+            else:
+                expected_outcome = None
+            if expected_outcome is not None and str(row["outcome"]) != expected_outcome:
                 _fail(
                     context,
                     f"{event} outcome must be {expected_outcome!r}",
@@ -1103,8 +1397,34 @@ def parse_sidecar(
         if size > 3:
             _fail(context, f"size must be in 0..3, got {size}")
         outcome = str(row["outcome"])
+        if schema == 3 and event in {"demand_present", "demand_accept"}:
+            if outcome != "pending":
+                _fail(context, f"{event} outcome must be 'pending'")
+            expected_latency = -1 if event == "demand_present" else 0
+            if latency != expected_latency:
+                _fail(
+                    context,
+                    f"{event} latency must be {expected_latency}",
+                )
+            if event in lifecycle_cycles[seq]:
+                _fail(context, f"duplicate {event} for demand seq {seq}")
+            lifecycle_cycles[seq][event] = cycle
+            continue
         if outcome not in {"l1_hit", "victim_hit", "lower_memory"}:
             _fail(context, f"unsupported demand outcome {outcome!r}")
+        if schema == 3:
+            if event != "demand_response":
+                _fail(context, f"completed schema-3 demand must use event=demand_response")
+            accepted = lifecycle_cycles[seq].get("demand_accept")
+            if accepted is None:
+                _fail(context, f"demand_response precedes/misses demand_accept for seq {seq}")
+            if latency != cycle - accepted:
+                _fail(
+                    context,
+                    f"demand_response latency={latency} does not equal response-accept "
+                    f"cycles={cycle - accepted}",
+                )
+            lifecycle_cycles[seq][event] = cycle
         if seq in seen_seq:
             _fail(context, f"duplicate demand seq {seq}")
         if last_seq is not None and seq <= last_seq:
@@ -1113,7 +1433,26 @@ def parse_sidecar(
         last_seq = seq
         accesses.append(DemandAccess(seq, cycle, addr, op, size, outcome))
     if not accesses:
-        _fail(f"sidecar {path}", "contains no event=demand records")
+        _fail(f"sidecar {path}", "contains no completed demand records")
+    if sidecar_schema == 3:
+        for seq in seen_seq:
+            events = lifecycle_cycles[seq]
+            missing = {
+                "demand_present",
+                "demand_accept",
+                "demand_response",
+            } - set(events)
+            if missing:
+                _fail(
+                    f"sidecar {path}",
+                    f"demand seq {seq} is missing lifecycle events {sorted(missing)}",
+                )
+            if not (
+                events["demand_present"]
+                <= events["demand_accept"]
+                <= events["demand_response"]
+            ):
+                _fail(f"sidecar {path}", f"demand seq {seq} lifecycle cycles regress")
     return accesses, dict(event_counts)
 
 
@@ -1447,35 +1786,101 @@ def _validate_sidecar_counts(run: RunRecord) -> None:
         _fail("sidecar", "parsed demand rows lack event counts")
     context = f"sidecar {run.expected.sidecar.path if run.expected.sidecar else ''}"
     counts = Counter(access.outcome for access in run.accesses)
+    sidecar_schema3 = "demand_response" in run.sidecar_event_counts
+    result_schema3 = run.counters["schema"] == 3
+    completed_event = "demand_response" if sidecar_schema3 else "demand"
     _check_equal(
         context,
-        "event=demand rows = accesses",
-        run.sidecar_event_counts.get("demand", 0),
+        f"event={completed_event} rows = accesses",
+        run.sidecar_event_counts.get(completed_event, 0),
         run.counters["accesses"],
     )
+    if sidecar_schema3:
+        for event in ("demand_present", "demand_accept"):
+            _check_equal(
+                context,
+                f"event={event} rows = accesses",
+                run.sidecar_event_counts.get(event, 0),
+                run.counters["accesses"],
+            )
     _check_equal(context, "demand rows = accesses", len(run.accesses), run.counters["accesses"])
     _check_equal(context, "l1_hit rows = hits", counts["l1_hit"], run.counters["hits"])
     _check_equal(
         context, "victim_hit rows = victim_hits", counts["victim_hit"], run.counters["victim_hits"]
     )
-    _check_equal(
-        context,
-        "lower_memory rows = demand_mem_reads",
-        counts["lower_memory"],
-        run.counters["demand_mem_reads"],
-    )
+    if result_schema3:
+        _check_equal(
+            context,
+            "lower_memory rows = demand_mem_reads + pf_merged",
+            counts["lower_memory"],
+            run.counters["demand_mem_reads"] + run.counters["pf_merged"],
+        )
+    else:
+        _check_equal(
+            context,
+            "lower_memory rows = demand_mem_reads",
+            counts["lower_memory"],
+            run.counters["demand_mem_reads"],
+        )
     _check_equal(
         context,
         "prefetch_issue rows = prefetch_mem_reads",
         run.sidecar_event_counts.get("prefetch_issue", 0),
         run.counters["prefetch_mem_reads"],
     )
-    _check_equal(
-        context,
-        "prefetch_fill rows = fills",
-        run.sidecar_event_counts.get("prefetch_fill", 0),
-        run.counters["fills"],
-    )
+    if run.sidecar_event_counts.get("prefetch_return", 0):
+        _check_equal(
+            context,
+            "prefetch_return rows = pf_returned",
+            run.sidecar_event_counts.get("prefetch_return", 0),
+            run.counters["pf_returned"],
+        )
+    if run.sidecar_event_counts.get("prefetch_install", 0):
+        _check_equal(
+            context,
+            "prefetch_install rows = pf_installed",
+            run.sidecar_event_counts.get("prefetch_install", 0),
+            run.counters["pf_installed"],
+        )
+    else:
+        _check_equal(
+            context,
+            "prefetch_fill rows = fills",
+            run.sidecar_event_counts.get("prefetch_fill", 0),
+            run.counters["fills"],
+        )
+    optional_lifecycle = {
+        "prefetch_candidate": "pf_candidates",
+        "prefetch_admit": "pf_admitted",
+        "prefetch_merge": "pf_merged",
+        "prefetch_discard": "pf_discarded",
+        "prefetch_cancel": "pf_cancelled",
+        "prefetch_use": "timely_useful",
+        "prefetch_evict": "pf_unused_evicted",
+    }
+    for event, counter in optional_lifecycle.items():
+        if run.sidecar_event_counts.get(event, 0):
+            _check_equal(
+                context,
+                f"{event} rows = {counter}",
+                run.sidecar_event_counts[event],
+                run.counters[counter],
+            )
+    if run.sidecar_event_counts.get("prefetch_suppressed", 0):
+        _check_equal(
+            context,
+            "prefetch_suppressed rows = quota + unsafe suppressions",
+            run.sidecar_event_counts["prefetch_suppressed"],
+            run.counters["pf_suppressed_quota"] +
+            run.counters["pf_suppressed_unsafe"],
+        )
+    if run.sidecar_event_counts.get("prefetch_writeback", 0):
+        _check_equal(
+            context,
+            "prefetch_writeback rows = pf_caused_writebacks",
+            run.sidecar_event_counts["prefetch_writeback"],
+            run.counters["pf_caused_writebacks"],
+        )
 
 
 def _validate_sidecar_trace_identity(run: RunRecord) -> None:
@@ -1604,7 +2009,13 @@ def _pair_sidecars(off: RunRecord, on: RunRecord) -> dict[str, int | None]:
             lower_pollution += 1
 
     l1_delta = on.counters["misses"] - off.counters["misses"]
-    lower_delta = on.counters["demand_mem_reads"] - off.counters["demand_mem_reads"]
+    # A schema-3 late merge still observes a lower-level demand outcome, but
+    # the already-issued prefetch owns the physical read.  Include merged
+    # responses when reconciling causal outcome tiers, while retaining the
+    # raw demand-read delta as the bandwidth-facing metric below.
+    off_required_lower = off.counters["demand_mem_reads"] + off.counters["pf_merged"]
+    on_required_lower = on.counters["demand_mem_reads"] + on.counters["pf_merged"]
+    lower_delta = on_required_lower - off_required_lower
     _check_equal(
         f"pair {off.expected.pair_key!r}",
         "L1 miss delta(on-off) = pollution - help",
@@ -1613,7 +2024,7 @@ def _pair_sidecars(off: RunRecord, on: RunRecord) -> dict[str, int | None]:
     )
     _check_equal(
         f"pair {off.expected.pair_key!r}",
-        "lower-read delta(on-off) = pollution - help",
+        "required-lower delta(on-off) = pollution - help",
         lower_delta,
         lower_pollution - lower_help,
     )
@@ -1759,6 +2170,8 @@ def aggregate_pairs(pairs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         on_misses = aggregate["on_misses"]
         off_lower = aggregate["off_demand_mem_reads"]
         on_lower = aggregate["on_demand_mem_reads"]
+        off_required_lower = off_lower + aggregate["off_pf_merged"]
+        on_required_lower = on_lower + aggregate["on_pf_merged"]
         off_bytes = aggregate["off_read_bytes"] + aggregate["off_write_bytes"]
         on_bytes = aggregate["on_read_bytes"] + aggregate["on_write_bytes"]
         aggregate.update(
@@ -1802,8 +2215,8 @@ def aggregate_pairs(pairs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             )
             _check_equal(
                 f"aggregate {key!r}",
-                "lower-read delta(on-off) = pollution - help",
-                on_lower - off_lower,
+                "required-lower delta(on-off) = pollution - help",
+                on_required_lower - off_required_lower,
                 aggregate["true_lower_pollution"] - aggregate["true_lower_help"],
             )
         aggregates.append(aggregate)
@@ -1830,6 +2243,10 @@ def flatten_run(record: RunRecord) -> dict[str, Any]:
         "simulation_command_sha256": expected.simulation_command_sha256,
         "timing_profile": expected.timing_profile,
         "cold_warm_mode": expected.cold_warm_mode,
+        "prefetch_policy": expected.prefetch_policy,
+        "pf_opt_level": expected.pf_opt_level,
+        "producer_profile": expected.producer_profile,
+        "producer_gap": expected.producer_gap,
         "status": record.strings["status"],
     }
     row.update(record.counters)
@@ -1894,13 +2311,15 @@ def write_markdown(
         "",
         "## Aggregate results",
         "",
-        "| sets | ways | line B | VC | timing | pairs | accuracy | L1 coverage | "
+        "| sets | ways | line B | VC | policy/level | producer | timing | pairs | accuracy | L1 coverage | "
         "lower coverage | bandwidth overhead | cycles on-off | harmful / neutral / helpful |",
-        "| ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in aggregates:
         lines.append(
             f"| {row['sets']} | {row['ways']} | {row['line_bytes']} | {row['victim_entries']} | "
+            f"{row['prefetch_policy']}/{row['pf_opt_level']} | "
+            f"{row['producer_profile']}:{row['producer_gap']} | "
             f"{row['timing_profile']} | {row['pair_count']} | {_md_metric(row['accuracy'])} | "
             f"{_md_metric(row['l1_coverage'])} | {_md_metric(row['lower_coverage'])} | "
             f"{_md_metric(row['bandwidth_overhead'])} | {row['cycles_on_minus_off']} | "
@@ -1932,9 +2351,9 @@ def write_markdown(
             "",
             "## Metric definitions",
             "",
-            "- Accuracy = useful prefetches / all fills, including unused resident fills in the denominator.",
+            "- Accuracy is fill accuracy: useful prefetches / all fills, including unused resident fills in the denominator. A merge-only run may therefore report N/A even when every issued PF merges.",
             "- L1 coverage = (baseline misses - prefetch-on misses) / baseline misses.",
-            "- Lower coverage uses demand lower-memory reads (`misses - victim_hits`) in the same paired formula.",
+            "- `lower_coverage` is the legacy-named reduction in demand-owned lower reads. Under schema 3, add `pf_merged` back before interpreting required physical reads; bandwidth and paired causal help/pollution remain authoritative.",
             "- Bandwidth overhead and cycle deltas are `on - off`; positive cycle delta is harmful.",
             "- True pollution/help compares identical demand identities `(seq, addr, op, size)` in paired sidecars.",
             "- For both L1 misses and lower reads, `delta(on-off) = pollution - help` is a validation invariant.",
@@ -1973,7 +2392,7 @@ def analyze_campaign(
     if manifest["require_sidecars"] and missing_sidecars:
         _fail("campaign", "required paired sidecars are missing")
     validation = {
-        "schema": 2,
+        "schema": 3,
         "status": "PASS",
         "manifest": str(manifest_path.resolve()),
         "manifest_sha256": _sha256(manifest_path.resolve()),
@@ -1985,7 +2404,8 @@ def analyze_campaign(
         "pairs_without_sidecars": missing_sidecars,
         "checks": {
             "manifest_expected_matrix_complete": True,
-            "workload_result_schema_2": True,
+            "workload_result_schema_2_or_3": True,
+            "sidecar_schema_2_or_3": True,
             "artifact_hashes": True,
             "geometry_and_timing_pairing": True,
             "counter_conservation": True,

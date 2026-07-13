@@ -17,6 +17,33 @@
 
 ## Verification and Advanced Features
 
+### Adaptive direct-L1 prefetcher (P0–P3)
+
+- [x] Preserve the original blocking next-line engine behind
+  `PREFETCH_POLICY=0` and make optimized policy level 3 the wrapper default.
+- [x] Add true zero-bubble, sequential, and fixed-gap 1/2/4/8 producers.
+- [x] Upgrade replay sidecars and conservation checks to schema 3 while
+  retaining schema-2 input compatibility.
+- [x] Add candidate/admit/issue/return/install/use/evict/cancel/discard/merge,
+  suppression, controller, shadow, write-back attribution, and blocked-cycle
+  observability.
+- [x] Implement P1 safe cold insertion, one-unused-line-per-set quota, dirty
+  guards, response revalidation, VC bypass, TTL, independent external skid,
+  idle guard, and token admission.
+- [x] Implement P2 four-entry Gaze-lite adjacent-stream detection and the
+  hysteretic OFF/PROBE/ON controller.
+- [x] Implement P3 demand-only tag/dirty shadow L1/VC and one metadata-only PF
+  MSHR with hit-under-prefetch, load/store merge, and bounded discard.
+- [x] Add directed and randomized Icarus regressions for stream/controller,
+  safe insertion, shadow attribution, zero-bubble merge, TTL, EWMA, response
+  backpressure, runtime disable, and discard/revalidation paths.
+- [x] Complete and publish the final 25-window legacy/P1/P2/P3 zero-bubble
+  campaign against all stated performance and bandwidth gates.
+- [x] Complete the sequential, fixed-gap 1/2/4/8, latency-0/always-ready, and
+  latency-8/random-backpressure paired sensitivity campaigns.
+- [x] Run the optimized P3 XSim matrix (11 logs / 83 schema-3 rows) and the
+  four-configuration Vivado synthesis/PPA campaign (12 reports).
+
 - [x] Add deterministic randomized golden-memory scoreboard.
 - [x] Verify RV64 load/store sizes, sign/zero extension, and misaligned errors.
 - [x] Verify mutually exclusive CPU/external/next-line handshakes under overlap.
@@ -34,7 +61,10 @@
 - [ ] Add separate prefetch-buffer placement option.
 - [x] Add paired true-pollution analysis and separate demand/prefetch
   memory-bandwidth measurements; retain the RTL displacement counter as a proxy.
-- [ ] Add independent issue/fill/accept prefetch timeliness measurements.
+- [x] Add independent candidate/accept/issue/return/install/merge/discard
+  prefetch lifecycle counters and event records.
+- [ ] Add per-prefetch transaction identity and candidate-to-issue-to-return
+  latency distributions.
 - [x] Add reusable trace replay driver for SPEC CPU 2017/2026 regions.
 - [x] Run the historical `782.lbm_r` extraction/replay plumbing check
   (non-authoritative benchmark evidence).
@@ -44,7 +74,8 @@
   dynamic RV64 smoke workload.
 - [x] Emit the canonical workload schema and strict paired-run analysis.
 - [x] Add per-demand true-pollution attribution through paired replay sidecars.
-- [ ] Add independent per-demand prefetch timeliness analysis.
+- [x] Add per-demand present/accept/response latency and prefetch lifecycle
+  sidecar analysis.
 - [x] Capture and replay licensed SPEC regions with the validated process-scoped
   flow.
 - [x] Classify validated windows and publish paired metrics and plots under
@@ -55,7 +86,7 @@
 - [x] Run RV64 Vivado simulation for direct-mapped and 2-way configurations.
 - [x] Run Vivado OOP workload matrix for VC4, VC8, next-line prefetch, and trace replay.
 - [ ] Inspect waveforms for all hit, miss, swap, fill, and write-back paths.
-- [x] Capture a representative passing next-line prefetch VCD artifact.
+- [x] Capture a representative passing prefetch-on VCD artifact.
 - [x] Run RV64 synthesis and record LUT, FF, inferred memory, and timing reports.
 - [x] Add a baseline 10 ns clock constraint.
 - [x] Calculate an approximate RV64 post-synthesis Fmax from Vivado STA reports.

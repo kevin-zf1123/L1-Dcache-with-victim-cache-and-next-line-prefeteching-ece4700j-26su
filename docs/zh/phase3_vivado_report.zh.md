@@ -15,12 +15,90 @@ two-way replay 还同时改变了 L1 capacity。SPEC trace 是全系统多 vCPU 
 可归因到进程的 SPEC capture/replay/analyzer 证据链均为 `PASS`。
 历史表格仍然无效，仅作历史记录。
 
-## 当前替代证据（2026-07-13）
+## Optimized P3 验证状态（2026-07-13）
+
+自适应 direct-L1 实现已通过本地 Icarus matrix、定向 P3 回归、真正的
+zero-bubble replay 和 82 个 Python analyzer/runner 测试。Vivado 流程已升级为
+使用 `PREFETCH_POLICY=1`、`PF_OPT_LEVEL=3` 编译 wrapper，验证 schema-3
+record，运行 8 个 OOP workload point 加 3 个定向 auxiliary XSim top，
+并综合 4 个受控 geometry。
+
+最终本地主 profile replay 中，legacy、P1、P2 和 P3 每组均通过 100/100
+runs 与 25/25 精确 pair。P3 将 aggregate cycles 从 850,547 降至 849,823
+（`-724`），总 byte 不变，18 个 helpful、7 个 neutral、零 harmful window，
+544 个 issued prefetch 全部 merge，且不引发 dirty write-back。公开汇总见
+[optimized 证据](../evidence/2026-07-13-optimized/README.md)。
+
+Sequential、fixed-gap 1/2/4/8、latency-0/always-ready 和
+latency-8/deterministic-random sensitivity campaign 也全部通过，共 700 个
+run 和 350 个精确 pair。P3 在每个 profile 中的 byte overhead 都为零；
+在全部 sequential/fixed-gap window 中为 neutral，在 latency-0 和 latency-8
+zero-bubble profile 中分别节省 570 和 859 aggregate cycles。最终本地
+regression 包括 10 个 cache simulation、20/20 个 workload row、62 个 P3 MSHR
+check、10 个 optimized edge scenario、76 个 stream/controller check 和 82 个
+Python test，全部通过。
+
+Optimized 远程 campaign 也报告 `PASS`。Vivado 2024.2.1 生成了
+11 份 XSim log：8 个 class-based OOP workload point 和 3 个定向
+auxiliary top。8 份 OOP log 共包含 83 行 `WORKLOAD_RESULT schema=3`；
+每一行都报告 `status=PASS`、watchdog/protocol/duplicate-line error 为零，
+且在 drain 时 candidate/admit/issue/return/install/merge/discard/cancel 生命周期
+守恒全部闭合。Auxiliary log 显示 76 个 stream/controller check、62 个
+PF-MSHR check 与 optimized P3 edge scenario 全部通过。同一次运行
+综合了 4 个受控配置，并下载了预期的全部 12 份
+utilization/timing/power report。Evidence manifest 生成于
+`2026-07-13T06:58:25.192439Z`，状态为 `PASS` 且无 finding，记录远程
+退出状态为 0、无下载失败，并对 Vivado log、journal 和一份
+901,858-byte 代表性 VCD 记录了哈希。此处 `PASS` 表示 simulation、
+lifecycle、流程完成与 artifact 验证通过；它不表示 100 MHz timing
+约束已闭合。
+
+OOP workload matrix 使用 sequential producer；它是功能与生命周期证据，
+而非 zero-bubble 性能测量。真正的 zero-bubble 行为由定向
+`tb_l1d_cache_optimized_p3` 测试在 Icarus 与 XSim 中跨仿真器验证
+（远程 matrix 中的 `p3_prefetch_edges`）。上述性能结论仍来自本地
+真正 zero-bubble 的 25-window trace campaign，而不是 sequential OOP row。
+
+4 个 optimized-wrapper 配置的逻辑 L1 data capacity 均为 128 bytes。
+当前综合后报告如下：
+
+| 配置 | Slice LUT | LUT as memory | FF | Block RAM tile | Bonded IOB / 可用数 | 10 ns 下 WNS | 近似 Fmax | Vectorless power | Dynamic | Static |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dm_s8_vc4_pf0` | 5,679 | 57 | 2,897 | 2 | 1,447 / 106 | -1.019 ns | 90.752 MHz | 0.124 W | 0.053 W | 0.070 W |
+| `2w_s4_vc4_pf0` | 7,137 | 372 | 3,214 | 0 | 1,447 / 106 | -2.130 ns | 82.440 MHz | 0.125 W | 0.055 W | 0.070 W |
+| `2w_s4_vc8_pf0` | 7,891 | 372 | 4,227 | 0 | 1,447 / 106 | -2.500 ns | 80.000 MHz | 0.128 W | 0.058 W | 0.070 W |
+| `2w_s4_vc4_pf1` | 10,882 | 372 | 4,757 | 0 | 1,510 / 106 | -9.342 ns | 51.701 MHz | 0.139 W | 0.068 W | 0.070 W |
+
+匹配的 P3 enable 比较为 `2w_s4_vc4_pf1` 相对
+`2w_s4_vc4_pf0`：
+
+| 指标 | 匹配 PF0 | P3 PF1 | PF1 - PF0 |
+| --- | ---: | ---: | ---: |
+| Slice LUT | 7,137 | 10,882 | +3,745（+52.473%） |
+| FF | 3,214 | 4,757 | +1,543（+48.009%） |
+| LUT as memory | 372 | 372 | 0 |
+| Block RAM tile | 0 | 0 | 0 |
+| Bonded IOB | 1,447 | 1,510 | +63（+4.354%） |
+| 10 ns 下 WNS | -2.130 ns | -9.342 ns | -7.212 ns |
+| 近似 Fmax | 82.440 MHz | 51.701 MHz | -30.739 MHz（-37.287%） |
+| Vectorless 总功耗 | 0.125 W | 0.139 W | +0.014 W（+11.200%） |
+| 动态功耗 | 0.055 W | 0.068 W | +0.013 W（+23.636%） |
+
+这些数字是综合阶段估算，而非 implementation 或 post-route 签核结果。
+4 个配置全部未通过 100 MHz setup timing，但 hold check 都通过。
+Cache interface 被直接暴露为 synthesis top，因此报告的 1,447 或
+1,510 个 bonded I/O 超过所选器件的 106 个 I/O；按当前形式，
+设计不是可放置的板级 top。功耗使用 vectorless activity propagation，
+confidence 为 `Low`，因此不能取代 activity-driven power run。
+Optimized PF1 的大幅面积与时序代价，可作为它与匹配 PF0 之间有效的
+综合后比较，但不是 post-route implementation 结果。
+
+## 先前 Legacy 替代证据（2026-07-13）
 
 替代流程使用远程 Vivado 2024.2.1、器件 `xc7a35tcpg236-1` 和 10 ns
 约束，并在 XSim 与 synthesis 中使用相同的显式 geometry。
 `scripts/run_vivado.tcl` 每次运行前会删除旧 report directory；
-`scripts/run_remote_vivado.py` 也会清理本地下载，强制要求恰好 8 个 simulation
+先前的远程 runner 也会清理本地下载，强制要求恰好 8 个 simulation
 log、4 个 synthesis directory 且每个都有 utilization/timing/power report，
 并检查每条 `WORKLOAD_RESULT schema=2` 的 geometry、timing、`PASS` 和零
 watchdog/protocol/duplicate-line error。脚本还会写入
@@ -55,7 +133,7 @@ SHA-256 为
 | `2w_s4_vc4_pf1_high_latency_random_bp` | prefetch on、latency 8、randomized memory backpressure |
 
 四个主要 L1 均为 128 bytes，因此 direct-mapped 与 2-way 比较保持逻辑 L1
-capacity 不变。当前综合后报告为：
+capacity 不变。先前 legacy 综合后报告为：
 
 | 配置 | LUT | FF | Block RAM tile | 10 ns 下 WNS | 近似 Fmax | Vectorless power | Dynamic | Static |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -72,7 +150,7 @@ capacity 已受控，但 FPGA primitive mapping 并未匹配；LUT/FF/timing 差
 只归因于 associativity。若要进行物理实现等价实验，需要显式统一 RAM style
 或 primitive mapping。
 
-当前代表性 waveform 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。
+代表性 legacy waveform 为 `build/vivado/reports/2w_s4_vc4_pf1.vcd`。
 
 可归因的私有 SPEC campaign 也在 2026-07-13 通过。它覆盖 4 个
 benchmark、5 个 timed command、25 个采样 window 和 100 次四配置 replay。
@@ -268,8 +346,9 @@ CPU、memory、prefetch、statistics 和 `debug_state`。
 
 ## 剩余缺口
 
-当前 RTL 支持 direct-L1D next-line prefetch baseline 和 external candidate
-injection。Phase 2 中更大的 policy matrix 仍是设计缺口：
+当前 RTL 支持冻结的 next-line baseline、adaptive direct-L1 stream prefetch、
+external candidate injection、shadow feedback 与单 PF MSHR。更大的
+placement/replacement policy matrix 仍是设计缺口：
 
 - 没有 `3:1` 或 `7:1` capacity reservation policy，因为当前 RTL 仅支持
   `NUM_WAYS=1` 或 `NUM_WAYS=2`，且没有 group-level slot indirection；
@@ -277,9 +356,8 @@ injection。Phase 2 中更大的 policy matrix 仍是设计缺口：
 - 没有 separate prefetch buffer 或 direct victim-cache prefetch placement；
 - 没有 LRU 或 pointer-based replacement 选项；
 - paired replay sidecar 现已提供真实 L1/下级内存 help 与 pollution，
-  但仍没有独立的 issue/fill/accept timeliness measurement，也没有超出
-  当前 min/max/average 字段的完整 latency distribution；
-- 没有按 demand-caused 与 prefetch-caused 拆分 dirty write-back；
+  但 PF event 没有用于逐 prefetch candidate/issue/return latency distribution 的
+  共享 transaction identity；
 - 没有 post-route timing 或 activity-based power analysis。
 
 历史无效 campaign 覆盖了 `708`、`721`、`767` 和 `777` 标签，但不能

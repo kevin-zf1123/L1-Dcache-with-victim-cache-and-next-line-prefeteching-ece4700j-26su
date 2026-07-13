@@ -5,11 +5,21 @@ module tb_l1d_cache #(
     parameter integer ENABLE_PREFETCH = 0,
     parameter integer VICTIM_ENTRIES = 4,
     parameter integer NUM_SETS = 8,
-    parameter integer LINE_BYTES = 16
+    parameter integer LINE_BYTES = 16,
+    parameter integer PREFETCH_POLICY = 1,
+    parameter integer PF_OPT_LEVEL = 3,
+    // 0: always ready, 1: historical periodic ready, 2: deterministic random.
+    parameter integer MEM_LATENCY = 2,
+    parameter integer MEM_READY_MODE = 1,
+    // 0: historical sequential driver, 1: zero-bubble driver,
+    // 2: response-to-next-request fixed gap.
+    parameter integer PRODUCER_PROFILE = 0,
+    parameter integer PRODUCER_GAP = 1
 );
     localparam integer ADDR_WIDTH = 64;
     localparam integer DATA_WIDTH = 64;
     localparam integer LINE_BITS = LINE_BYTES * 8;
+    localparam integer OFFSET_BITS = $clog2(LINE_BYTES);
     localparam integer MEM_BYTES = 4096;
     localparam integer TRACE_LINE_BYTES = 4096;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
@@ -73,6 +83,27 @@ module tb_l1d_cache #(
     logic event_prefetch_dropped;
     logic [3:0] debug_state;
     logic debug_req_is_prefetch;
+    logic [31:0] stat_pf_candidates;
+    logic [31:0] stat_pf_admitted;
+    logic [31:0] stat_pf_issued;
+    logic [31:0] stat_pf_returned;
+    logic [31:0] stat_pf_installed;
+    logic [31:0] stat_pf_merged;
+    logic [31:0] stat_pf_discarded;
+    logic [31:0] stat_pf_cancelled;
+    logic [31:0] stat_pf_unused_evicted;
+    logic [31:0] stat_pf_vc_bypass;
+    logic [31:0] stat_pf_caused_writebacks;
+    logic [31:0] stat_pf_demand_block_cycles;
+    logic [31:0] stat_pf_true_help;
+    logic [31:0] stat_pf_true_pollution;
+    logic [31:0] stat_pf_suppressed_quota;
+    logic [31:0] stat_pf_suppressed_unsafe;
+    logic [31:0] stat_pf_same_line_coalesced;
+    logic [1:0] debug_pf_controller_state;
+    logic debug_pf_mshr_valid;
+    logic [ADDR_WIDTH-1:0] debug_pf_mshr_addr;
+    logic [1:0] debug_pf_mshr_confidence;
 
     byte unsigned memory [0:MEM_BYTES-1];
     byte unsigned golden_memory [0:MEM_BYTES-1];
@@ -80,6 +111,7 @@ module tb_l1d_cache #(
     logic [ADDR_WIDTH-1:0] read_addr;
     integer read_countdown;
     logic [2:0] mem_ready_phase;
+    logic [31:0] mem_ready_lfsr;
     logic stalled_mem_req;
     logic stalled_mem_write;
     logic [ADDR_WIDTH-1:0] stalled_mem_addr;
@@ -108,8 +140,54 @@ module tb_l1d_cache #(
     integer metric_prefetch_reads_base;
     integer metric_writes_base;
     integer metric_cycles_base;
+    integer metric_pf_candidates_base;
+    integer metric_pf_admitted_base;
+    integer metric_pf_issued_base;
+    integer metric_pf_returned_base;
+    integer metric_pf_installed_base;
+    integer metric_pf_merged_base;
+    integer metric_pf_discarded_base;
+    integer metric_pf_cancelled_base;
+    integer metric_pf_unused_evicted_base;
+    integer metric_pf_vc_bypass_base;
+    integer metric_pf_caused_writebacks_base;
+    integer metric_pf_demand_block_cycles_base;
+    integer metric_pf_true_help_base;
+    integer metric_pf_true_pollution_base;
+    integer metric_pf_suppressed_quota_base;
+    integer metric_pf_suppressed_unsafe_base;
+    integer metric_pf_same_line_coalesced_base;
     integer access_sidecar_fd;
+    integer access_sidecar_schema;
+    integer producer_profile;
+    integer producer_gap;
     logic measurement_active;
+    logic sidecar_request_active;
+    integer sidecar_request_seq;
+    integer sidecar_hit_before;
+    integer sidecar_victim_before;
+    integer last_cpu_present_cycle;
+    integer last_cpu_accept_cycle;
+    integer last_cpu_response_cycle;
+    integer last_cpu_latency;
+    integer zero_bubble_overlap_observed;
+    logic sidecar_measurement_was_active;
+    logic [ADDR_WIDTH-1:0] sidecar_pf_addr;
+    logic sidecar_pf_addr_valid;
+    logic [31:0] sidecar_prev_pf_returned;
+    logic [31:0] sidecar_prev_pf_installed;
+    logic [31:0] sidecar_prev_pf_merged;
+    logic [31:0] sidecar_prev_pf_discarded;
+    logic [31:0] sidecar_prev_pf_candidates;
+    logic [31:0] sidecar_prev_pf_admitted;
+    logic [31:0] sidecar_prev_pf_useful;
+    logic [31:0] sidecar_prev_pf_unused_evicted;
+    logic [31:0] sidecar_prev_pf_cancelled;
+    logic [31:0] sidecar_prev_pf_suppressed_quota;
+    logic [31:0] sidecar_prev_pf_suppressed_unsafe;
+    logic [31:0] sidecar_prev_pf_caused_writebacks;
+    logic [1:0] sidecar_prev_controller_state;
+    integer sidecar_delta_i;
     reg [8*64-1:0] config_id;
     reg [8*256-1:0] trace_id;
     integer k;
@@ -121,7 +199,9 @@ module tb_l1d_cache #(
         .NUM_SETS(NUM_SETS),
         .NUM_WAYS(NUM_WAYS),
         .VICTIM_ENTRIES(VICTIM_ENTRIES),
-        .ENABLE_PREFETCH(ENABLE_PREFETCH)
+        .ENABLE_PREFETCH(ENABLE_PREFETCH),
+        .PREFETCH_POLICY(PREFETCH_POLICY),
+        .PF_OPT_LEVEL(PF_OPT_LEVEL)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -170,7 +250,28 @@ module tb_l1d_cache #(
         .event_prefetch_pollution(event_prefetch_pollution),
         .event_prefetch_dropped(event_prefetch_dropped),
         .debug_state(debug_state),
-        .debug_req_is_prefetch(debug_req_is_prefetch)
+        .debug_req_is_prefetch(debug_req_is_prefetch),
+        .stat_pf_candidates(stat_pf_candidates),
+        .stat_pf_admitted(stat_pf_admitted),
+        .stat_pf_issued(stat_pf_issued),
+        .stat_pf_returned(stat_pf_returned),
+        .stat_pf_installed(stat_pf_installed),
+        .stat_pf_merged(stat_pf_merged),
+        .stat_pf_discarded(stat_pf_discarded),
+        .stat_pf_cancelled(stat_pf_cancelled),
+        .stat_pf_unused_evicted(stat_pf_unused_evicted),
+        .stat_pf_vc_bypass(stat_pf_vc_bypass),
+        .stat_pf_caused_writebacks(stat_pf_caused_writebacks),
+        .stat_pf_demand_block_cycles(stat_pf_demand_block_cycles),
+        .stat_pf_true_help(stat_pf_true_help),
+        .stat_pf_true_pollution(stat_pf_true_pollution),
+        .stat_pf_suppressed_quota(stat_pf_suppressed_quota),
+        .stat_pf_suppressed_unsafe(stat_pf_suppressed_unsafe),
+        .stat_pf_same_line_coalesced(stat_pf_same_line_coalesced),
+        .debug_pf_controller_state(debug_pf_controller_state),
+        .debug_pf_mshr_valid(debug_pf_mshr_valid),
+        .debug_pf_mshr_addr(debug_pf_mshr_addr),
+        .debug_pf_mshr_confidence(debug_pf_mshr_confidence)
     );
 
     always #5 clk = ~clk;
@@ -394,6 +495,25 @@ module tb_l1d_cache #(
             metric_prefetch_reads_base = accepted_prefetch_mem_reads;
             metric_writes_base = accepted_mem_writes;
             metric_cycles_base = cycles_since_reset;
+            metric_pf_candidates_base = stat_pf_candidates;
+            metric_pf_admitted_base = stat_pf_admitted;
+            metric_pf_issued_base = stat_pf_issued;
+            metric_pf_returned_base = stat_pf_returned;
+            metric_pf_installed_base = stat_pf_installed;
+            metric_pf_merged_base = stat_pf_merged;
+            metric_pf_discarded_base = stat_pf_discarded;
+            metric_pf_cancelled_base = stat_pf_cancelled;
+            metric_pf_unused_evicted_base = stat_pf_unused_evicted;
+            metric_pf_vc_bypass_base = stat_pf_vc_bypass;
+            metric_pf_caused_writebacks_base = stat_pf_caused_writebacks;
+            metric_pf_demand_block_cycles_base =
+                stat_pf_demand_block_cycles;
+            metric_pf_true_help_base = stat_pf_true_help;
+            metric_pf_true_pollution_base = stat_pf_true_pollution;
+            metric_pf_suppressed_quota_base = stat_pf_suppressed_quota;
+            metric_pf_suppressed_unsafe_base = stat_pf_suppressed_unsafe;
+            metric_pf_same_line_coalesced_base =
+                stat_pf_same_line_coalesced;
         end
     endtask
 
@@ -456,7 +576,10 @@ module tb_l1d_cache #(
         output logic [1:0] rsp_error_cause
     );
         integer timeout;
+        string request_op;
+        string response_outcome;
         begin
+            request_op = write ? "store" : "load";
             @(negedge clk);
             cpu_req_valid = 1'b1;
             cpu_req_addr = addr;
@@ -464,6 +587,15 @@ module tb_l1d_cache #(
             cpu_req_size = size;
             cpu_req_unsigned = unsigned_load;
             cpu_req_wdata = data;
+            last_cpu_present_cycle = cycles_since_reset -
+                                     metric_cycles_base + 1;
+            if (sidecar_request_active && access_sidecar_fd != 0 &&
+                access_sidecar_schema == 3) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=3 event=demand_present seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=pending latency=-1 details=-",
+                          sidecar_request_seq, last_cpu_present_cycle, addr,
+                          request_op, size);
+            end
             timeout = 0;
             while (!cpu_req_ready) begin
                 @(posedge clk);
@@ -471,6 +603,15 @@ module tb_l1d_cache #(
                 if (timeout > 200) $fatal(1, "CPU request timeout");
             end
             @(posedge clk);
+            last_cpu_accept_cycle = cycles_since_reset -
+                                    metric_cycles_base + 1;
+            if (sidecar_request_active && access_sidecar_fd != 0 &&
+                access_sidecar_schema == 3) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=3 event=demand_accept seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=pending latency=0 details=-",
+                          sidecar_request_seq, last_cpu_accept_cycle, addr,
+                          request_op, size);
+            end
             @(negedge clk);
             cpu_req_valid = 1'b0;
             cpu_req_size = SIZE_DOUBLE;
@@ -486,7 +627,34 @@ module tb_l1d_cache #(
             rsp_data = cpu_rsp_rdata;
             rsp_error = cpu_rsp_error;
             rsp_error_cause = cpu_rsp_error_cause;
-            @(posedge clk);
+            // cpu_rsp_valid is observed on the response-transfer edge.  The
+            // legacy driver deliberately leaves one additional full idle
+            // opportunity after it; the zero-bubble driver returns now so
+            // the next request can be presented before the first ready edge.
+            last_cpu_response_cycle = cycles_since_reset -
+                                      metric_cycles_base + 1;
+            last_cpu_latency = last_cpu_response_cycle -
+                               last_cpu_accept_cycle;
+            if (sidecar_request_active && access_sidecar_fd != 0 &&
+                access_sidecar_schema == 3) begin
+                if (stat_cpu_hits != sidecar_hit_before) begin
+                    response_outcome = "l1_hit";
+                end else if (stat_victim_hits != sidecar_victim_before) begin
+                    response_outcome = "victim_hit";
+                end else begin
+                    response_outcome = "lower_memory";
+                end
+                $fdisplay(access_sidecar_fd,
+                          "schema=3 event=demand_response seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=%s latency=%0d details=-",
+                          sidecar_request_seq, last_cpu_response_cycle, addr,
+                          request_op, size, response_outcome,
+                          last_cpu_latency);
+            end
+            if (producer_profile == 0) begin
+                @(posedge clk);
+            end else if (producer_profile == 2) begin
+                repeat (producer_gap) @(posedge clk);
+            end
         end
     endtask
 
@@ -1192,6 +1360,25 @@ module tb_l1d_cache #(
         integer dropped;
         integer unused_resident;
         integer service_cycles;
+        integer pf_candidates;
+        integer pf_admitted;
+        integer pf_issued;
+        integer pf_returned;
+        integer pf_installed;
+        integer pf_merged;
+        integer pf_discarded;
+        integer pf_cancelled;
+        integer pf_unused_evicted;
+        integer pf_vc_bypass;
+        integer pf_caused_writebacks;
+        integer pf_demand_block_cycles;
+        integer pf_true_help;
+        integer pf_true_pollution;
+        integer pf_suppressed_quota;
+        integer pf_suppressed_unsafe;
+        integer pf_same_line_coalesced;
+        integer timely_useful;
+        integer result_schema;
         reg [8*256-1:0] result_trace_id;
         string status;
         begin
@@ -1209,6 +1396,60 @@ module tb_l1d_cache #(
             dropped = stat_prefetch_dropped - metric_dropped_base;
             unused_resident = count_unused_resident();
             service_cycles = cycles_since_reset - metric_cycles_base;
+            result_schema = (access_sidecar_schema == 3 ||
+                             PREFETCH_POLICY == 1) ? 3 : 2;
+            if (PREFETCH_POLICY == 1) begin
+                pf_candidates = stat_pf_candidates - metric_pf_candidates_base;
+                pf_admitted = stat_pf_admitted - metric_pf_admitted_base;
+                pf_issued = stat_pf_issued - metric_pf_issued_base;
+                pf_returned = stat_pf_returned - metric_pf_returned_base;
+                pf_installed = stat_pf_installed - metric_pf_installed_base;
+                pf_merged = stat_pf_merged - metric_pf_merged_base;
+                pf_discarded = stat_pf_discarded - metric_pf_discarded_base;
+                pf_cancelled = stat_pf_cancelled - metric_pf_cancelled_base;
+                pf_unused_evicted = stat_pf_unused_evicted -
+                                    metric_pf_unused_evicted_base;
+                pf_vc_bypass = stat_pf_vc_bypass - metric_pf_vc_bypass_base;
+                pf_caused_writebacks = stat_pf_caused_writebacks -
+                                       metric_pf_caused_writebacks_base;
+                pf_demand_block_cycles = stat_pf_demand_block_cycles -
+                                         metric_pf_demand_block_cycles_base;
+                pf_true_help = stat_pf_true_help - metric_pf_true_help_base;
+                pf_true_pollution = stat_pf_true_pollution -
+                                    metric_pf_true_pollution_base;
+                pf_suppressed_quota = stat_pf_suppressed_quota -
+                                      metric_pf_suppressed_quota_base;
+                pf_suppressed_unsafe = stat_pf_suppressed_unsafe -
+                                       metric_pf_suppressed_unsafe_base;
+                pf_same_line_coalesced = stat_pf_same_line_coalesced -
+                                         metric_pf_same_line_coalesced_base;
+            end else begin
+                // A schema-3 sidecar can be requested while replaying the
+                // frozen legacy policy.  Normalize its historical lifecycle
+                // into the same causal vocabulary without changing RTL.
+                pf_candidates = prefetch_reads + dropped;
+                pf_admitted = prefetch_reads;
+                pf_issued = prefetch_reads;
+                pf_returned = prefetch_reads;
+                pf_installed = fills;
+                pf_merged = 0;
+                pf_discarded = 0;
+                pf_cancelled = 0;
+                pf_unused_evicted = useless;
+                pf_vc_bypass = 0;
+                pf_caused_writebacks = 0;
+                pf_demand_block_cycles = 0;
+                pf_true_help = 0;
+                pf_true_pollution = 0;
+                pf_suppressed_quota = 0;
+                pf_suppressed_unsafe = 0;
+                pf_same_line_coalesced = 0;
+            end
+            // In schema 3, `useful` is total useful work.  Installed-before-
+            // demand uses remain timely; same-line MSHR merges are late uses.
+            timely_useful = useful;
+            if (result_schema == 3)
+                useful = timely_useful + pf_merged;
             if (trace_id == '0) begin
                 result_trace_id = "synthetic";
             end else begin
@@ -1219,20 +1460,78 @@ module tb_l1d_cache #(
                          workload_name, accesses, hits + misses);
                 errors = errors + 1;
             end
-            if (demand_reads != misses - victim_hits) begin
+            if ((PREFETCH_POLICY == 0 &&
+                 demand_reads != misses - victim_hits) ||
+                (PREFETCH_POLICY == 1 &&
+                 demand_reads + pf_merged != misses - victim_hits)) begin
                 $display("FAIL demand read accounting name=%s demand_reads=%0d misses_minus_victim=%0d",
                          workload_name, demand_reads, misses - victim_hits);
                 errors = errors + 1;
             end
-            if (prefetch_reads != fills) begin
+            if (PREFETCH_POLICY == 0 && prefetch_reads != fills) begin
                 $display("FAIL prefetch read/fill accounting name=%s prefetch_reads=%0d fills=%0d",
                          workload_name, prefetch_reads, fills);
                 errors = errors + 1;
             end
-            if (fills != useful + useless + unused_resident) begin
+            if (PREFETCH_POLICY == 0 &&
+                fills != useful + useless + unused_resident) begin
                 $display("FAIL prefetch conservation name=%s fills=%0d useful=%0d useless=%0d resident=%0d",
                          workload_name, fills, useful, useless, unused_resident);
                 errors = errors + 1;
+            end
+            if (PREFETCH_POLICY == 1) begin
+                if (pf_issued > pf_admitted ||
+                    pf_admitted > pf_candidates) begin
+                    $display("FAIL optimized candidate accounting name=%s candidates=%0d admitted=%0d issued=%0d",
+                             workload_name, pf_candidates, pf_admitted,
+                             pf_issued);
+                    errors = errors + 1;
+                end
+                if (pf_admitted > pf_issued + pf_cancelled) begin
+                    $display("FAIL optimized admission lifecycle name=%s admitted=%0d issued=%0d cancelled=%0d",
+                             workload_name, pf_admitted, pf_issued,
+                             pf_cancelled);
+                    errors = errors + 1;
+                end
+                if (prefetch_reads != pf_issued) begin
+                    $display("FAIL optimized prefetch read/issue accounting name=%s reads=%0d issued=%0d",
+                             workload_name, prefetch_reads, pf_issued);
+                    errors = errors + 1;
+                end
+                if (pf_issued != pf_returned) begin
+                    $display("FAIL optimized prefetch drain accounting name=%s issued=%0d returned=%0d",
+                             workload_name, pf_issued, pf_returned);
+                    errors = errors + 1;
+                end
+                if (pf_returned !=
+                    pf_installed + pf_merged + pf_discarded) begin
+                    $display("FAIL optimized response accounting name=%s returned=%0d installed=%0d merged=%0d discarded=%0d",
+                             workload_name, pf_returned, pf_installed,
+                             pf_merged, pf_discarded);
+                    errors = errors + 1;
+                end
+                if (fills != pf_installed) begin
+                    $display("FAIL optimized fill/install accounting name=%s fills=%0d installed=%0d",
+                             workload_name, fills, pf_installed);
+                    errors = errors + 1;
+                end
+                if (pf_installed !=
+                    timely_useful + pf_unused_evicted + unused_resident) begin
+                    $display("FAIL optimized install residency accounting name=%s installed=%0d useful=%0d unused_evicted=%0d resident=%0d",
+                             workload_name, pf_installed, timely_useful,
+                             pf_unused_evicted, unused_resident);
+                    errors = errors + 1;
+                end
+                if (useless != pf_unused_evicted) begin
+                    $display("FAIL optimized unused-eviction accounting name=%s legacy=%0d lifecycle=%0d",
+                             workload_name, useless, pf_unused_evicted);
+                    errors = errors + 1;
+                end
+                if (pf_caused_writebacks != 0) begin
+                    $display("FAIL optimized prefetch caused writeback name=%s count=%0d",
+                             workload_name, pf_caused_writebacks);
+                    errors = errors + 1;
+                end
             end
             if (writes != writebacks) begin
                 $display("FAIL writeback accounting name=%s mem_writes=%0d writebacks=%0d",
@@ -1240,17 +1539,41 @@ module tb_l1d_cache #(
                 errors = errors + 1;
             end
             status = (errors == 0 && protocol_errors == 0) ? "PASS" : "FAIL";
-            $display("WORKLOAD_RESULT schema=2 name=%s config_id=%0s trace_id=%0s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=0 protocol=%0d duplicate_lines=0 status=%s",
-                     workload_name, config_id, result_trace_id, NUM_SETS,
-                     NUM_WAYS, LINE_BYTES, NUM_SETS*NUM_WAYS*LINE_BYTES,
-                     VICTIM_ENTRIES, VICTIM_ENTRIES*LINE_BYTES,
-                     (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
-                     ENABLE_PREFETCH, accesses, hits, misses, victim_hits,
-                     demand_reads, prefetch_reads, demand_reads + prefetch_reads,
-                     writes, (demand_reads + prefetch_reads)*LINE_BYTES,
-                     writes*LINE_BYTES, writebacks, fills, useful, useless,
-                     unused_resident, pollution, dropped, useful,
-                     service_cycles, protocol_errors, status);
+            if (result_schema == 2) begin
+                $display("WORKLOAD_RESULT schema=2 name=%s config_id=%0s trace_id=%0s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=0 replay_service_cycles=%0d watchdogs=0 protocol=%0d duplicate_lines=0 status=%s",
+                         workload_name, config_id, result_trace_id, NUM_SETS,
+                         NUM_WAYS, LINE_BYTES, NUM_SETS*NUM_WAYS*LINE_BYTES,
+                         VICTIM_ENTRIES, VICTIM_ENTRIES*LINE_BYTES,
+                         (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                         ENABLE_PREFETCH, accesses, hits, misses, victim_hits,
+                         demand_reads, prefetch_reads,
+                         demand_reads + prefetch_reads, writes,
+                         (demand_reads + prefetch_reads)*LINE_BYTES,
+                         writes*LINE_BYTES, writebacks, fills, useful, useless,
+                         unused_resident, pollution, dropped, useful,
+                         service_cycles, protocol_errors, status);
+            end else begin
+                $display("WORKLOAD_RESULT schema=3 name=%s config_id=%0s trace_id=%0s sets=%0d ways=%0d line_bytes=%0d l1_bytes=%0d victim_entries=%0d victim_bytes=%0d total_bytes=%0d prefetch=%0d accesses=%0d hits=%0d misses=%0d victim_hits=%0d demand_mem_reads=%0d prefetch_mem_reads=%0d mem_reads=%0d mem_writes=%0d read_bytes=%0d write_bytes=%0d writebacks=%0d fills=%0d useful=%0d useless_evicted=%0d unused_resident=%0d pollution_proxy=%0d dropped=%0d timely_useful=%0d late_useful=%0d replay_service_cycles=%0d watchdogs=0 protocol=%0d duplicate_lines=0 status=%s pf_candidates=%0d pf_admitted=%0d pf_issued=%0d pf_returned=%0d pf_installed=%0d pf_merged=%0d pf_discarded=%0d pf_cancelled=%0d pf_unused_evicted=%0d pf_unused_resident=%0d pf_vc_bypass=%0d pf_caused_writebacks=%0d pf_demand_block_cycles=%0d pf_true_help=%0d pf_true_pollution=%0d pf_suppressed_quota=%0d pf_suppressed_unsafe=%0d pf_same_line_coalesced=%0d pf_controller_state=%0d pf_mshr_valid=%0d pf_mshr_addr=%016h pf_mshr_confidence=%0d",
+                         workload_name, config_id, result_trace_id, NUM_SETS,
+                         NUM_WAYS, LINE_BYTES, NUM_SETS*NUM_WAYS*LINE_BYTES,
+                         VICTIM_ENTRIES, VICTIM_ENTRIES*LINE_BYTES,
+                         (NUM_SETS*NUM_WAYS + VICTIM_ENTRIES)*LINE_BYTES,
+                         ENABLE_PREFETCH, accesses, hits, misses, victim_hits,
+                         demand_reads, prefetch_reads,
+                         demand_reads + prefetch_reads, writes,
+                         (demand_reads + prefetch_reads)*LINE_BYTES,
+                         writes*LINE_BYTES, writebacks, fills, useful, useless,
+                         unused_resident, pollution, dropped, timely_useful,
+                         pf_merged, service_cycles, protocol_errors, status,
+                         pf_candidates, pf_admitted, pf_issued, pf_returned,
+                         pf_installed, pf_merged, pf_discarded, pf_cancelled,
+                         pf_unused_evicted, unused_resident, pf_vc_bypass,
+                         pf_caused_writebacks, pf_demand_block_cycles,
+                         pf_true_help, pf_true_pollution, pf_suppressed_quota,
+                         pf_suppressed_unsafe, pf_same_line_coalesced,
+                         debug_pf_controller_state, debug_pf_mshr_valid,
+                         debug_pf_mshr_addr, debug_pf_mshr_confidence);
+            end
         end
     endtask
 
@@ -1284,7 +1607,7 @@ module tb_l1d_cache #(
             end
             wait_for_quiescence();
             report_workload("sequential_stream", STREAM_ACCESSES);
-            if (ENABLE_PREFETCH != 0) begin
+            if (ENABLE_PREFETCH != 0 && PREFETCH_POLICY == 0) begin
                 if (stat_prefetch_useful == 0 ||
                     stat_cpu_misses >= STREAM_ACCESSES) begin
                     $display("FAIL sequential stream did not benefit from next-line prefetch");
@@ -1309,8 +1632,9 @@ module tb_l1d_cache #(
             end
             wait_for_quiescence();
             report_workload("stride_two_lines", STREAM_ACCESSES);
-            if (stat_cpu_misses != STREAM_ACCESSES ||
-                stat_prefetch_useful != 0) begin
+            if (PREFETCH_POLICY == 0 &&
+                (stat_cpu_misses != STREAM_ACCESSES ||
+                 stat_prefetch_useful != 0)) begin
                 $display("FAIL two-line stride should not use next-line candidates");
                 errors = errors + 1;
             end
@@ -1385,10 +1709,338 @@ module tb_l1d_cache #(
             end
             wait_for_quiescence();
             report_workload("irregular_pointer_chase", POINTER_ACCESSES);
-            if (stat_cpu_misses != POINTER_ACCESSES ||
-                stat_prefetch_useful != 0) begin
+            if (PREFETCH_POLICY == 0 &&
+                (stat_cpu_misses != POINTER_ACCESSES ||
+                 stat_prefetch_useful != 0)) begin
                 $display("FAIL irregular pointer chase unexpectedly used next-line data");
                 errors = errors + 1;
+            end
+        end
+    endtask
+
+    // Read the next semantic trace item while skipping blank lines and
+    // comments.  Item kinds are 0=EOF, 1=demand, 2=warmup marker, and
+    // 3=measure marker.  Keeping phase markers explicit prevents the
+    // zero-bubble producer from presenting a request across an ROI boundary.
+    task automatic read_next_trace_item(
+        input integer trace_fd,
+        inout integer trace_line_number,
+        output integer item_kind,
+        output integer item_operation,
+        output integer item_size,
+        output integer item_unsigned,
+        output logic [ADDR_WIDTH-1:0] item_addr,
+        output logic [DATA_WIDTH-1:0] item_data
+    );
+        integer scan_count;
+        integer phase_code;
+        reg [8*TRACE_LINE_BYTES-1:0] trace_line;
+        begin
+            item_kind = -1;
+            item_operation = -1;
+            item_size = -1;
+            item_unsigned = 0;
+            item_addr = '0;
+            item_data = '0;
+            while (item_kind < 0 && !$feof(trace_fd)) begin
+                trace_line = '0;
+                if ($fgets(trace_line, trace_fd) != 0) begin
+                    trace_line_number = trace_line_number + 1;
+                    phase_code = trace_phase_code(trace_line);
+                    if (phase_code == 1) begin
+                        item_kind = 2;
+                    end else if (phase_code == 2) begin
+                        item_kind = 3;
+                    end else if (!trace_is_comment(trace_line)) begin
+                        scan_count = $sscanf(trace_line, "%d %d %d %h %h",
+                                             item_operation, item_size,
+                                             item_unsigned, item_addr,
+                                             item_data);
+                        if (scan_count >= 1) begin
+                            case (item_operation)
+                                0: begin
+                                    if (scan_count != 4 || item_size < 0 ||
+                                        item_size > 3 || item_unsigned < 0 ||
+                                        item_unsigned > 1) begin
+                                        $fatal(1,
+                                               "invalid trace load at line %0d",
+                                               trace_line_number);
+                                    end
+                                end
+                                1: begin
+                                    if (scan_count != 5 || item_size < 0 ||
+                                        item_size > 3) begin
+                                        $fatal(1,
+                                               "invalid trace store at line %0d",
+                                               trace_line_number);
+                                    end
+                                end
+                                default: begin
+                                    $fatal(1,
+                                           "invalid trace opcode at line %0d",
+                                           trace_line_number);
+                                end
+                            endcase
+                            item_kind = 1;
+                        end
+                    end
+                end
+            end
+            if (item_kind < 0) item_kind = 0;
+        end
+    endtask
+
+    // Replay one contiguous trace phase with one accepted demand and one
+    // presented lookahead demand.  The cache remains single-accept: request
+    // i+1 is held valid after request i is accepted, then transfers only after
+    // i's response releases ST_RESP.  This is the producer behavior required
+    // to exercise background prefetch issue and same-line PF-MSHR merge.
+    task automatic replay_zero_bubble_segment(
+        input integer trace_fd,
+        inout integer trace_line_number,
+        inout integer accesses,
+        input integer check_load_data,
+        input integer first_operation,
+        input integer first_size,
+        input integer first_unsigned,
+        input logic [ADDR_WIDTH-1:0] first_addr,
+        input logic [DATA_WIDTH-1:0] first_data,
+        output integer boundary_kind,
+        output integer boundary_operation,
+        output integer boundary_size,
+        output integer boundary_unsigned,
+        output logic [ADDR_WIDTH-1:0] boundary_addr,
+        output logic [DATA_WIDTH-1:0] boundary_data
+    );
+        integer current_operation;
+        integer current_size;
+        integer current_unsigned;
+        logic [ADDR_WIDTH-1:0] current_addr;
+        logic [DATA_WIDTH-1:0] current_data;
+        integer current_seq;
+        integer current_accept_cycle;
+        integer current_hit_before;
+        integer current_victim_before;
+        integer next_kind;
+        integer next_operation;
+        integer next_size;
+        integer next_unsigned;
+        logic [ADDR_WIDTH-1:0] next_addr;
+        logic [DATA_WIDTH-1:0] next_data;
+        integer next_seq;
+        integer timeout;
+        integer segment_accepts;
+        integer segment_responses;
+        integer segment_records;
+        integer segment_overlaps;
+        logic accepted;
+        logic got_response;
+        logic [DATA_WIDTH-1:0] response_data;
+        logic response_error;
+        logic [1:0] response_cause;
+        string current_op_name;
+        string next_op_name;
+        string response_outcome;
+        begin
+            current_operation = first_operation;
+            current_size = first_size;
+            current_unsigned = first_unsigned;
+            current_addr = first_addr;
+            current_data = first_data;
+            current_seq = measurement_active ? accesses : -1;
+            segment_accepts = 0;
+            segment_responses = 0;
+            segment_records = 1;
+            segment_overlaps = 0;
+
+            @(negedge clk);
+            cpu_req_valid = 1'b1;
+            cpu_req_addr = current_addr;
+            cpu_req_write = (current_operation == 1);
+            cpu_req_size = current_size[1:0];
+            cpu_req_unsigned = current_unsigned != 0;
+            cpu_req_wdata = current_data;
+            current_op_name = (current_operation == 1) ? "store" : "load";
+            last_cpu_present_cycle = cycles_since_reset -
+                                     metric_cycles_base + 1;
+            if (measurement_active && access_sidecar_fd != 0 &&
+                access_sidecar_schema == 3) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=3 event=demand_present seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=pending latency=-1 details=-",
+                          current_seq, last_cpu_present_cycle, current_addr,
+                          current_op_name, current_size);
+            end
+
+            boundary_kind = 0;
+            while (segment_responses < segment_records) begin
+                accepted = 1'b0;
+                timeout = 0;
+                while (!accepted) begin
+                    @(posedge clk);
+                    accepted = cpu_req_valid && cpu_req_ready;
+                    timeout = timeout + 1;
+                    if (timeout > 400)
+                        $fatal(1, "zero-bubble CPU request timeout");
+                end
+                segment_accepts = segment_accepts + 1;
+                current_accept_cycle = cycles_since_reset -
+                                       metric_cycles_base + 1;
+                current_hit_before = stat_cpu_hits;
+                current_victim_before = stat_victim_hits;
+                if (measurement_active && access_sidecar_fd != 0 &&
+                    access_sidecar_schema == 3) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=demand_accept seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=pending latency=0 details=-",
+                              current_seq, current_accept_cycle, current_addr,
+                              current_op_name, current_size);
+                end
+
+                read_next_trace_item(trace_fd, trace_line_number, next_kind,
+                                     next_operation, next_size, next_unsigned,
+                                     next_addr, next_data);
+                if (next_kind == 1) begin
+                    next_seq = measurement_active ? current_seq + 1 : -1;
+                    next_op_name = (next_operation == 1) ? "store" : "load";
+                    @(negedge clk);
+                    // The previous request was accepted, so its payload may
+                    // now be replaced.  valid deliberately stays asserted.
+                    cpu_req_addr = next_addr;
+                    cpu_req_write = (next_operation == 1);
+                    cpu_req_size = next_size[1:0];
+                    cpu_req_unsigned = next_unsigned != 0;
+                    cpu_req_wdata = next_data;
+                    last_cpu_present_cycle = cycles_since_reset -
+                                             metric_cycles_base + 1;
+                    if (measurement_active && access_sidecar_fd != 0 &&
+                        access_sidecar_schema == 3) begin
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=demand_present seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=pending latency=-1 details=-",
+                                  next_seq, last_cpu_present_cycle, next_addr,
+                                  next_op_name, next_size);
+                    end
+                end else begin
+                    @(negedge clk);
+                    cpu_req_valid = 1'b0;
+                    cpu_req_size = SIZE_DOUBLE;
+                    cpu_req_unsigned = 1'b0;
+                    cpu_req_wdata = '0;
+                end
+
+                got_response = 1'b0;
+                timeout = 0;
+                while (!got_response) begin
+                    @(posedge clk);
+                    got_response = cpu_rsp_valid && cpu_rsp_ready;
+                    timeout = timeout + 1;
+                    if (timeout > 800)
+                        $fatal(1, "zero-bubble CPU response timeout");
+                end
+                if (next_kind == 1) begin
+                    if (!cpu_req_valid || cpu_req_addr !== next_addr ||
+                        cpu_req_write !== (next_operation == 1) ||
+                        cpu_req_size !== next_size[1:0]) begin
+                        $fatal(1,
+                               "next zero-bubble request not held during prior response");
+                    end
+                    segment_overlaps = segment_overlaps + 1;
+                    zero_bubble_overlap_observed =
+                        zero_bubble_overlap_observed + 1;
+                end
+
+                response_data = cpu_rsp_rdata;
+                response_error = cpu_rsp_error;
+                response_cause = cpu_rsp_error_cause;
+                last_cpu_response_cycle = cycles_since_reset -
+                                          metric_cycles_base + 1;
+                last_cpu_latency = last_cpu_response_cycle -
+                                   current_accept_cycle;
+                if (stat_cpu_hits != current_hit_before) begin
+                    response_outcome = "l1_hit";
+                end else if (stat_victim_hits != current_victim_before) begin
+                    response_outcome = "victim_hit";
+                end else begin
+                    response_outcome = "lower_memory";
+                end
+                if (measurement_active && access_sidecar_fd != 0 &&
+                    access_sidecar_schema == 3) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=demand_response seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=%s latency=%0d details=-",
+                              current_seq, last_cpu_response_cycle,
+                              current_addr, current_op_name, current_size,
+                              response_outcome, last_cpu_latency);
+                end
+
+                if (current_operation == 0) begin
+                    if (response_error) begin
+                        $display("FAIL load raised error addr=%016x size=%0d cause=%0d",
+                                 current_addr, current_size, response_cause);
+                        errors = errors + 1;
+                    end
+                    if (check_load_data &&
+                        response_data !== golden_load(current_addr,
+                                                      current_size[1:0],
+                                                      current_unsigned != 0)) begin
+                        $display("FAIL trace load line-seq=%0d addr=%016x size=%0d unsigned=%0d expected=%016x actual=%016x",
+                                 current_seq, current_addr, current_size,
+                                 current_unsigned,
+                                 golden_load(current_addr,
+                                             current_size[1:0],
+                                             current_unsigned != 0),
+                                 response_data);
+                        errors = errors + 1;
+                    end
+                end else begin
+                    if (response_error) begin
+                        $display("FAIL store raised error addr=%016x size=%0d cause=%0d",
+                                 current_addr, current_size, response_cause);
+                        errors = errors + 1;
+                    end
+                    update_golden_store(current_addr, current_data,
+                                        current_size[1:0]);
+                end
+
+                if (measurement_active) begin
+                    if (access_sidecar_fd != 0 &&
+                        access_sidecar_schema == 2) begin
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=%s size=%0d outcome=%s details=-",
+                                  current_seq, current_accept_cycle,
+                                  current_addr, current_op_name, current_size,
+                                  response_outcome);
+                    end
+                    accesses = accesses + 1;
+                end
+                segment_responses = segment_responses + 1;
+
+                if (next_kind == 1) begin
+                    current_operation = next_operation;
+                    current_size = next_size;
+                    current_unsigned = next_unsigned;
+                    current_addr = next_addr;
+                    current_data = next_data;
+                    current_seq = next_seq;
+                    current_op_name = next_op_name;
+                    segment_records = segment_records + 1;
+                end else begin
+                    boundary_kind = next_kind;
+                    boundary_operation = next_operation;
+                    boundary_size = next_size;
+                    boundary_unsigned = next_unsigned;
+                    boundary_addr = next_addr;
+                    boundary_data = next_data;
+                end
+            end
+
+            if (segment_accepts != segment_responses) begin
+                $fatal(1,
+                       "zero-bubble accepted/response mismatch accepts=%0d responses=%0d",
+                       segment_accepts, segment_responses);
+            end
+            if (segment_records > 1 &&
+                segment_overlaps != segment_records - 1) begin
+                $fatal(1,
+                       "zero-bubble overlap mismatch records=%0d overlaps=%0d",
+                       segment_records, segment_overlaps);
             end
         end
     endtask
@@ -1411,9 +2063,21 @@ module tb_l1d_cache #(
         integer accept_cycle;
         integer is_phase_line;
         integer phase_code;
+        integer item_kind;
+        integer item_operation;
+        integer item_size;
+        integer item_unsigned;
+        integer boundary_kind;
+        integer boundary_operation;
+        integer boundary_size;
+        integer boundary_unsigned;
         reg [8*TRACE_LINE_BYTES-1:0] trace_line;
         logic [ADDR_WIDTH-1:0] addr;
         logic [DATA_WIDTH-1:0] data;
+        logic [ADDR_WIDTH-1:0] item_addr;
+        logic [DATA_WIDTH-1:0] item_data;
+        logic [ADDR_WIDTH-1:0] boundary_addr;
+        logic [DATA_WIDTH-1:0] boundary_data;
         logic [DATA_WIDTH-1:0] actual;
         logic [1:0] size;
         logic unsigned_load;
@@ -1457,6 +2121,75 @@ module tb_l1d_cache #(
             cfg_next_line_enable = cfg_prefetch_enable;
             snapshot_measurement_counters();
             trace_line_number = 0;
+            zero_bubble_overlap_observed = 0;
+            if (producer_profile == 1) begin
+                read_next_trace_item(trace_fd, trace_line_number, item_kind,
+                                     item_operation, item_size, item_unsigned,
+                                     item_addr, item_data);
+                while (item_kind != 0) begin
+                    case (item_kind)
+                        2: begin
+                            if (saw_measure_phase) begin
+                                $fatal(1,
+                                       "warmup phase follows measure at line %0d",
+                                       trace_line_number);
+                            end
+                            measurement_active = 1'b0;
+                            cfg_prefetch_enable = 1'b0;
+                            cfg_next_line_enable = 1'b0;
+                            read_next_trace_item(
+                                trace_fd, trace_line_number, item_kind,
+                                item_operation, item_size, item_unsigned,
+                                item_addr, item_data
+                            );
+                        end
+                        3: begin
+                            if (saw_measure_phase) begin
+                                $fatal(1,
+                                       "duplicate measure phase at line %0d",
+                                       trace_line_number);
+                            end
+                            // replay_zero_bubble_segment returns only after
+                            // its last response and deasserts request valid,
+                            // so no warmup request can cross this drain.
+                            wait_for_quiescence();
+                            snapshot_measurement_counters();
+                            accesses = 0;
+                            saw_measure_phase = 1;
+                            measurement_active = 1'b1;
+                            cfg_prefetch_enable = (ENABLE_PREFETCH != 0);
+                            cfg_next_line_enable = (ENABLE_PREFETCH != 0);
+                            read_next_trace_item(
+                                trace_fd, trace_line_number, item_kind,
+                                item_operation, item_size, item_unsigned,
+                                item_addr, item_data
+                            );
+                        end
+                        1: begin
+                            replay_zero_bubble_segment(
+                                trace_fd, trace_line_number, accesses,
+                                check_load_data, item_operation, item_size,
+                                item_unsigned, item_addr, item_data,
+                                boundary_kind, boundary_operation,
+                                boundary_size, boundary_unsigned,
+                                boundary_addr, boundary_data
+                            );
+                            item_kind = boundary_kind;
+                            item_operation = boundary_operation;
+                            item_size = boundary_size;
+                            item_unsigned = boundary_unsigned;
+                            item_addr = boundary_addr;
+                            item_data = boundary_data;
+                        end
+                        default: begin
+                            $fatal(1, "unknown parsed trace item %0d",
+                                   item_kind);
+                        end
+                    endcase
+                end
+                $display("ZERO_BUBBLE_RESULT overlaps=%0d",
+                         zero_bubble_overlap_observed);
+            end else begin
             while (!$feof(trace_fd)) begin
                 trace_line = '0;
                 if ($fgets(trace_line, trace_fd) != 0) begin
@@ -1513,7 +2246,12 @@ module tb_l1d_cache #(
                                 victim_before = stat_victim_hits;
                                 accept_cycle = cycles_since_reset -
                                                metric_cycles_base + 1;
+                                sidecar_request_active = measurement_active;
+                                sidecar_request_seq = accesses;
+                                sidecar_hit_before = hit_before;
+                                sidecar_victim_before = victim_before;
                                 cpu_load(addr, size, unsigned_load, actual);
+                                sidecar_request_active = 1'b0;
                                 if (check_load_data &&
                                     actual !== golden_load(addr, size,
                                                            unsigned_load)) begin
@@ -1535,10 +2273,12 @@ module tb_l1d_cache #(
                                         outcome = "lower_memory";
                                     end
                                     if (access_sidecar_fd != 0) begin
-                                        $fdisplay(access_sidecar_fd,
-                                                  "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=load size=%0d outcome=%s details=-",
-                                                  accesses - 1, accept_cycle,
-                                                  addr, size, outcome);
+                                        if (access_sidecar_schema == 2) begin
+                                            $fdisplay(access_sidecar_fd,
+                                                      "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=load size=%0d outcome=%s details=-",
+                                                      accesses - 1, accept_cycle,
+                                                      addr, size, outcome);
+                                        end
                                     end
                                 end
                             end
@@ -1553,7 +2293,12 @@ module tb_l1d_cache #(
                                 victim_before = stat_victim_hits;
                                 accept_cycle = cycles_since_reset -
                                                metric_cycles_base + 1;
+                                sidecar_request_active = measurement_active;
+                                sidecar_request_seq = accesses;
+                                sidecar_hit_before = hit_before;
+                                sidecar_victim_before = victim_before;
                                 cpu_store(addr, size, data);
+                                sidecar_request_active = 1'b0;
                                 update_golden_store(addr, data, size);
                                 if (measurement_active) begin
                                     accesses = accesses + 1;
@@ -1565,10 +2310,12 @@ module tb_l1d_cache #(
                                         outcome = "lower_memory";
                                     end
                                     if (access_sidecar_fd != 0) begin
-                                        $fdisplay(access_sidecar_fd,
-                                                  "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=store size=%0d outcome=%s details=-",
-                                                  accesses - 1, accept_cycle,
-                                                  addr, size, outcome);
+                                        if (access_sidecar_schema == 2) begin
+                                            $fdisplay(access_sidecar_fd,
+                                                      "schema=2 event=demand seq=%0d cycle=%0d addr=%016h op=store size=%0d outcome=%s details=-",
+                                                      accesses - 1, accept_cycle,
+                                                      addr, size, outcome);
+                                        end
                                     end
                                 end
                             end
@@ -1580,6 +2327,7 @@ module tb_l1d_cache #(
                     end
                 end
             end
+            end
             $fclose(trace_fd);
             if (has_phase_markers && !saw_measure_phase) begin
                 $fatal(1, "phased trace does not contain a measure phase");
@@ -1589,7 +2337,13 @@ module tb_l1d_cache #(
         end
     endtask
 
-    assign mem_req_ready = !read_pending && (mem_ready_phase != 3'b000);
+    assign mem_req_ready = !read_pending &&
+                           ((MEM_READY_MODE == 0) ? 1'b1 :
+                            (MEM_READY_MODE == 1) ?
+                                (mem_ready_phase != 3'b000) :
+                            (MEM_READY_MODE == 2) ?
+                                (mem_ready_lfsr[0] || mem_ready_lfsr[3]) :
+                                1'b0);
 
     always_ff @(posedge clk or negedge rst_n) begin
         integer b;
@@ -1600,6 +2354,7 @@ module tb_l1d_cache #(
             mem_rsp_valid <= 1'b0;
             mem_rsp_rdata <= '0;
             mem_ready_phase <= '0;
+            mem_ready_lfsr <= 32'h4700_2026;
             accepted_mem_reads <= 0;
             accepted_demand_mem_reads <= 0;
             accepted_prefetch_mem_reads <= 0;
@@ -1608,6 +2363,9 @@ module tb_l1d_cache #(
         end else begin
             mem_rsp_valid <= 1'b0;
             mem_ready_phase <= mem_ready_phase + 1'b1;
+            mem_ready_lfsr <= {mem_ready_lfsr[30:0],
+                               mem_ready_lfsr[31] ^ mem_ready_lfsr[21] ^
+                               mem_ready_lfsr[1] ^ mem_ready_lfsr[0]};
             cycles_since_reset <= cycles_since_reset + 1;
 
             if (read_pending) begin
@@ -1638,7 +2396,7 @@ module tb_l1d_cache #(
                     end
                     read_pending <= 1'b1;
                     read_addr <= mem_req_addr;
-                    read_countdown <= 2;
+                    read_countdown <= MEM_LATENCY;
                 end
             end
         end
@@ -1689,34 +2447,302 @@ module tb_l1d_cache #(
         end
     end
 
-    always @(posedge clk) begin
-        if (rst_n && measurement_active && access_sidecar_fd != 0) begin
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            sidecar_measurement_was_active = 1'b0;
+            sidecar_pf_addr = '0;
+            sidecar_pf_addr_valid = 1'b0;
+            sidecar_prev_pf_returned = '0;
+            sidecar_prev_pf_installed = '0;
+            sidecar_prev_pf_merged = '0;
+            sidecar_prev_pf_discarded = '0;
+            sidecar_prev_pf_candidates = '0;
+            sidecar_prev_pf_admitted = '0;
+            sidecar_prev_pf_useful = '0;
+            sidecar_prev_pf_unused_evicted = '0;
+            sidecar_prev_pf_cancelled = '0;
+            sidecar_prev_pf_suppressed_quota = '0;
+            sidecar_prev_pf_suppressed_unsafe = '0;
+            sidecar_prev_pf_caused_writebacks = '0;
+            sidecar_prev_controller_state = '0;
+        end else if (!measurement_active) begin
+            // Warmup is intentionally absent from the measurement sidecar.
+            // Synchronize the edge detector so the first measured cycle does
+            // not replay lifecycle transitions that happened during warmup.
+            sidecar_measurement_was_active = 1'b0;
+            sidecar_pf_addr_valid = 1'b0;
+            sidecar_prev_pf_returned = stat_pf_returned;
+            sidecar_prev_pf_installed = stat_pf_installed;
+            sidecar_prev_pf_merged = stat_pf_merged;
+            sidecar_prev_pf_discarded = stat_pf_discarded;
+            sidecar_prev_pf_candidates = stat_pf_candidates;
+            sidecar_prev_pf_admitted = stat_pf_admitted;
+            sidecar_prev_pf_useful = stat_prefetch_useful;
+            sidecar_prev_pf_unused_evicted = stat_pf_unused_evicted;
+            sidecar_prev_pf_cancelled = stat_pf_cancelled;
+            sidecar_prev_pf_suppressed_quota = stat_pf_suppressed_quota;
+            sidecar_prev_pf_suppressed_unsafe = stat_pf_suppressed_unsafe;
+            sidecar_prev_pf_caused_writebacks = stat_pf_caused_writebacks;
+            sidecar_prev_controller_state = debug_pf_controller_state;
+        end else begin
+            if (!sidecar_measurement_was_active) begin
+                sidecar_measurement_was_active = 1'b1;
+                sidecar_prev_pf_returned = stat_pf_returned;
+                sidecar_prev_pf_installed = stat_pf_installed;
+                sidecar_prev_pf_merged = stat_pf_merged;
+                sidecar_prev_pf_discarded = stat_pf_discarded;
+                sidecar_prev_pf_candidates = stat_pf_candidates;
+                sidecar_prev_pf_admitted = stat_pf_admitted;
+                sidecar_prev_pf_useful = stat_prefetch_useful;
+                sidecar_prev_pf_unused_evicted = stat_pf_unused_evicted;
+                sidecar_prev_pf_cancelled = stat_pf_cancelled;
+                sidecar_prev_pf_suppressed_quota = stat_pf_suppressed_quota;
+                sidecar_prev_pf_suppressed_unsafe = stat_pf_suppressed_unsafe;
+                sidecar_prev_pf_caused_writebacks = stat_pf_caused_writebacks;
+                sidecar_prev_controller_state = debug_pf_controller_state;
+                if (access_sidecar_fd != 0 &&
+                    access_sidecar_schema == 3) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=controller_state seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=state_%0d latency=0 details=mshr_valid:%0d,mshr_addr:%016h,mshr_confidence:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              {ADDR_WIDTH{1'b0}}, LINE_BYTES,
+                              debug_pf_controller_state,
+                              debug_pf_mshr_valid, debug_pf_mshr_addr,
+                              debug_pf_mshr_confidence);
+                end
+            end
+
             if (mem_req_valid && mem_req_ready && !mem_req_write &&
                 debug_req_is_prefetch) begin
-                $fdisplay(access_sidecar_fd,
-                          "schema=2 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory details=-",
-                          cycles_since_reset - metric_cycles_base,
-                          mem_req_addr, LINE_BYTES);
+                sidecar_pf_addr = mem_req_addr;
+                sidecar_pf_addr_valid = 1'b1;
+                if (access_sidecar_fd != 0 && access_sidecar_schema == 2) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=2 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory details=-",
+                              cycles_since_reset - metric_cycles_base,
+                              mem_req_addr, LINE_BYTES);
+                end else if (access_sidecar_fd != 0) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory latency=-1 details=controller:%0d,mshr_valid:%0d,mshr_confidence:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              mem_req_addr, LINE_BYTES,
+                              debug_pf_controller_state,
+                              debug_pf_mshr_valid,
+                              debug_pf_mshr_confidence);
+                end
             end
-            if (event_prefetch_fill) begin
-                $fdisplay(access_sidecar_fd,
-                          "schema=2 event=prefetch_fill seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit details=-",
-                          cycles_since_reset - metric_cycles_base,
-                          dut.req_line_addr_comb, LINE_BYTES);
+
+            if (event_prefetch_fill && access_sidecar_fd != 0 &&
+                (access_sidecar_schema == 2 || PREFETCH_POLICY == 0)) begin
+                if (access_sidecar_schema == 2) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=2 event=prefetch_fill seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit details=-",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES);
+                end else begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_fill seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit latency=-1 details=-",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES);
+                end
             end
+
+            if (access_sidecar_fd != 0 && access_sidecar_schema == 3 &&
+                PREFETCH_POLICY == 1) begin
+                for (sidecar_delta_i = sidecar_prev_pf_candidates;
+                     sidecar_delta_i < stat_pf_candidates;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_candidate seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=queued latency=-1 details=controller:%0d,confidence:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              (ext_prefetch_valid && ext_prefetch_ready) ?
+                              {ext_prefetch_addr[ADDR_WIDTH-1:OFFSET_BITS],
+                               {OFFSET_BITS{1'b0}}} :
+                              dut.next_line_candidate_addr,
+                              LINE_BYTES, debug_pf_controller_state,
+                              (ext_prefetch_valid && ext_prefetch_ready) ?
+                              3 : dut.next_line_candidate_confidence);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_admitted;
+                     sidecar_delta_i < stat_pf_admitted;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_admit seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=admitted latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              sidecar_pf_addr_valid ? sidecar_pf_addr :
+                              dut.req_line_addr_comb,
+                              LINE_BYTES, debug_pf_controller_state);
+                end
+                if (stat_pf_returned != sidecar_prev_pf_returned) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_return seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=returned latency=-1 details=controller:%0d,mshr_valid:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              sidecar_pf_addr_valid ? sidecar_pf_addr :
+                              debug_pf_mshr_addr,
+                              LINE_BYTES, debug_pf_controller_state,
+                              debug_pf_mshr_valid);
+                end
+                if (stat_pf_installed != sidecar_prev_pf_installed) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_install seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              sidecar_pf_addr_valid ? sidecar_pf_addr :
+                              dut.req_line_addr_comb,
+                              LINE_BYTES, debug_pf_controller_state);
+                    sidecar_pf_addr_valid = 1'b0;
+                end
+                if (stat_pf_merged != sidecar_prev_pf_merged) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_merge seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=late_merge latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              debug_pf_mshr_valid ? debug_pf_mshr_addr :
+                              sidecar_pf_addr,
+                              LINE_BYTES, debug_pf_controller_state);
+                    sidecar_pf_addr_valid = 1'b0;
+                end
+                if (stat_pf_discarded != sidecar_prev_pf_discarded) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_discard seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=discarded latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              sidecar_pf_addr_valid ? sidecar_pf_addr :
+                              debug_pf_mshr_addr,
+                              LINE_BYTES, debug_pf_controller_state);
+                    sidecar_pf_addr_valid = 1'b0;
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_useful;
+                     sidecar_delta_i < stat_prefetch_useful;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_use seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=timely_use latency=0 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_unused_evicted;
+                     sidecar_delta_i < stat_pf_unused_evicted;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_evict seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=unused_evict latency=-1 details=vc_bypass:1,controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_cancelled;
+                     sidecar_delta_i < stat_pf_cancelled;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_cancel seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=cancelled latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_suppressed_quota;
+                     sidecar_delta_i < stat_pf_suppressed_quota;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_suppressed seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=quota latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.next_line_candidate_addr, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_suppressed_unsafe;
+                     sidecar_delta_i < stat_pf_suppressed_unsafe;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_suppressed seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=unsafe latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              dut.req_line_addr_comb, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_caused_writebacks;
+                     sidecar_delta_i < stat_pf_caused_writebacks;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=prefetch_writeback seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=writeback latency=-1 details=controller:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              mem_req_addr, LINE_BYTES,
+                              debug_pf_controller_state);
+                end
+                if (debug_pf_controller_state !=
+                    sidecar_prev_controller_state) begin
+                    $fdisplay(access_sidecar_fd,
+                              "schema=3 event=controller_state seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=state_%0d latency=0 details=mshr_valid:%0d,mshr_addr:%016h,mshr_confidence:%0d",
+                              cycles_since_reset - metric_cycles_base,
+                              {ADDR_WIDTH{1'b0}}, LINE_BYTES,
+                              debug_pf_controller_state,
+                              debug_pf_mshr_valid, debug_pf_mshr_addr,
+                              debug_pf_mshr_confidence);
+                end
+            end
+
+            sidecar_prev_pf_returned = stat_pf_returned;
+            sidecar_prev_pf_installed = stat_pf_installed;
+            sidecar_prev_pf_merged = stat_pf_merged;
+            sidecar_prev_pf_discarded = stat_pf_discarded;
+            sidecar_prev_pf_candidates = stat_pf_candidates;
+            sidecar_prev_pf_admitted = stat_pf_admitted;
+            sidecar_prev_pf_useful = stat_prefetch_useful;
+            sidecar_prev_pf_unused_evicted = stat_pf_unused_evicted;
+            sidecar_prev_pf_cancelled = stat_pf_cancelled;
+            sidecar_prev_pf_suppressed_quota = stat_pf_suppressed_quota;
+            sidecar_prev_pf_suppressed_unsafe = stat_pf_suppressed_unsafe;
+            sidecar_prev_pf_caused_writebacks = stat_pf_caused_writebacks;
+            sidecar_prev_controller_state = debug_pf_controller_state;
         end
     end
 
     initial begin
         string trace_path;
         string sidecar_path;
+        integer command_mem_latency;
+        integer command_mem_ready_mode;
         clk = 1'b0;
         rst_n = 1'b0;
         errors = 0;
         protocol_errors = 0;
         access_sidecar_fd = 0;
+        access_sidecar_schema = 3;
+        producer_profile = PRODUCER_PROFILE;
+        producer_gap = PRODUCER_GAP;
+        sidecar_request_active = 1'b0;
+        sidecar_request_seq = -1;
+        sidecar_hit_before = 0;
+        sidecar_victim_before = 0;
         measurement_active = 1'b0;
         trace_id = '0;
+        void'($value$plusargs("PRODUCER_PROFILE=%d", producer_profile));
+        void'($value$plusargs("PRODUCER_GAP=%d", producer_gap));
+        command_mem_latency = MEM_LATENCY;
+        command_mem_ready_mode = MEM_READY_MODE;
+        if ($value$plusargs("MEM_LATENCY=%d", command_mem_latency) &&
+            command_mem_latency != MEM_LATENCY) begin
+            $fatal(1,
+                   "MEM_LATENCY command provenance %0d does not match elaborated value %0d",
+                   command_mem_latency, MEM_LATENCY);
+        end
+        if ($value$plusargs("MEM_READY_MODE=%d", command_mem_ready_mode) &&
+            command_mem_ready_mode != MEM_READY_MODE) begin
+            $fatal(1,
+                   "MEM_READY_MODE command provenance %0d does not match elaborated value %0d",
+                   command_mem_ready_mode, MEM_READY_MODE);
+        end
+        if (MEM_LATENCY < 0) begin
+            $fatal(1, "MEM_LATENCY must be non-negative");
+        end
+        if (MEM_READY_MODE < 0 || MEM_READY_MODE > 2) begin
+            $fatal(1, "MEM_READY_MODE must be 0, 1, or 2");
+        end
+        if (producer_profile < 0 || producer_profile > 2) begin
+            $fatal(1, "PRODUCER_PROFILE must be 0, 1, or 2");
+        end
+        if (producer_gap < 0) begin
+            $fatal(1, "PRODUCER_GAP must be non-negative");
+        end
+        if ($value$plusargs("SIDECAR_SCHEMA=%d", access_sidecar_schema)) begin
+            if (access_sidecar_schema != 2 && access_sidecar_schema != 3) begin
+                $fatal(1, "SIDECAR_SCHEMA must be 2 or 3");
+            end
+        end
         if (!$value$plusargs("CONFIG_ID=%s", config_id)) begin
             if (NUM_WAYS == 1 && NUM_SETS == 8 &&
                 VICTIM_ENTRIES == 4 && ENABLE_PREFETCH == 0) begin
@@ -1768,9 +2794,14 @@ module tb_l1d_cache #(
             replay_trace(trace_path);
         end else if ($test$plusargs("WORKLOADS_ONLY")) begin
             test_workload_boundaries();
-        end else if (ENABLE_PREFETCH != 0) begin
+        end else if (ENABLE_PREFETCH != 0 && PREFETCH_POLICY == 0) begin
             test_prefetch_arbitration();
             test_prefetch();
+        end else if (ENABLE_PREFETCH != 0) begin
+            // Optimized policy behavior is exercised by the dedicated stream,
+            // controller and shadow tests.  Reuse the synthetic workloads here
+            // only as an end-to-end data/protocol smoke test.
+            test_workload_boundaries();
         end else begin
             test_baseline();
             test_rv64_alignment_faults();

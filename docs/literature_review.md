@@ -62,25 +62,26 @@ choice is where prefetched data is placed:
 - direct L1 insertion gives a fast hit when correct but can evict useful demand
   data.
 
-The current RTL is a one-block-lookahead next-line baseline that inserts into
-L1. This is intentionally simple and matches the candidate behavior in
-ChampSim's `next_line` reference: generate block `N+1` from an observed block
-`N`. It is more pollution-prone than Jouppi-style stream buffering, so the
-design marks prefetched lines and counts useful, useless, and displacement
-events.
+The frozen policy-0 RTL is the original one-block-lookahead next-line baseline:
+it matches ChampSim's `next_line` candidate behavior by generating block `N+1`
+from observed block `N`. The optimized default instead uses a four-entry
+Gaze-lite adjacent-stream detector, adaptive admission, safe cold direct-L1
+insertion, shadow feedback, and one PF MSHR. Both retain direct-L1 data
+placement, so prefetched-line metadata and useful/useless/displacement events
+remain necessary to control and measure pollution.
 
 Chen and Baer's hardware prefetching work and later surveys distinguish
 accuracy, coverage, timeliness, and bandwidth cost. A useful-prefetch count
-alone is insufficient. A complete future evaluation should calculate the
-following metrics. The current strict paired replay calculates all of them
-except independent in-flight timeliness; in this blocking model,
-`timely_useful=useful` and `late_useful=0` are only structural proxy values:
+alone is insufficient. The strict paired replay calculates the following
+metrics. Historical schema 2 used structural timely/late proxies; schema 3
+records independent demand present/accept/response and PF lifecycle events:
 
 - accuracy = useful prefetches / filled prefetches;
 - L1 coverage = (baseline L1 misses - prefetch-on L1 misses) /
   baseline L1 misses;
-- lower-memory coverage = (baseline demand reads - prefetch-on demand reads) /
-  baseline demand reads;
+- legacy `lower_coverage` = (baseline demand-owned reads - prefetch-on
+  demand-owned reads) / baseline demand-owned reads. With an MSHR merge, add
+  merged PF-owned reads back before interpreting required physical reads;
 - timeliness = timely useful / (timely useful + late useful), where a late
   prefetch is still in flight when the demand first presents valid;
 - true L1 pollution = a demand that is an L1 hit in the baseline run and an
@@ -90,6 +91,8 @@ except independent in-flight timeliness; in this blocking model,
 - bandwidth overhead = (prefetch-on bytes - baseline bytes) / baseline bytes.
 
 A ratio with a zero denominator is reported as N/A rather than zero.
+For the same reason, `useful / fills` is specifically fill accuracy. A
+merge-only P3 run can have N/A fill accuracy while `useful / issued` is 100%.
 
 The current `stat_prefetch_pollution` counter is only a pressure proxy because
 an L1 line displaced by prefetch may remain in the victim cache. Trace-based
@@ -114,9 +117,40 @@ The RTL therefore exposes:
   pollution/drop events; and
 - cumulative counters for offline and hardware control-loop evaluation.
 
-This interface keeps prediction policy outside the core miss/eviction FSM.
-Future prefetchers can be evaluated without changing CPU or lower-memory
-protocols.
+This interface now feeds an implemented Gaze-lite adjacent-stream detector and
+a lightweight feedback controller. Candidate generation remains metadata-only
+and the CPU and lower-memory protocols are unchanged.
+
+### Implemented adaptive direct-L1 policy
+
+The optimized policy translates the literature into bounded mechanisms rather
+than reproducing a large learning table:
+
+- a four-entry stream table confirms only adjacent `+1/-1` streams, uses a
+  two-entry candidate FIFO, preserves stream-generation attribution, expires
+  candidates after 16 demand accesses, and never crosses a 4 KiB page;
+- an OFF/PROBE/ON controller applies a two-token bucket, 1/16 probe and weak-ON
+  rates, a 1/8 normal-ON rate, two-epoch negative hysteresis, and a 512-demand
+  OFF cooldown;
+- direct-L1 insertion is cold and constrained by clean-victim safety, one
+  unused speculative line per set, response-time revalidation, and unused-line
+  victim-cache bypass;
+- a demand-only tag/dirty shadow L1/VC provides online causal help/pollution
+  classification without storing a second copy of line data; and
+- one metadata-only PF MSHR permits hit-under-prefetch, same-line load/store
+  merge, immediate response capture, and bounded discard while preserving the
+  one-outstanding lower-memory protocol.
+
+The controller evaluates cycle-like `saved` and `cost` values. Its penalties
+start at eight cycles and use 1/8 EWMA calibration. Level 2 uses raw
+useful/pollution proxies through the same feedback interface; level 3 switches
+that interface to shadow causal events and adds late-merge credit, blocked
+demand cycles, speculative-issue cost, and attributed write-back cost.
+
+The implementation deliberately retains direct-L1 data placement. The stream
+table, candidate queues, shadow model, and PF MSHR contain only addresses,
+tags, dirty bits, confidence, generations, and control metadata. Returned data
+exists only in the normal transient refill register.
 
 ## Review of the Current RTL
 
@@ -132,21 +166,22 @@ protocols.
 
 ### Current implementation status and remaining work
 
-The baseline now includes separate demand/prefetch lower-memory counters,
-paired per-demand true-pollution attribution, line-uniqueness assertions, and
-a randomized golden-memory reference model. Remaining work is:
+The implementation now includes separate demand/prefetch lower-memory
+counters, complete schema-3 lifecycle attribution, paired per-demand
+true-pollution attribution, online shadow causal feedback, line-uniqueness
+assertions, and a randomized golden-memory reference model. Remaining work is:
 
 - add a separate prefetch-buffer placement option to compare against direct L1
   insertion;
-- measure independent issue/fill/accept timeliness and a full latency
-  distribution;
-- add backpressure-aware prefetch scheduling and cancellation;
+- extend lifecycle timing into full percentile distributions across more CPU
+  timing models;
 - add 0/4/8 victim-entry configurations; zero entries currently require a
   bypass implementation;
 - compare round-robin and LRU victim replacement;
 - extend simulation assertions with formal dirty-data-preservation properties;
   and
-- add MSHRs or a refill buffer only after the blocking baseline is stable.
+- evaluate whether multiple demand MSHRs are justified; the implemented single
+  PF MSHR intentionally does not make the demand cache fully non-blocking.
 
 ## Proposal Reference Audit
 
