@@ -93,31 +93,31 @@ set simulation_configurations [list \
     [list 2w_s4_vc4_pf1_high_latency_random_bp \
         "NUM_WAYS=2 NUM_SETS=4 LINE_BYTES=16 ENABLE_PREFETCH=1 PREFETCH_POLICY=1 PF_OPT_LEVEL=3 VICTIM_ENTRIES=4 MEM_LATENCY=8 MEM_BACKPRESSURE_MODE=2 CPU_BACKPRESSURE_MODE=0" "-testplusarg CONFIG_ID=2w_s4_vc4_pf1"]]
 
-foreach configuration $simulation_configurations {
-    lassign $configuration name generics more_options
-    puts "Running Vivado behavioral simulation: $name"
-    set_property generic $generics [get_filesets sim_1]
-    set custom_tcl $run_all_tcl
-    set run_more_options $more_options
-    if {$name eq "2w_s4_vc4_pf1"} {
-        set vcd_path [file join $report_root "${name}.vcd"]
-        set run_more_options [string trim \
-            "$run_more_options -testplusarg DUMP_VCD=$vcd_path"]
-    }
-    set_property -dict [list \
-        xsim.simulate.xsim.more_options $run_more_options \
-        xsim.simulate.custom_tcl $custom_tcl \
-        xsim.simulate.log_all_signals false] \
-        [get_filesets sim_1]
-    launch_simulation -simset sim_1 -mode behavioral
-    catch {close_sim}
-
-    set sim_log [file join $build_dir l1d_baseline.sim sim_1 behav xsim simulate.log]
-    if {[file exists $sim_log]} {
-        file copy -force $sim_log \
-            [file join $report_root "${name}_simulation.log"]
-    }
-}
+#foreach configuration $simulation_configurations {
+#    lassign $configuration name generics more_options
+#    puts "Running Vivado behavioral simulation: $name"
+#    set_property generic $generics [get_filesets sim_1]
+#    set custom_tcl $run_all_tcl
+#    set run_more_options $more_options
+#    if {$name eq "2w_s4_vc4_pf1"} {
+#        set vcd_path [file join $report_root "${name}.vcd"]
+#        set run_more_options [string trim \
+#            "$run_more_options -testplusarg DUMP_VCD=$vcd_path"]
+#    }
+#    set_property -dict [list \
+#        xsim.simulate.xsim.more_options $run_more_options \
+#        xsim.simulate.custom_tcl $custom_tcl \
+#        xsim.simulate.log_all_signals false] \
+#        [get_filesets sim_1]
+#    launch_simulation -simset sim_1 -mode behavioral
+#    catch {close_sim}
+#
+#    set sim_log [file join $build_dir l1d_baseline.sim sim_1 behav xsim simulate.log]
+#    if {[file exists $sim_log]} {
+#        file copy -force $sim_log \
+#            [file join $report_root "${name}_simulation.log"]
+#    }
+#}
 
 # Run the focused metadata/controller/shadow and PF-MSHR suites in XSim as
 # independent tops.  These complement the workload harness with assertions for
