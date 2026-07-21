@@ -72,8 +72,6 @@ module l1d_stream_prefetch #(
     integer stream_ff_i;
     integer found_comb;
     integer alloc_comb;
-    integer build_count;
-    integer duplicate_index;
     logic [11-OFFSET_BITS:0] current_line_comb;
     logic access_plus;
     logic access_minus;
@@ -83,6 +81,29 @@ module l1d_stream_prefetch #(
     logic [1:0] candidate_offer_confidence;
     logic [SID_BITS-1:0] candidate_offer_stream_id;
     logic [1:0] candidate_offer_generation;
+    (* DONT_TOUCH = "yes" *) logic candidate_offer_valid_q;
+    (* DONT_TOUCH = "yes" *) logic [ADDR_WIDTH-1:0] candidate_offer_addr_q;
+    (* DONT_TOUCH = "yes" *) logic [1:0] candidate_offer_confidence_q;
+    (* DONT_TOUCH = "yes" *) logic [SID_BITS-1:0]
+        candidate_offer_stream_id_q;
+    (* DONT_TOUCH = "yes" *) logic [1:0] candidate_offer_generation_q;
+    logic keep_candidate_0;
+    logic keep_candidate_1;
+    logic duplicate_candidate_0;
+    logic duplicate_candidate_1;
+    (* DONT_TOUCH = "yes" *) logic candidate_enable_q;
+    (* DONT_TOUCH = "yes" *) logic candidate_ready_q;
+    (* DONT_TOUCH = "yes" *) logic demand_lookup_valid_q;
+    (* DONT_TOUCH = "yes" *) logic demand_found_valid_q;
+    (* DONT_TOUCH = "yes" *) logic [SID_BITS-1:0] demand_found_q;
+    (* DONT_TOUCH = "yes" *) logic [SID_BITS-1:0] demand_alloc_q;
+    (* DONT_TOUCH = "yes" *) logic [ADDR_WIDTH-1:0] demand_line_addr_q;
+    (* DONT_TOUCH = "yes" *) logic [11-OFFSET_BITS:0]
+        demand_current_line_q;
+    (* DONT_TOUCH = "yes" *) logic demand_lower_miss_q;
+    (* DONT_TOUCH = "yes" *) logic demand_prefetch_hit_q;
+    (* DONT_TOUCH = "yes" *) logic [SID_BITS-1:0] demand_stream_id_q;
+    (* DONT_TOUCH = "yes" *) logic [1:0] demand_stream_generation_q;
 
     always_comb begin
         candidate_valid = (candidate_count_q != 0);
@@ -120,66 +141,75 @@ module l1d_stream_prefetch #(
         if (alloc_comb == -1)
             alloc_comb = stream_rr;
 
-        if (enable && demand_access_valid) begin
+        if (enable && demand_lookup_valid_q) begin
             if (MODE_STREAM == 0) begin
-                if (candidate_enable && demand_lower_miss &&
-                    demand_line_addr[11:0] <= (12'hfff - LINE_BYTES)) begin
+                if (candidate_enable_q && demand_lower_miss_q &&
+                    demand_line_addr_q[11:0] <=
+                        (12'hfff - LINE_BYTES)) begin
                     candidate_offer_valid = 1'b1;
-                    candidate_offer_addr = demand_line_addr + LINE_BYTES;
+                    candidate_offer_addr = demand_line_addr_q + LINE_BYTES;
                     candidate_offer_confidence = 2'b11;
                 end
-            end else if (found_comb >= 0 &&
-                         current_line_comb != stream_last[found_comb]) begin
+            end else if (demand_found_valid_q &&
+                         demand_current_line_q !=
+                             stream_last[demand_found_q]) begin
                 access_plus =
-                    (current_line_comb == stream_last[found_comb] + 1'b1);
+                    (demand_current_line_q ==
+                     stream_last[demand_found_q] + 1'b1);
                 access_minus =
-                    (current_line_comb + 1'b1 == stream_last[found_comb]);
+                    (demand_current_line_q + 1'b1 ==
+                     stream_last[demand_found_q]);
 
                 if (access_plus) begin
-                    if (stream_dir_valid[found_comb] &&
-                        !stream_dir_negative[found_comb]) begin
-                        if (stream_confidence[found_comb] != 2'b11)
+                    if (stream_dir_valid[demand_found_q] &&
+                        !stream_dir_negative[demand_found_q]) begin
+                        if (stream_confidence[demand_found_q] != 2'b11)
                             access_next_conf =
-                                stream_confidence[found_comb] + 1'b1;
+                                stream_confidence[demand_found_q] + 1'b1;
                         else
                             access_next_conf = 2'b11;
                     end
-                    if (candidate_enable && current_line_comb !=
-                        {($bits(current_line_comb)){1'b1}}) begin
+                    if (candidate_enable_q && demand_current_line_q !=
+                        {($bits(demand_current_line_q)){1'b1}}) begin
                         candidate_offer_valid = 1'b1;
-                        candidate_offer_addr = demand_line_addr + LINE_BYTES;
+                        candidate_offer_addr =
+                            demand_line_addr_q + LINE_BYTES;
                     end
                 end else if (access_minus) begin
-                    if (stream_dir_valid[found_comb] &&
-                        stream_dir_negative[found_comb]) begin
-                        if (stream_confidence[found_comb] != 2'b11)
+                    if (stream_dir_valid[demand_found_q] &&
+                        stream_dir_negative[demand_found_q]) begin
+                        if (stream_confidence[demand_found_q] != 2'b11)
                             access_next_conf =
-                                stream_confidence[found_comb] + 1'b1;
+                                stream_confidence[demand_found_q] + 1'b1;
                         else
                             access_next_conf = 2'b11;
                     end
-                    if (candidate_enable && current_line_comb != 0) begin
+                    if (candidate_enable_q && demand_current_line_q != 0) begin
                         candidate_offer_valid = 1'b1;
-                        candidate_offer_addr = demand_line_addr - LINE_BYTES;
+                        candidate_offer_addr =
+                            demand_line_addr_q - LINE_BYTES;
                     end
                 end
 
                 candidate_offer_confidence = access_next_conf;
-                candidate_offer_stream_id = found_comb[SID_BITS-1:0];
-                candidate_offer_generation = stream_generation[found_comb];
+                candidate_offer_stream_id = demand_found_q;
+                candidate_offer_generation =
+                    stream_generation[demand_found_q];
             end
         end
     end
 
-    // Compact FIFO next state.  Handshake removal and expiration happen before
-    // the current access offers a new candidate, so a same-cycle dequeue makes
-    // room without reporting a drop and a newly generated entry starts at age 0.
+    // Compact FIFO next state.  Candidate detection is registered separately,
+    // so stream-table matching and the FIFO's duplicate/TTL logic occupy
+    // different timing stages.
     always_comb begin
         candidate_count_d = '0;
         event_dropped_d = 1'b0;
         event_expired_d = 1'b0;
-        build_count = 0;
-        duplicate_index = -1;
+        keep_candidate_0 = 1'b0;
+        keep_candidate_1 = 1'b0;
+        duplicate_candidate_0 = 1'b0;
+        duplicate_candidate_1 = 1'b0;
         for (fifo_comb_i = 0; fifo_comb_i < CANDIDATE_ENTRIES;
              fifo_comb_i = fifo_comb_i + 1) begin
             candidate_addr_d[fifo_comb_i] = '0;
@@ -189,91 +219,112 @@ module l1d_stream_prefetch #(
             candidate_age_d[fifo_comb_i] = '0;
         end
 
-        if (enable && candidate_enable) begin
-            for (fifo_comb_i = 0; fifo_comb_i < CANDIDATE_ENTRIES;
-                 fifo_comb_i = fifo_comb_i + 1) begin
-                if (fifo_comb_i < candidate_count_q &&
-                    !(fifo_comb_i == 0 && candidate_valid &&
-                      candidate_ready)) begin
-                    if (demand_access_valid &&
-                        candidate_age_q[fifo_comb_i] >= CANDIDATE_TTL-1) begin
-                        event_expired_d = 1'b1;
-                    end else begin
-                        candidate_addr_d[build_count] =
-                            candidate_addr_q[fifo_comb_i];
-                        candidate_confidence_d[build_count] =
-                            candidate_confidence_q[fifo_comb_i];
-                        candidate_stream_id_d[build_count] =
-                            candidate_stream_id_q[fifo_comb_i];
-                        candidate_generation_d[build_count] =
-                            candidate_generation_q[fifo_comb_i];
-                        if (demand_access_valid)
-                            candidate_age_d[build_count] =
-                                candidate_age_q[fifo_comb_i] + 1'b1;
-                        else
-                            candidate_age_d[build_count] =
-                                candidate_age_q[fifo_comb_i];
-                        build_count = build_count + 1;
-                    end
+        if (enable && candidate_enable_q) begin
+            keep_candidate_0 = (candidate_count_q != 0) &&
+                !(candidate_valid && candidate_ready_q) &&
+                !(demand_lookup_valid_q &&
+                  candidate_age_q[0] >= CANDIDATE_TTL-1);
+            keep_candidate_1 = (candidate_count_q == 2) &&
+                !(demand_lookup_valid_q &&
+                  candidate_age_q[1] >= CANDIDATE_TTL-1);
+            event_expired_d =
+                ((candidate_count_q != 0) &&
+                 !(candidate_valid && candidate_ready_q) &&
+                 demand_lookup_valid_q &&
+                 candidate_age_q[0] >= CANDIDATE_TTL-1) ||
+                ((candidate_count_q == 2) && demand_lookup_valid_q &&
+                 candidate_age_q[1] >= CANDIDATE_TTL-1);
+
+            if (keep_candidate_0) begin
+                candidate_addr_d[0] = candidate_addr_q[0];
+                candidate_confidence_d[0] = candidate_confidence_q[0];
+                candidate_stream_id_d[0] = candidate_stream_id_q[0];
+                candidate_generation_d[0] = candidate_generation_q[0];
+                candidate_age_d[0] = demand_lookup_valid_q ?
+                    candidate_age_q[0] + 1'b1 : candidate_age_q[0];
+                candidate_count_d = 1;
+                if (keep_candidate_1) begin
+                    candidate_addr_d[1] = candidate_addr_q[1];
+                    candidate_confidence_d[1] = candidate_confidence_q[1];
+                    candidate_stream_id_d[1] = candidate_stream_id_q[1];
+                    candidate_generation_d[1] = candidate_generation_q[1];
+                    candidate_age_d[1] = demand_lookup_valid_q ?
+                        candidate_age_q[1] + 1'b1 : candidate_age_q[1];
+                    candidate_count_d = 2;
                 end
+            end else if (keep_candidate_1) begin
+                candidate_addr_d[0] = candidate_addr_q[1];
+                candidate_confidence_d[0] = candidate_confidence_q[1];
+                candidate_stream_id_d[0] = candidate_stream_id_q[1];
+                candidate_generation_d[0] = candidate_generation_q[1];
+                candidate_age_d[0] = demand_lookup_valid_q ?
+                    candidate_age_q[1] + 1'b1 : candidate_age_q[1];
+                candidate_count_d = 1;
             end
-            candidate_count_d = build_count[COUNT_BITS-1:0];
 
-            for (fifo_comb_i = 0; fifo_comb_i < CANDIDATE_ENTRIES;
-                 fifo_comb_i = fifo_comb_i + 1) begin
-                if (fifo_comb_i < build_count &&
-                    candidate_addr_d[fifo_comb_i] == candidate_offer_addr)
-                    duplicate_index = fifo_comb_i;
-            end
+            duplicate_candidate_0 = (candidate_count_d != 0) &&
+                candidate_addr_d[0] == candidate_offer_addr_q;
+            duplicate_candidate_1 = (candidate_count_d == 2) &&
+                candidate_addr_d[1] == candidate_offer_addr_q;
 
-            if (candidate_offer_valid) begin
-                if (duplicate_index >= 0) begin
-                    candidate_age_d[duplicate_index] = '0;
-                    if (candidate_offer_confidence >
-                        candidate_confidence_d[duplicate_index]) begin
-                        candidate_confidence_d[duplicate_index] =
-                            candidate_offer_confidence;
-                        candidate_stream_id_d[duplicate_index] =
-                            candidate_offer_stream_id;
-                        candidate_generation_d[duplicate_index] =
-                            candidate_offer_generation;
+            if (candidate_offer_valid_q) begin
+                if (duplicate_candidate_0) begin
+                    candidate_age_d[0] = '0;
+                    if (candidate_offer_confidence_q >
+                        candidate_confidence_d[0]) begin
+                        candidate_confidence_d[0] =
+                            candidate_offer_confidence_q;
+                        candidate_stream_id_d[0] =
+                            candidate_offer_stream_id_q;
+                        candidate_generation_d[0] =
+                            candidate_offer_generation_q;
                     end
-                end else if (build_count < CANDIDATE_ENTRIES) begin
-                    candidate_addr_d[build_count] = candidate_offer_addr;
-                    candidate_confidence_d[build_count] =
-                        candidate_offer_confidence;
-                    candidate_stream_id_d[build_count] =
-                        candidate_offer_stream_id;
-                    candidate_generation_d[build_count] =
-                        candidate_offer_generation;
-                    candidate_age_d[build_count] = '0;
-                    build_count = build_count + 1;
-                    candidate_count_d = build_count[COUNT_BITS-1:0];
+                end else if (duplicate_candidate_1) begin
+                    candidate_age_d[1] = '0;
+                    if (candidate_offer_confidence_q >
+                        candidate_confidence_d[1]) begin
+                        candidate_confidence_d[1] =
+                            candidate_offer_confidence_q;
+                        candidate_stream_id_d[1] =
+                            candidate_offer_stream_id_q;
+                        candidate_generation_d[1] =
+                            candidate_offer_generation_q;
+                    end
+                end else if (candidate_count_d == 0) begin
+                    candidate_addr_d[0] = candidate_offer_addr_q;
+                    candidate_confidence_d[0] =
+                        candidate_offer_confidence_q;
+                    candidate_stream_id_d[0] =
+                        candidate_offer_stream_id_q;
+                    candidate_generation_d[0] =
+                        candidate_offer_generation_q;
+                    candidate_age_d[0] = '0;
+                    candidate_count_d = 1;
+                end else if (candidate_count_d == 1) begin
+                    candidate_addr_d[1] = candidate_offer_addr_q;
+                    candidate_confidence_d[1] =
+                        candidate_offer_confidence_q;
+                    candidate_stream_id_d[1] =
+                        candidate_offer_stream_id_q;
+                    candidate_generation_d[1] =
+                        candidate_offer_generation_q;
+                    candidate_age_d[1] = '0;
+                    candidate_count_d = 2;
                 end else begin
-                    for (fifo_comb_i = 0;
-                         fifo_comb_i < CANDIDATE_ENTRIES-1;
-                         fifo_comb_i = fifo_comb_i + 1) begin
-                        candidate_addr_d[fifo_comb_i] =
-                            candidate_addr_d[fifo_comb_i+1];
-                        candidate_confidence_d[fifo_comb_i] =
-                            candidate_confidence_d[fifo_comb_i+1];
-                        candidate_stream_id_d[fifo_comb_i] =
-                            candidate_stream_id_d[fifo_comb_i+1];
-                        candidate_generation_d[fifo_comb_i] =
-                            candidate_generation_d[fifo_comb_i+1];
-                        candidate_age_d[fifo_comb_i] =
-                            candidate_age_d[fifo_comb_i+1];
-                    end
-                    candidate_addr_d[CANDIDATE_ENTRIES-1] =
-                        candidate_offer_addr;
-                    candidate_confidence_d[CANDIDATE_ENTRIES-1] =
-                        candidate_offer_confidence;
-                    candidate_stream_id_d[CANDIDATE_ENTRIES-1] =
-                        candidate_offer_stream_id;
-                    candidate_generation_d[CANDIDATE_ENTRIES-1] =
-                        candidate_offer_generation;
-                    candidate_age_d[CANDIDATE_ENTRIES-1] = '0;
-                    candidate_count_d = CANDIDATE_ENTRIES;
+                    candidate_addr_d[0] = candidate_addr_d[1];
+                    candidate_confidence_d[0] = candidate_confidence_d[1];
+                    candidate_stream_id_d[0] = candidate_stream_id_d[1];
+                    candidate_generation_d[0] = candidate_generation_d[1];
+                    candidate_age_d[0] = candidate_age_d[1];
+                    candidate_addr_d[1] = candidate_offer_addr_q;
+                    candidate_confidence_d[1] =
+                        candidate_offer_confidence_q;
+                    candidate_stream_id_d[1] =
+                        candidate_offer_stream_id_q;
+                    candidate_generation_d[1] =
+                        candidate_offer_generation_q;
+                    candidate_age_d[1] = '0;
+                    candidate_count_d = 2;
                     event_dropped_d = 1'b1;
                 end
             end
@@ -282,6 +333,23 @@ module l1d_stream_prefetch #(
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
+            candidate_enable_q <= 1'b0;
+            candidate_ready_q <= 1'b0;
+            demand_lookup_valid_q <= 1'b0;
+            demand_found_valid_q <= 1'b0;
+            demand_found_q <= '0;
+            demand_alloc_q <= '0;
+            demand_line_addr_q <= '0;
+            demand_current_line_q <= '0;
+            demand_lower_miss_q <= 1'b0;
+            demand_prefetch_hit_q <= 1'b0;
+            demand_stream_id_q <= '0;
+            demand_stream_generation_q <= '0;
+            candidate_offer_valid_q <= 1'b0;
+            candidate_offer_addr_q <= '0;
+            candidate_offer_confidence_q <= '0;
+            candidate_offer_stream_id_q <= '0;
+            candidate_offer_generation_q <= '0;
             candidate_count_q <= '0;
             event_dropped <= 1'b0;
             event_expired <= 1'b0;
@@ -294,6 +362,31 @@ module l1d_stream_prefetch #(
                 candidate_age_q[candidate_ff_i] <= '0;
             end
         end else begin
+            candidate_enable_q <= enable && candidate_enable;
+            candidate_ready_q <= candidate_ready;
+            demand_lookup_valid_q <= enable && demand_access_valid;
+            demand_found_valid_q <= (found_comb >= 0);
+            demand_found_q <= found_comb[SID_BITS-1:0];
+            demand_alloc_q <= alloc_comb[SID_BITS-1:0];
+            demand_line_addr_q <= demand_line_addr;
+            demand_current_line_q <= current_line_comb;
+            demand_lower_miss_q <= demand_lower_miss;
+            demand_prefetch_hit_q <= demand_prefetch_hit;
+            demand_stream_id_q <= demand_stream_id;
+            demand_stream_generation_q <= demand_stream_generation;
+            if (enable && candidate_enable) begin
+                candidate_offer_valid_q <= candidate_offer_valid;
+                candidate_offer_addr_q <= candidate_offer_addr;
+                candidate_offer_confidence_q <= candidate_offer_confidence;
+                candidate_offer_stream_id_q <= candidate_offer_stream_id;
+                candidate_offer_generation_q <= candidate_offer_generation;
+            end else begin
+                candidate_offer_valid_q <= 1'b0;
+                candidate_offer_addr_q <= '0;
+                candidate_offer_confidence_q <= '0;
+                candidate_offer_stream_id_q <= '0;
+                candidate_offer_generation_q <= '0;
+            end
             candidate_count_q <= candidate_count_d;
             event_dropped <= event_dropped_d;
             event_expired <= event_expired_d;
@@ -336,43 +429,44 @@ module l1d_stream_prefetch #(
                     stream_confidence[unused_stream_id] - 1'b1;
             end
 
-            if (demand_prefetch_hit &&
-                stream_valid[demand_stream_id] &&
-                stream_generation[demand_stream_id] ==
-                    demand_stream_generation &&
-                stream_confidence[demand_stream_id] != 2'b11) begin
-                stream_confidence[demand_stream_id] <=
-                    stream_confidence[demand_stream_id] + 1'b1;
+            if (demand_prefetch_hit_q &&
+                stream_valid[demand_stream_id_q] &&
+                stream_generation[demand_stream_id_q] ==
+                    demand_stream_generation_q &&
+                stream_confidence[demand_stream_id_q] != 2'b11) begin
+                stream_confidence[demand_stream_id_q] <=
+                    stream_confidence[demand_stream_id_q] + 1'b1;
             end
 
-            if (demand_access_valid && MODE_STREAM != 0) begin
-                if (found_comb == -1) begin
-                    stream_valid[alloc_comb] <= 1'b1;
-                    stream_page[alloc_comb] <=
-                        demand_line_addr[ADDR_WIDTH-1:12];
-                    stream_last[alloc_comb] <= current_line_comb;
-                    stream_dir_valid[alloc_comb] <= 1'b0;
-                    stream_dir_negative[alloc_comb] <= 1'b0;
-                    stream_confidence[alloc_comb] <= '0;
-                    stream_generation[alloc_comb] <=
-                        stream_generation[alloc_comb] + 1'b1;
+            if (demand_lookup_valid_q && MODE_STREAM != 0) begin
+                if (!demand_found_valid_q) begin
+                    stream_valid[demand_alloc_q] <= 1'b1;
+                    stream_page[demand_alloc_q] <=
+                        demand_line_addr_q[ADDR_WIDTH-1:12];
+                    stream_last[demand_alloc_q] <= demand_current_line_q;
+                    stream_dir_valid[demand_alloc_q] <= 1'b0;
+                    stream_dir_negative[demand_alloc_q] <= 1'b0;
+                    stream_confidence[demand_alloc_q] <= '0;
+                    stream_generation[demand_alloc_q] <=
+                        stream_generation[demand_alloc_q] + 1'b1;
                     if (stream_rr == STREAM_ENTRIES-1)
                         stream_rr <= '0;
                     else
                         stream_rr <= stream_rr + 1'b1;
-                end else if (current_line_comb != stream_last[found_comb]) begin
-                    stream_last[found_comb] <= current_line_comb;
+                end else if (demand_current_line_q !=
+                             stream_last[demand_found_q]) begin
+                    stream_last[demand_found_q] <= demand_current_line_q;
                     if (access_plus) begin
-                        stream_dir_valid[found_comb] <= 1'b1;
-                        stream_dir_negative[found_comb] <= 1'b0;
-                        stream_confidence[found_comb] <= access_next_conf;
+                        stream_dir_valid[demand_found_q] <= 1'b1;
+                        stream_dir_negative[demand_found_q] <= 1'b0;
+                        stream_confidence[demand_found_q] <= access_next_conf;
                     end else if (access_minus) begin
-                        stream_dir_valid[found_comb] <= 1'b1;
-                        stream_dir_negative[found_comb] <= 1'b1;
-                        stream_confidence[found_comb] <= access_next_conf;
+                        stream_dir_valid[demand_found_q] <= 1'b1;
+                        stream_dir_negative[demand_found_q] <= 1'b1;
+                        stream_confidence[demand_found_q] <= access_next_conf;
                     end else begin
-                        stream_dir_valid[found_comb] <= 1'b0;
-                        stream_confidence[found_comb] <= '0;
+                        stream_dir_valid[demand_found_q] <= 1'b0;
+                        stream_confidence[demand_found_q] <= '0;
                     end
                 end
             end

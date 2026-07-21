@@ -2694,8 +2694,9 @@ module tb_l1d_cache #(
     initial begin
         string trace_path;
         string sidecar_path;
-        integer command_mem_latency;
-        integer command_mem_ready_mode;
+    integer command_mem_latency;
+    integer command_mem_ready_mode;
+    integer plusarg_status;
         clk = 1'b0;
         rst_n = 1'b0;
         errors = 0;
@@ -2710,8 +2711,9 @@ module tb_l1d_cache #(
         sidecar_victim_before = 0;
         measurement_active = 1'b0;
         trace_id = '0;
-        void'($value$plusargs("PRODUCER_PROFILE=%d", producer_profile));
-        void'($value$plusargs("PRODUCER_GAP=%d", producer_gap));
+        plusarg_status = $value$plusargs("PRODUCER_PROFILE=%d",
+                                        producer_profile);
+        plusarg_status = $value$plusargs("PRODUCER_GAP=%d", producer_gap);
         command_mem_latency = MEM_LATENCY;
         command_mem_ready_mode = MEM_READY_MODE;
         if ($value$plusargs("MEM_LATENCY=%d", command_mem_latency) &&

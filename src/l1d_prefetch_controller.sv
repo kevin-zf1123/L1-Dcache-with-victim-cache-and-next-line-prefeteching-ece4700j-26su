@@ -57,9 +57,25 @@ module l1d_prefetch_controller #(
     logic [15:0] cost_accumulate_value;
     logic cost_reaches_saturation;
     logic [1:0] controller_state_reg;
+    logic epoch_eval_pending;
+    logic epoch_decision_pending;
+    logic cost_overflow_pending;
+    logic [1:0] epoch_state_snapshot;
+    logic epoch_probe_second_snapshot;
+    logic [15:0] epoch_saved_snapshot;
+    logic [15:0] epoch_cost_snapshot;
+    logic [8:0] epoch_pf_issued_snapshot;
+    logic [8:0] epoch_help_snapshot;
+    logic [4:0] epoch_probe_issues_snapshot;
+    logic epoch_profitable;
+    logic epoch_probe_fail;
+    logic epoch_rate_exceeded;
+    logic epoch_cost_gt_saved;
 
     assign controller_state = controller_state_reg;
-    assign issue_enable = enable &&
+    assign issue_enable = enable && !epoch_eval_pending &&
+        !epoch_decision_pending &&
+        !cost_overflow_pending &&
         ((ADAPTIVE == 0) ||
          (controller_state_reg == CTRL_ON) ||
          (controller_state_reg == CTRL_PROBE &&
@@ -118,6 +134,20 @@ module l1d_prefetch_controller #(
             epoch_help <= '0;
             saved <= '0;
             cost <= '0;
+            epoch_eval_pending <= 1'b0;
+            epoch_decision_pending <= 1'b0;
+            cost_overflow_pending <= 1'b0;
+            epoch_state_snapshot <= CTRL_PROBE;
+            epoch_probe_second_snapshot <= 1'b0;
+            epoch_saved_snapshot <= '0;
+            epoch_cost_snapshot <= '0;
+            epoch_pf_issued_snapshot <= '0;
+            epoch_help_snapshot <= '0;
+            epoch_probe_issues_snapshot <= '0;
+            epoch_profitable <= 1'b0;
+            epoch_probe_fail <= 1'b0;
+            epoch_rate_exceeded <= 1'b0;
+            epoch_cost_gt_saved <= 1'b0;
         end else if (!enable) begin
             controller_state_reg <= (ADAPTIVE != 0) ? CTRL_PROBE : CTRL_ON;
             demand_count <= '0;
@@ -131,6 +161,20 @@ module l1d_prefetch_controller #(
             epoch_help <= '0;
             saved <= '0;
             cost <= '0;
+            epoch_eval_pending <= 1'b0;
+            epoch_decision_pending <= 1'b0;
+            cost_overflow_pending <= 1'b0;
+            epoch_state_snapshot <= CTRL_PROBE;
+            epoch_probe_second_snapshot <= 1'b0;
+            epoch_saved_snapshot <= '0;
+            epoch_cost_snapshot <= '0;
+            epoch_pf_issued_snapshot <= '0;
+            epoch_help_snapshot <= '0;
+            epoch_probe_issues_snapshot <= '0;
+            epoch_profitable <= 1'b0;
+            epoch_probe_fail <= 1'b0;
+            epoch_rate_exceeded <= 1'b0;
+            epoch_cost_gt_saved <= 1'b0;
         end else begin
             if (saved_increment != 0)
                 saved <= saved_accumulate_value;
@@ -174,59 +218,18 @@ module l1d_prefetch_controller #(
                     end
                 end else if (demand_count == EPOCH_DEMANDS-1) begin
                     demand_count <= '0;
-                    if (ADAPTIVE != 0 &&
-                        controller_state_reg == CTRL_PROBE) begin
-                        if ({1'b0, saved_accumulate_value} >=
-                                {1'b0, cost_accumulate_value} + 17'd8 &&
-                            epoch_help_effective >= 2) begin
-                            controller_state_reg <= CTRL_ON;
-                            probe_issues <= '0;
-                            probe_second_epoch <= 1'b0;
-                            weak_on <= 1'b0;
-                            negative_epoch <= 1'b0;
-                        end else if (probe_issues_effective >= PROBE_BUDGET ||
-                                     {1'b0, cost_accumulate_value} >=
-                                         {1'b0, saved_accumulate_value} +
-                                         17'd8 ||
-                                     probe_second_epoch) begin
-                            controller_state_reg <= CTRL_OFF;
-                            tokens <= '0;
-                            probe_issues <= '0;
-                            probe_second_epoch <= 1'b0;
-                        end else begin
-                            // A sparse phase may need a second epoch to spend
-                            // the eight-request probe budget.  The budget is
-                            // cumulative and never resets every epoch.
-                            probe_second_epoch <= 1'b1;
-                        end
-                    end else if (ADAPTIVE != 0 &&
-                                 controller_state_reg == CTRL_ON) begin
-                        if ({1'b0, cost_accumulate_value} >=
-                                {1'b0, saved_accumulate_value} + 17'd8 ||
-                            (epoch_pf_issued_effective * 10 >
-                             EPOCH_DEMANDS)) begin
-                            controller_state_reg <= CTRL_OFF;
-                            tokens <= '0;
-                            weak_on <= 1'b0;
-                            negative_epoch <= 1'b0;
-                            probe_second_epoch <= 1'b0;
-                        end else if (cost_accumulate_value >
-                                     saved_accumulate_value) begin
-                            if (negative_epoch) begin
-                                controller_state_reg <= CTRL_OFF;
-                                tokens <= '0;
-                                weak_on <= 1'b0;
-                                negative_epoch <= 1'b0;
-                                probe_second_epoch <= 1'b0;
-                            end else begin
-                                weak_on <= 1'b1;
-                                negative_epoch <= 1'b1;
-                            end
-                        end else begin
-                            weak_on <= 1'b0;
-                            negative_epoch <= 1'b0;
-                        end
-                    end
+                    // Snapshot the completed epoch, including feedback and an
+                    // issue on this boundary cycle.  Registered predicates
+                    // and a following decision stage keep accumulator carry
+                    // chains off the controller state and issue-enable paths.
+                    epoch_eval_pending <= (ADAPTIVE != 0);
+                    epoch_state_snapshot <= controller_state_reg;
+                    epoch_probe_second_snapshot <= probe_second_epoch;
+                    epoch_saved_snapshot <= saved_accumulate_value;
+                    epoch_cost_snapshot <= cost_accumulate_value;
+                    epoch_pf_issued_snapshot <= epoch_pf_issued_effective;
+                    epoch_help_snapshot <= epoch_help_effective;
+                    epoch_probe_issues_snapshot <= probe_issues_effective;
                     saved <= '0;
                     cost <= '0;
                     epoch_pf_issued <= '0;
@@ -234,11 +237,15 @@ module l1d_prefetch_controller #(
                 end
             end
 
-            // Cost overflow must never wrap into an apparently profitable
-            // epoch.  Adaptive policies fail closed immediately; the OFF
-            // cooldown later clears the completed epoch before probing again.
+            // Register overflow before changing policy state so the wide
+            // saturation adder does not feed the state decoder in one cycle.
             if (ADAPTIVE != 0 && controller_state_reg != CTRL_OFF &&
                 cost_reaches_saturation) begin
+                cost <= 16'hffff;
+                cost_overflow_pending <= 1'b1;
+            end
+
+            if (cost_overflow_pending) begin
                 controller_state_reg <= CTRL_OFF;
                 demand_count <= '0;
                 probe_issues <= '0;
@@ -250,6 +257,79 @@ module l1d_prefetch_controller #(
                 epoch_help <= '0;
                 saved <= '0;
                 cost <= 16'hffff;
+                epoch_eval_pending <= 1'b0;
+                epoch_decision_pending <= 1'b0;
+                cost_overflow_pending <= 1'b0;
+            end else if (epoch_eval_pending) begin
+                epoch_eval_pending <= 1'b0;
+                epoch_decision_pending <= 1'b1;
+                epoch_profitable <=
+                    ({1'b0, epoch_saved_snapshot} >=
+                     {1'b0, epoch_cost_snapshot} + 17'd8) &&
+                    (epoch_help_snapshot >= 2);
+                epoch_probe_fail <=
+                    (epoch_probe_issues_snapshot >= PROBE_BUDGET) ||
+                    ({1'b0, epoch_cost_snapshot} >=
+                     {1'b0, epoch_saved_snapshot} + 17'd8) ||
+                    epoch_probe_second_snapshot;
+                epoch_rate_exceeded <=
+                    ({1'b0, epoch_cost_snapshot} >=
+                     {1'b0, epoch_saved_snapshot} + 17'd8) ||
+                    (epoch_pf_issued_snapshot * 10 > EPOCH_DEMANDS);
+                epoch_cost_gt_saved <=
+                    epoch_cost_snapshot > epoch_saved_snapshot;
+            end else if (epoch_decision_pending) begin
+                epoch_decision_pending <= 1'b0;
+                if (epoch_state_snapshot == CTRL_PROBE) begin
+                    if (epoch_profitable) begin
+                        controller_state_reg <= CTRL_ON;
+                        probe_issues <= '0;
+                        probe_second_epoch <= 1'b0;
+                        weak_on <= 1'b0;
+                        negative_epoch <= 1'b0;
+                    end else if (epoch_probe_fail) begin
+                        controller_state_reg <= CTRL_OFF;
+                        tokens <= '0;
+                        probe_issues <= '0;
+                        probe_second_epoch <= 1'b0;
+                        saved <= '0;
+                        cost <= '0;
+                        epoch_pf_issued <= '0;
+                        epoch_help <= '0;
+                    end else begin
+                        probe_second_epoch <= 1'b1;
+                    end
+                end else if (epoch_state_snapshot == CTRL_ON) begin
+                    if (epoch_rate_exceeded) begin
+                        controller_state_reg <= CTRL_OFF;
+                        tokens <= '0;
+                        weak_on <= 1'b0;
+                        negative_epoch <= 1'b0;
+                        probe_second_epoch <= 1'b0;
+                        saved <= '0;
+                        cost <= '0;
+                        epoch_pf_issued <= '0;
+                        epoch_help <= '0;
+                    end else if (epoch_cost_gt_saved) begin
+                        if (negative_epoch) begin
+                            controller_state_reg <= CTRL_OFF;
+                            tokens <= '0;
+                            weak_on <= 1'b0;
+                            negative_epoch <= 1'b0;
+                            probe_second_epoch <= 1'b0;
+                            saved <= '0;
+                            cost <= '0;
+                            epoch_pf_issued <= '0;
+                            epoch_help <= '0;
+                        end else begin
+                            weak_on <= 1'b1;
+                            negative_epoch <= 1'b1;
+                        end
+                    end else begin
+                        weak_on <= 1'b0;
+                        negative_epoch <= 1'b0;
+                    end
+                end
             end
         end
     end

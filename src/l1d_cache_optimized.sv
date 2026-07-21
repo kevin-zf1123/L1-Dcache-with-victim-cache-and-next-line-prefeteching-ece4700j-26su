@@ -178,7 +178,14 @@ module l1d_cache_optimized #(
     logic [1:0] pf_response_age;
     logic pf_waiter_valid;
     logic pf_waiter_same_line;
+    logic background_pf_prepare;
     logic background_pf_issue;
+    (* DONT_TOUCH = "yes" *) logic background_pf_pending;
+    logic background_pf_external_q;
+    logic [ADDR_WIDTH-1:0] background_pf_addr_q;
+    logic [1:0] background_pf_confidence_q;
+    logic [STREAM_BITS-1:0] background_pf_stream_id_q;
+    logic [1:0] background_pf_stream_generation_q;
 
     assign debug_state = state;
     // Background P3 reads launch while req_* still describes the completing
@@ -215,10 +222,6 @@ module l1d_cache_optimized #(
     logic accept_bg_next;
     logic background_next_l1_hit;
     logic background_next_vc_hit;
-    logic [ADDR_WIDTH-1:0] background_pf_addr;
-    logic [1:0] background_pf_confidence;
-    logic [STREAM_BITS-1:0] background_pf_stream_id;
-    logic [1:0] background_pf_stream_generation;
 
     logic stream_candidate_valid;
     logic stream_candidate_ready;
@@ -234,6 +237,14 @@ module l1d_cache_optimized #(
     logic stream_demand_prefetch_hit;
     logic [STREAM_BITS-1:0] stream_demand_id;
     logic [1:0] stream_demand_generation;
+    (* DONT_TOUCH = "yes" *) logic stream_demand_access_q;
+    (* DONT_TOUCH = "yes" *) logic stream_demand_lower_miss_q;
+    (* DONT_TOUCH = "yes" *) logic [ADDR_WIDTH-1:0]
+        stream_demand_line_addr_q;
+    (* DONT_TOUCH = "yes" *) logic stream_demand_prefetch_hit_q;
+    (* DONT_TOUCH = "yes" *) logic [STREAM_BITS-1:0]
+        stream_demand_id_q;
+    (* DONT_TOUCH = "yes" *) logic [1:0] stream_demand_generation_q;
     logic stream_unused_feedback;
     logic [STREAM_BITS-1:0] stream_unused_id;
     logic [1:0] stream_unused_generation;
@@ -249,6 +260,12 @@ module l1d_cache_optimized #(
     logic controller_consume_token;
     logic controller_feedback_help;
     logic controller_feedback_pollution;
+    (* DONT_TOUCH = "yes" *) logic controller_demand_access_q;
+    (* DONT_TOUCH = "yes" *) logic controller_consume_token_q;
+    (* DONT_TOUCH = "yes" *) logic controller_feedback_help_q;
+    (* DONT_TOUCH = "yes" *) logic controller_feedback_pollution_q;
+    (* DONT_TOUCH = "yes" *) logic controller_feedback_late_merge_q;
+    (* DONT_TOUCH = "yes" *) logic controller_feedback_blocked_q;
     logic shadow_access_valid;
     logic [1:0] shadow_actual_level;
     logic shadow_true_help;
@@ -477,12 +494,12 @@ module l1d_cache_optimized #(
         .enable((ENABLE_PREFETCH != 0) &&
                 cfg_prefetch_enable && cfg_next_line_enable),
         .candidate_enable(controller_issue_enable),
-        .demand_access_valid(stream_demand_access),
-        .demand_lower_miss(stream_demand_lower_miss),
-        .demand_line_addr(req_line_addr_comb),
-        .demand_prefetch_hit(stream_demand_prefetch_hit),
-        .demand_stream_id(stream_demand_id),
-        .demand_stream_generation(stream_demand_generation),
+        .demand_access_valid(stream_demand_access_q),
+        .demand_lower_miss(stream_demand_lower_miss_q),
+        .demand_line_addr(stream_demand_line_addr_q),
+        .demand_prefetch_hit(stream_demand_prefetch_hit_q),
+        .demand_stream_id(stream_demand_id_q),
+        .demand_stream_generation(stream_demand_generation_q),
         .unused_feedback_valid(stream_unused_feedback),
         .unused_stream_id(stream_unused_id),
         .unused_stream_generation(stream_unused_generation),
@@ -505,12 +522,12 @@ module l1d_cache_optimized #(
         .clk(clk),
         .rst_n(rst_n),
         .enable((ENABLE_PREFETCH != 0) && cfg_prefetch_enable),
-        .demand_access(event_cpu_access),
-        .consume_token(controller_consume_token),
-        .feedback_help(controller_feedback_help),
-        .feedback_pollution(controller_feedback_pollution),
-        .feedback_late_merge(pf_late_merge_event),
-        .feedback_blocked_cycle(pf_demand_block_event),
+        .demand_access(controller_demand_access_q),
+        .consume_token(controller_consume_token_q),
+        .feedback_help(controller_feedback_help_q),
+        .feedback_pollution(controller_feedback_pollution_q),
+        .feedback_late_merge(controller_feedback_late_merge_q),
+        .feedback_blocked_cycle(controller_feedback_blocked_q),
         .feedback_pf_writeback(1'b0),
         .miss_penalty(miss_penalty_ewma),
         .wb_penalty(wb_penalty_ewma),
@@ -523,25 +540,35 @@ module l1d_cache_optimized #(
         .debug_epoch_cost(controller_cost)
     );
 
-    l1d_shadow_cache #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .LINE_BYTES(LINE_BYTES),
-        .NUM_SETS(NUM_SETS),
-        .NUM_WAYS(NUM_WAYS),
-        .VICTIM_ENTRIES(VICTIM_ENTRIES)
-    ) shadow_cache (
-        .clk(clk),
-        .rst_n(rst_n),
-        .access_valid(shadow_access_valid && PF_OPT_LEVEL >= 3),
-        .access_line_addr(req_line_addr_comb),
-        .access_write(req_write),
-        .actual_level(shadow_actual_level),
-        .event_true_help(shadow_true_help),
-        .event_true_pollution(shadow_true_pollution),
-        .event_shadow_l1(shadow_l1),
-        .event_shadow_victim(shadow_victim),
-        .event_shadow_lower(shadow_lower)
-    );
+    generate
+        if (ENABLE_PREFETCH != 0 && PF_OPT_LEVEL >= 3) begin : gen_shadow
+            l1d_shadow_cache #(
+                .ADDR_WIDTH(ADDR_WIDTH),
+                .LINE_BYTES(LINE_BYTES),
+                .NUM_SETS(NUM_SETS),
+                .NUM_WAYS(NUM_WAYS),
+                .VICTIM_ENTRIES(VICTIM_ENTRIES)
+            ) shadow_cache (
+                .clk(clk),
+                .rst_n(rst_n),
+                .access_valid(shadow_access_valid),
+                .access_line_addr(req_line_addr_comb),
+                .access_write(req_write),
+                .actual_level(shadow_actual_level),
+                .event_true_help(shadow_true_help),
+                .event_true_pollution(shadow_true_pollution),
+                .event_shadow_l1(shadow_l1),
+                .event_shadow_victim(shadow_victim),
+                .event_shadow_lower(shadow_lower)
+            );
+        end else begin : gen_no_shadow
+            assign shadow_true_help = 1'b0;
+            assign shadow_true_pollution = 1'b0;
+            assign shadow_l1 = 1'b0;
+            assign shadow_victim = 1'b0;
+            assign shadow_lower = 1'b0;
+        end
+    endgenerate
 
     assign debug_pf_mshr_valid = (PF_OPT_LEVEL >= 3) && pf_mshr_valid;
     assign debug_pf_mshr_addr = pf_mshr_addr;
@@ -551,6 +578,40 @@ module l1d_cache_optimized #(
     assign controller_feedback_pollution = (PF_OPT_LEVEL >= 3) ?
                                            shadow_true_pollution :
                                            event_prefetch_pollution;
+
+    // Policy accounting is intentionally one cycle behind the cache FSM.
+    // These registers prevent residency compares, issue arbitration and
+    // shadow classification from feeding the controller's wide accumulators
+    // and state decoder in the same timing path.
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            controller_demand_access_q <= 1'b0;
+            controller_consume_token_q <= 1'b0;
+            controller_feedback_help_q <= 1'b0;
+            controller_feedback_pollution_q <= 1'b0;
+            controller_feedback_late_merge_q <= 1'b0;
+            controller_feedback_blocked_q <= 1'b0;
+            stream_demand_access_q <= 1'b0;
+            stream_demand_lower_miss_q <= 1'b0;
+            stream_demand_line_addr_q <= '0;
+            stream_demand_prefetch_hit_q <= 1'b0;
+            stream_demand_id_q <= '0;
+            stream_demand_generation_q <= '0;
+        end else begin
+            controller_demand_access_q <= event_cpu_access;
+            controller_consume_token_q <= controller_consume_token;
+            controller_feedback_help_q <= controller_feedback_help;
+            controller_feedback_pollution_q <= controller_feedback_pollution;
+            controller_feedback_late_merge_q <= pf_late_merge_event;
+            controller_feedback_blocked_q <= pf_demand_block_event;
+            stream_demand_access_q <= stream_demand_access;
+            stream_demand_lower_miss_q <= stream_demand_lower_miss;
+            stream_demand_line_addr_q <= req_line_addr_comb;
+            stream_demand_prefetch_hit_q <= stream_demand_prefetch_hit;
+            stream_demand_id_q <= stream_demand_id;
+            stream_demand_generation_q <= stream_demand_generation;
+        end
+    end
 
     always_comb begin
         req_set_comb = address_set(req_addr);
@@ -634,7 +695,7 @@ module l1d_cache_optimized #(
         idle_age >= IDLE_GUARD && controller_issue_enable &&
         controller_token_available && ext_pending_valid &&
         !(PF_OPT_LEVEL >= 3 && pf_mshr_valid);
-    assign background_pf_issue = (PF_OPT_LEVEL >= 3) &&
+    assign background_pf_prepare = (PF_OPT_LEVEL >= 3) &&
         (state == ST_RESP) && cpu_rsp_ready && cpu_req_valid &&
         (ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
         (ext_pending_valid || cfg_next_line_enable) &&
@@ -645,19 +706,17 @@ module l1d_cache_optimized #(
         controller_issue_enable && controller_token_available &&
         (ext_pending_valid ||
          (stream_candidate_valid &&
-          stream_candidate_confidence >= controller_min_confidence)) &&
-        mem_req_ready;
-    assign accept_bg_ext = background_pf_issue && ext_pending_valid;
-    assign accept_bg_next = background_pf_issue && !ext_pending_valid &&
+          stream_candidate_confidence >= controller_min_confidence));
+    // Residency proof is registered in ST_RESP.  The actual lower-memory
+    // launch occurs while the held demand is accepted from ST_IDLE, keeping
+    // the wide L1/VC comparisons off candidate FIFO update paths.
+    assign background_pf_issue = background_pf_pending &&
+        (state == ST_IDLE) && cpu_req_valid && mem_req_ready &&
+        cfg_prefetch_enable && controller_issue_enable &&
+        !pf_mshr_valid;
+    assign accept_bg_ext = background_pf_issue && background_pf_external_q;
+    assign accept_bg_next = background_pf_issue && !background_pf_external_q &&
                             stream_candidate_valid;
-    assign background_pf_addr = accept_bg_ext ? ext_pending_addr :
-                                stream_candidate_addr;
-    assign background_pf_confidence = accept_bg_ext ? 2'b11 :
-                                      stream_candidate_confidence;
-    assign background_pf_stream_id = accept_bg_ext ? '0 :
-                                     stream_candidate_id;
-    assign background_pf_stream_generation = accept_bg_ext ? '0 :
-        stream_candidate_generation;
 
     always @* begin : background_residency_lookup
         background_next_l1_hit = 1'b0;
@@ -750,7 +809,7 @@ module l1d_cache_optimized #(
         if (background_pf_issue) begin
             mem_req_valid = 1'b1;
             mem_req_write = 1'b0;
-            mem_req_addr = background_pf_addr;
+            mem_req_addr = background_pf_addr_q;
         end
 
         if (state == ST_IDLE) begin
@@ -845,6 +904,12 @@ module l1d_cache_optimized #(
             pf_response_age <= '0;
             pf_waiter_valid <= 1'b0;
             pf_waiter_same_line <= 1'b0;
+            background_pf_pending <= 1'b0;
+            background_pf_external_q <= 1'b0;
+            background_pf_addr_q <= '0;
+            background_pf_confidence_q <= '0;
+            background_pf_stream_id_q <= '0;
+            background_pf_stream_generation_q <= '0;
             pf_late_merge_event <= 1'b0;
             miss_penalty_ewma <= 8'd8;
             wb_penalty_ewma <= 8'd8;
@@ -944,6 +1009,48 @@ module l1d_cache_optimized #(
                 vc_data[reset_i] <= '0;
             end
         end else begin
+            if (background_pf_prepare) begin
+                background_pf_pending <= 1'b1;
+                background_pf_external_q <= ext_pending_valid;
+                background_pf_addr_q <= ext_pending_valid ?
+                    ext_pending_addr : stream_candidate_addr;
+                background_pf_confidence_q <= ext_pending_valid ?
+                    2'b11 : stream_candidate_confidence;
+                background_pf_stream_id_q <= ext_pending_valid ?
+                    '0 : stream_candidate_id;
+                background_pf_stream_generation_q <= ext_pending_valid ?
+                    '0 : stream_candidate_generation;
+            end else if (background_pf_pending && state == ST_IDLE &&
+                         (!cpu_req_valid || !mem_req_ready || pf_mshr_valid ||
+                          !cfg_prefetch_enable || !controller_issue_enable)) begin
+                // A speculative launch never stalls or outranks a demand.
+                background_pf_pending <= 1'b0;
+            end
+
+            if (background_pf_issue) begin
+                pf_mshr_valid <= 1'b1;
+                pf_mshr_addr <= background_pf_addr_q;
+                pf_mshr_external <= background_pf_external_q;
+                pf_mshr_confidence <= background_pf_confidence_q;
+                pf_mshr_stream_id <= background_pf_stream_id_q;
+                pf_mshr_stream_generation <=
+                    background_pf_stream_generation_q;
+                pf_waiter_valid <= 1'b0;
+                pf_waiter_same_line <= 1'b0;
+                pf_response_pending <= mem_rsp_valid;
+                stat_pf_admitted <= stat_pf_admitted + 1'b1;
+                stat_pf_issued <= stat_pf_issued + 1'b1;
+                background_pf_pending <= 1'b0;
+                if (background_pf_external_q) begin
+                    ext_pending_valid <= 1'b0;
+                    ext_pending_age <= '0;
+                end
+                if (mem_rsp_valid) begin
+                    fill_line <= mem_rsp_rdata;
+                    stat_pf_returned <= stat_pf_returned + 1'b1;
+                end
+            end
+
             for (reset_i = 0; reset_i < NUM_WAYS;
                  reset_i = reset_i + 1) begin
                 if (array_en && tag_we[reset_i])
@@ -1251,19 +1358,9 @@ module l1d_cache_optimized #(
                                     req_wdata, req_size
                                 );
                                 working_dirty <= 1'b1;
-                                response_data <= line_load_data(
-                                    merge_store_data(vc_data[victim_hit_comb],
-                                                     req_addr, req_wdata,
-                                                     req_size),
-                                    req_addr, req_size, req_unsigned
-                                );
                             end else begin
                                 working_line <= vc_data[victim_hit_comb];
                                 working_dirty <= vc_dirty[victim_hit_comb];
-                                response_data <= line_load_data(
-                                    vc_data[victim_hit_comb], req_addr,
-                                    req_size, req_unsigned
-                                );
                             end
                             if (vc_prefetched[victim_hit_comb]) begin
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
@@ -1385,6 +1482,12 @@ module l1d_cache_optimized #(
                 end
 
                 ST_VC_SWAP: begin
+                    // working_line was registered in ST_LOOKUP.  Extracting
+                    // the response here keeps the VC tag compare and line-data
+                    // mux out of the response register's timing cone without
+                    // adding a CPU-visible cycle.
+                    response_data <= line_load_data(
+                        working_line, req_addr, req_size, req_unsigned);
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
@@ -1941,36 +2044,6 @@ module l1d_cache_optimized #(
 
                 ST_RESP: begin
                     if (cpu_rsp_ready) begin
-                        if (background_pf_issue) begin
-                            // Zero-bubble P3 same-line promotion: a candidate
-                            // may launch with the previous response only when
-                            // the already-visible next demand names that line.
-                            // A different waiting demand always wins lower
-                            // memory arbitration.  No cache metadata is
-                            // reserved or modified here.
-                            pf_mshr_valid <= 1'b1;
-                            pf_mshr_addr <= background_pf_addr;
-                            pf_mshr_external <= accept_bg_ext;
-                            pf_mshr_confidence <=
-                                background_pf_confidence;
-                            pf_mshr_stream_id <= background_pf_stream_id;
-                            pf_mshr_stream_generation <=
-                                background_pf_stream_generation;
-                            pf_waiter_valid <= 1'b0;
-                            pf_waiter_same_line <= 1'b0;
-                            pf_response_pending <= mem_rsp_valid;
-                            stat_pf_admitted <= stat_pf_admitted + 1'b1;
-                            stat_pf_issued <= stat_pf_issued + 1'b1;
-                            if (accept_bg_ext) begin
-                                ext_pending_valid <= 1'b0;
-                                ext_pending_age <= '0;
-                            end
-                            if (mem_rsp_valid) begin
-                                fill_line <= mem_rsp_rdata;
-                                stat_pf_returned <=
-                                    stat_pf_returned + 1'b1;
-                            end
-                        end
                         state <= ST_IDLE;
                     end
                 end
