@@ -282,6 +282,35 @@ module tb_l1d_cache_optimized_p3;
        stat_pf_admitted!=0)
       $fatal(1,"external skid did not expire on demand 16");
 
+    // Victim-hit data is registered before response extraction to keep the
+    // tag comparator off the response critical path.  Cover both an unchanged
+    // load and a store-merge response through that pipeline boundary.
+    $display("P3 scenario victim load timing pipeline start");
+    reset_dut(); cfg_prefetch_enable=0;
+    start_req(64'hd000,0,0); respond_line(128'h0_1111222233334444);
+    wait_rsp(64'h1111222233334444);
+    start_req(64'hd040,0,0); respond_line(128'h0_5555666677778888);
+    wait_rsp(64'h5555666677778888);
+    start_req(64'hd080,0,0); respond_line(128'h0_9999aaaabbbbcccc);
+    wait_rsp(64'h9999aaaabbbbcccc);
+    start_req(64'hd000,0,0); wait_rsp(64'h1111222233334444);
+    if(stat_victim_hits!=1)
+      $fatal(1,"victim load did not use victim cache");
+
+    $display("P3 scenario victim store timing pipeline start");
+    reset_dut(); cfg_prefetch_enable=0;
+    start_req(64'he000,0,0); respond_line(128'h0_0123456789abcdef);
+    wait_rsp(64'h0123456789abcdef);
+    start_req(64'he040,0,0); respond_line(128'h0_1111111111111111);
+    wait_rsp(64'h1111111111111111);
+    start_req(64'he080,0,0); respond_line(128'h0_2222222222222222);
+    wait_rsp(64'h2222222222222222);
+    start_req(64'he000,1,64'hfeedfacecafebeef);
+    wait_rsp(64'hfeedfacecafebeef);
+    start_req(64'he000,0,0); wait_rsp(64'hfeedfacecafebeef);
+    if(stat_victim_hits!=1)
+      $fatal(1,"victim store did not use victim cache");
+
     // Seven dirty misses to one two-way set fill the four-entry victim cache
     // and force its first dirty replacement.  The observed writeback must
     // update the nonzero 1/8-EWMA penalty from its reset value.

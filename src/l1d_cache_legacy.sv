@@ -630,19 +630,9 @@ module l1d_cache_legacy #(
                                     req_wdata, req_size
                                 );
                                 working_dirty <= 1'b1;
-                                response_data <= line_load_data(
-                                    merge_store_data(vc_data[victim_hit_comb],
-                                                     req_addr, req_wdata,
-                                                     req_size),
-                                    req_addr, req_size, req_unsigned
-                                );
                             end else begin
                                 working_line <= vc_data[victim_hit_comb];
                                 working_dirty <= vc_dirty[victim_hit_comb];
-                                response_data <= line_load_data(
-                                    vc_data[victim_hit_comb], req_addr,
-                                    req_size, req_unsigned
-                                );
                             end
                             if (vc_prefetched[victim_hit_comb]) begin
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
@@ -701,6 +691,9 @@ module l1d_cache_legacy #(
                 end
 
                 ST_VC_SWAP: begin
+                    response_data <= line_load_data(
+                        working_line, req_addr, req_size, req_unsigned
+                    );
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
