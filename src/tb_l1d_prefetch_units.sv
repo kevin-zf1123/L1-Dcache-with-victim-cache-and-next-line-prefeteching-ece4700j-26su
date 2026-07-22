@@ -50,6 +50,12 @@ module tb_l1d_prefetch_units;
     logic [7:0] ctrl_miss_penalty;
     logic [7:0] ctrl_wb_penalty;
     logic [7:0] ctrl_late_merge_credit;
+    logic fixed_issue_enable;
+    logic fixed_token_available;
+    logic [1:0] fixed_state;
+    logic [1:0] fixed_min_confidence;
+    logic [15:0] fixed_saved;
+    logic [15:0] fixed_cost;
 
     logic shadow_rst_n;
     logic shadow_access_valid;
@@ -118,6 +124,31 @@ module tb_l1d_prefetch_units;
         .min_confidence(ctrl_min_confidence),
         .debug_epoch_saved(ctrl_saved),
         .debug_epoch_cost(ctrl_cost)
+    );
+
+    l1d_prefetch_controller #(
+        .ADAPTIVE(0),
+        .ON_REFILL(4)
+    ) u_fixed_controller (
+        .clk(clk),
+        .rst_n(ctrl_rst_n),
+        .enable(ctrl_enable),
+        .demand_access(ctrl_demand_access),
+        .consume_token(ctrl_consume_token),
+        .feedback_help(ctrl_feedback_help),
+        .feedback_pollution(ctrl_feedback_pollution),
+        .feedback_late_merge(ctrl_feedback_late_merge),
+        .feedback_blocked_cycle(ctrl_feedback_blocked_cycle),
+        .feedback_pf_writeback(ctrl_feedback_pf_writeback),
+        .miss_penalty(ctrl_miss_penalty),
+        .wb_penalty(ctrl_wb_penalty),
+        .late_merge_credit(ctrl_late_merge_credit),
+        .issue_enable(fixed_issue_enable),
+        .token_available(fixed_token_available),
+        .controller_state(fixed_state),
+        .min_confidence(fixed_min_confidence),
+        .debug_epoch_saved(fixed_saved),
+        .debug_epoch_cost(fixed_cost)
     );
 
     l1d_shadow_cache #(
@@ -519,6 +550,26 @@ module tb_l1d_prefetch_units;
         check(candidate_valid && candidate_addr == 64'h8030 &&
               candidate_confidence == 2'd2,
               "OFF training must survive candidate-queue suppression");
+
+        $display("TEST: fixed controller retains only token-rate semantics");
+        reset_controller();
+        check(fixed_state == CTRL_ON && fixed_issue_enable &&
+              fixed_token_available && fixed_min_confidence == 2'd1,
+              "fixed controller must start ON with one token");
+        controller_pulse(0);
+        check(!fixed_token_available && fixed_saved == 0 && fixed_cost == 0,
+              "fixed issue must consume a token without adaptive accounting");
+        controller_demands(3);
+        check(!fixed_token_available,
+              "fixed token must not refill before its configured period");
+        controller_demands(1);
+        check(fixed_token_available,
+              "fixed token must refill on its configured period");
+        reset_controller();
+        controller_demands(3);
+        controller_demand_with_issue();
+        check(fixed_token_available,
+              "fixed refill and consume on one demand must have zero net change");
 
         $display("TEST: controller token bucket and OFF/PROBE/ON states");
         reset_controller();

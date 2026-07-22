@@ -3,12 +3,12 @@
 ## Status
 
 This document is the authoritative design and usage description for the L1
-data cache. As of 2026-07-13, `l1d_cache` is an elaboration-time wrapper around
-two write-back, write-allocate engines:
+data cache. As of 2026-07-22, `l1d_cache` remains an elaboration-time research
+wrapper around two write-back, write-allocate engines:
 
 - `PREFETCH_POLICY=0` selects the frozen legacy blocking next-line engine;
-- `PREFETCH_POLICY=1` selects the optimized direct-L1 engine and is the
-  default; and
+- `PREFETCH_POLICY=1` selects the optimized direct-L1 research engine and is
+  the research-wrapper default; and
 - `PF_OPT_LEVEL=1/2/3` selects safe next-line, adaptive adjacent-stream, or
   shadow-feedback plus single-PF-MSHR behavior. Level 3 is the default.
 
@@ -29,15 +29,23 @@ Both engines provide:
   discard, suppression, controller, shadow, and blocking-cost telemetry; and
 - self-checking Icarus Verilog tests plus a Vivado batch entry point.
 
-Icarus Verilog is used only for fast preliminary functional checks. Vivado
-simulation and synthesis are the final project verification targets.
+The board-facing synthesis seam is `l1d_cache_deploy`. It defaults to
+`ENABLE_PREFETCH=0`, `PF_OPT_LEVEL=1`, and all optional prefetch structures
+disabled by constant folding. Full P3 and P3-lite require explicit opt-in and
+remain research profiles. `l1d_fpga_harness` gives Vivado a placeable scalar
+I/O top instead of exposing the full line interface as device pins.
 
-The final main-profile replay validated all four policy levels over the same
-25 zero-bubble windows. P3 reduced aggregate service cycles by 724 with zero
-byte overhead, zero harmful windows, and zero prefetch-caused write-backs;
-P1, P2, and frozen legacy were neutral because they issued no blocking
-prefetch in the zero-bubble opportunity. See the
-[address-free optimized evidence](evidence/2026-07-13-optimized/README.md).
+Icarus Verilog is used for fast functional checks. Vivado XSim, OOC synthesis,
+independent post-route implementation, timing, and activity-based power are
+the final FPGA evidence targets.
+
+The July 22 main replay validated legacy, P1, P2, full P3, and P3-lite over the
+same 25 zero-bubble windows. Full P3 saved one aggregate service cycle;
+P3-lite added 31 cycles. Both kept byte overhead and prefetch-caused
+write-backs at zero, but neither met the 1% improvement gate. P3-lite also
+failed area, setup-timing, activity-power, and achieved-frequency execution
+gates, so deployment remains prefetch-off. See the
+[July 22 address-free evidence](evidence/2026-07-22-prefetch-ppa/README.md).
 
 ## Source Layout
 
@@ -51,8 +59,11 @@ prefetch in the zero-bubble opportunity. See the
 | `src/l1d_shadow_cache.sv` | Demand-only tag/dirty counterfactual L1/VC model |
 | `src/l1d_cache_optimized.sv` | Safe direct-L1 insertion, lifecycle telemetry, shadow feedback, and single PF MSHR |
 | `src/l1d_cache.sv` | Elaboration-time legacy/optimized wrapper; optimized level 3 is default |
+| `src/l1d_cache_deploy.sv` | Deployment seam; prefetch-off default and explicit structural feature parameters |
+| `src/l1d_fpga_harness.sv` | Scalar-I/O FPGA harness used for independent implementation and activity power |
 | `src/tb_l1d_cache.sv` | Self-checking testbench and line-memory model |
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
+| `src/tb_l1d_fpga_harness.sv` | Deploy-profile signature and SAIF activity testbench |
 | `scripts/run_iverilog.sh` | Functional and synthetic-workload preliminary regression |
 | `scripts/summarize_workloads.sh` | Convert workload log records to CSV |
 | `scripts/validate_workload_results.py` | Fail-closed schema-2/schema-3 field and counter-conservation validator |
@@ -64,7 +75,10 @@ prefetch in the zero-bubble opportunity. See the
 | `scripts/capture_spec_qemu_windows.py` | Fail-closed per-command RV64 QEMU capture and private manifests |
 | `scripts/split_qemu_memtrace_windows.py` | Validate schema-v3 raw captures and emit canonical phased replay windows |
 | `scripts/run_spec_trace_replay.sh` | Manifest-driven four-configuration replay and paired analysis |
+| `scripts/run_feedback_replay_matrix.sh` | Serial, resumable July 22 main/sweep/sensitivity campaign matrix |
 | `scripts/summarize_spec_replay.py` | Strict artifact, counter, sidecar, and off/on pair validator |
+| `scripts/evaluate_prefetch_evidence.py` | Replay plus Vivado deployment-gate evaluator |
+| `scripts/publish_prefetch_evidence.py` | Address-free evidence publisher and privacy audit |
 | `scripts/render_spec_replay_plots.py` | Deterministic helpful/neutral/harmful classification CSV and cycle-delta SVG |
 | `scripts/analyze_trace_windows.py` | Locality, stride, reuse-distance, and set-pressure analysis |
 | `constraints/l1d_baseline.xdc` | Default 100 MHz synthesis clock constraint |
@@ -77,8 +91,8 @@ layout.
 
 ## Architecture and Block Diagram
 
-The optimized default preserves the CPU and lower-memory protocols but splits
-speculative control from demand service:
+The optimized research path preserves the CPU and lower-memory protocols but
+splits speculative control from demand service:
 
 - the CPU request and response channels each have their own ready/valid
   handshake; `cpu_req_ready` belongs to the request channel and
@@ -159,6 +173,42 @@ victim is discarded instead of entering the victim cache.
 | `ENABLE_PREFETCH` | 1 | Elaboration-time enable for built-in and external prefetch acceptance; runtime enables still apply |
 | `PREFETCH_POLICY` | 1 | `0` freezes legacy behavior; `1` selects the optimized engine |
 | `PF_OPT_LEVEL` | 3 | `1` safe next-line; `2` adaptive stream; `3` shadow feedback plus PF MSHR |
+
+Those defaults describe `l1d_cache`, which is retained for research
+compatibility. `l1d_cache_deploy` instead defaults `ENABLE_PREFETCH=0` and
+exposes `PF_USE_STREAM`, `PF_USE_ADAPTIVE`, `PF_USE_SHADOW`, and `PF_USE_MSHR`
+as independent elaboration parameters. Disabled structures are absent after
+synthesis rather than merely held in reset. Its registered PF scheduler uses
+an S0 capture followed by an S1 request stage, so a lower-memory request is
+driven only from registered MSHR payload and remains stable through arbitrary
+`mem_req_ready=0` cycles. An explicit lower-port grant gives state-owned demand
+reads and write-backs priority; PF issue, token, and cost accounting advance
+only when the bus payload is the registered PF request.
+
+`VC_FORMAT_IN_SWAP=1` is the deployment choice. The OOC A/B result was 6,048
+LUTs, 2,047 registers, and +0.363 ns WNS for swap-stage formatting versus
+5,647 LUTs, 2,034 registers, and -0.675 ns WNS for lookup-stage formatting.
+The extra logic is accepted because it is the only PF0 variant that closed the
+10 ns OOC setup check.
+
+### Transient line-register liveness
+
+No persistent line-sized prefetch buffer was added. The existing line-width
+registers cannot be safely merged without changing their state ownership:
+
+| Register | Live interval and owner | Why it cannot alias another role |
+| --- | --- | --- |
+| `data_q[way]` | Synchronous SRAM read output for the currently launched set lookup | It changes with the next array read and is not storage across arbitration. |
+| `working_line` | Demand hit-write or victim-swap copy through `ST_HIT_WRITE`/`ST_VC_SWAP` | A concurrent PF response would corrupt demand data before the array write or response format completes. |
+| `fill_line` | The one transient lower-read response from capture through demand install, PF merge/install, or bounded discard | This is already the shared response register; a PF response is discarded if arbitration cannot consume it within two cycles. Extending its lifetime would create a prefetch buffer. |
+| `evicted_data` | Replacement-line snapshot from lookup/revalidation through VC insertion or swap | Overwriting it loses the exact line that must be preserved or attributed as unused. |
+| `wb_data` | Dirty victim snapshot held through a lower-memory write handshake | Aliasing would violate request-payload stability while `mem_req_ready` is low. |
+
+These live ranges overlap on the demand/PF merge and eviction paths. Reusing a
+second register would therefore trade area for data corruption or protocol
+instability, not remove redundant storage. A true buffer or wider memory
+transaction interface is an architecture change and was not authorized for
+this closure.
 
 Demand replacement is round-robin per set. Optimized prefetch admission uses
 invalid way, then an unused-prefetched way, then (only at confidence 3) a clean
@@ -357,7 +407,37 @@ and replay service cycles.
 
 ## Vivado Verification Evidence
 
-### Optimized P3 evidence
+### July 22 deployment closure
+
+The final remote Vivado 2024.2.1 execution exited 0. The evidence collector
+validated 15 XSim logs, eight OOC synthesis configurations, four independent
+post-route implementations, SAIF-backed power reports, and 121 downloaded
+log/report files. The `l1d-vivado-evidence-v3` manifest is `PASS` with no
+findings. Expected `[Timing 38-282]` setup-gate warnings are evaluated from
+their numerical reports; every other critical warning remains fatal to the
+collector.
+
+The controlled PF0/P3-lite comparison is:
+
+| Stage / metric | Optimized PF0 | P3-lite | Result |
+| --- | ---: | ---: | ---: |
+| OOC slice LUTs | 6,048 | 10,055 | +66.25% |
+| OOC registers | 2,047 | 3,095 | +51.20% |
+| OOC WNS at 10 ns | +0.363 ns | -5.896 ns | P3-lite fails setup |
+| Post-route slice LUTs | 751 | 2,955 | +293.48% |
+| Post-route registers | 748 | 2,280 | +204.81% |
+| Post-route WNS | -0.407 ns | -4.169 ns | both fail; P3-lite worse |
+| Post-route WHS | +0.118 ns | +0.065 ns | both pass hold |
+| Activity dynamic power | 0.008 W | 0.015 W | +87.5% |
+
+All implementation variants have zero unconstrained paths. The combined gate
+decision is `DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT`: P3-lite also adds 31
+cycles on the main replay, while its stream detector dominates area and
+critical paths. Parameter tuning and removal of adaptive/shadow structures did
+not overcome that structural cost. Full tables and provenance are in the
+[July 22 evidence package](evidence/2026-07-22-prefetch-ppa/README.md).
+
+### Optimized P3 evidence (historical July 13 result)
 
 The final optimized remote campaign passed under Vivado 2024.2.1. It produced
 11 XSim logs: eight class-based OOP workload points and three directed
@@ -879,6 +959,7 @@ a future 0/4/8 sweep remains future work.
 - Coherence, atomics, explicit fence/flush/invalidate commands, ECC, MMU/TLB
   translation, PMP/PMA checks, and uncached MMIO regions are outside this L1D
   baseline and must be handled by surrounding system logic or future RTL.
-- Prior legacy and optimized P3 XSim/post-synthesis reports are complete.
-  Manual all-path waveform review, implementation/post-route timing, and
-  activity-based power analysis remain required for final sign-off.
+- XSim, OOC synthesis, independent implementation/post-route timing, and
+  activity-based power evidence are complete. The result does not close the
+  deployment gate; prefetch remains off by default.
+- Manual all-path waveform review remains outstanding.

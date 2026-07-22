@@ -8,6 +8,17 @@ module tb_l1d_cache #(
     parameter integer LINE_BYTES = 16,
     parameter integer PREFETCH_POLICY = 1,
     parameter integer PF_OPT_LEVEL = 3,
+    parameter integer PF_USE_STREAM = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_ADAPTIVE = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_SHADOW = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_USE_MSHR = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_IDLE_GUARD = 2,
+    parameter integer PF_EPOCH_DEMANDS = 256,
+    parameter integer PF_OFF_DEMANDS = 512,
+    parameter integer PF_PROBE_BUDGET = 8,
+    parameter integer PF_PROBE_REFILL = 16,
+    parameter integer PF_ON_REFILL = 8,
+    parameter integer VC_FORMAT_IN_SWAP = 1,
     // 0: always ready, 1: historical periodic ready, 2: deterministic random.
     parameter integer MEM_LATENCY = 2,
     parameter integer MEM_READY_MODE = 1,
@@ -20,6 +31,9 @@ module tb_l1d_cache #(
     localparam integer DATA_WIDTH = 64;
     localparam integer LINE_BITS = LINE_BYTES * 8;
     localparam integer OFFSET_BITS = $clog2(LINE_BYTES);
+    localparam integer SET_BITS = $clog2(NUM_SETS);
+    localparam integer TAG_BITS = ADDR_WIDTH - OFFSET_BITS - SET_BITS;
+    localparam integer PF_RESIDENT_SLOTS = NUM_WAYS * NUM_SETS;
     localparam integer MEM_BYTES = 4096;
     localparam integer TRACE_LINE_BYTES = 4096;
     localparam integer CONFLICT_STRIDE = NUM_SETS * LINE_BYTES;
@@ -188,6 +202,48 @@ module tb_l1d_cache #(
     logic [31:0] sidecar_prev_pf_caused_writebacks;
     logic [1:0] sidecar_prev_controller_state;
     integer sidecar_delta_i;
+    integer sidecar_map_i;
+    integer sidecar_match_i;
+    integer sidecar_free_i;
+    integer sidecar_pf_next_seq;
+    logic sidecar_ext_valid;
+    integer sidecar_ext_seq;
+    integer sidecar_ext_candidate_cycle;
+    logic [ADDR_WIDTH-1:0] sidecar_ext_addr;
+    logic sidecar_stream_valid;
+    integer sidecar_stream_seq;
+    integer sidecar_stream_candidate_cycle;
+    logic [ADDR_WIDTH-1:0] sidecar_stream_addr;
+    logic [1:0] sidecar_stream_confidence;
+    logic [1:0] sidecar_stream_id;
+    logic [1:0] sidecar_stream_generation;
+    logic sidecar_req_pf_valid;
+    integer sidecar_req_pf_seq;
+    integer sidecar_req_pf_source;
+    integer sidecar_req_pf_candidate_cycle;
+    integer sidecar_req_pf_admit_cycle;
+    logic [ADDR_WIDTH-1:0] sidecar_req_pf_addr;
+    logic [1:0] sidecar_req_pf_confidence;
+    logic [1:0] sidecar_req_pf_stream_id;
+    logic [1:0] sidecar_req_pf_generation;
+    logic sidecar_active_pf_valid;
+    integer sidecar_active_pf_seq;
+    integer sidecar_active_pf_source;
+    integer sidecar_active_pf_candidate_cycle;
+    integer sidecar_active_pf_admit_cycle;
+    integer sidecar_active_pf_issue_cycle;
+    logic [ADDR_WIDTH-1:0] sidecar_active_pf_addr;
+    logic [1:0] sidecar_active_pf_confidence;
+    logic [1:0] sidecar_active_pf_stream_id;
+    logic [1:0] sidecar_active_pf_generation;
+    logic sidecar_resident_valid [0:PF_RESIDENT_SLOTS-1];
+    integer sidecar_resident_seq [0:PF_RESIDENT_SLOTS-1];
+    integer sidecar_resident_source [0:PF_RESIDENT_SLOTS-1];
+    integer sidecar_resident_install_cycle [0:PF_RESIDENT_SLOTS-1];
+    logic [ADDR_WIDTH-1:0] sidecar_resident_addr [0:PF_RESIDENT_SLOTS-1];
+    logic [1:0] sidecar_resident_confidence [0:PF_RESIDENT_SLOTS-1];
+    logic [1:0] sidecar_resident_stream_id [0:PF_RESIDENT_SLOTS-1];
+    logic [1:0] sidecar_resident_generation [0:PF_RESIDENT_SLOTS-1];
     reg [8*64-1:0] config_id;
     reg [8*256-1:0] trace_id;
     integer k;
@@ -201,7 +257,18 @@ module tb_l1d_cache #(
         .VICTIM_ENTRIES(VICTIM_ENTRIES),
         .ENABLE_PREFETCH(ENABLE_PREFETCH),
         .PREFETCH_POLICY(PREFETCH_POLICY),
-        .PF_OPT_LEVEL(PF_OPT_LEVEL)
+        .PF_OPT_LEVEL(PF_OPT_LEVEL),
+        .PF_USE_STREAM(PF_USE_STREAM),
+        .PF_USE_ADAPTIVE(PF_USE_ADAPTIVE),
+        .PF_USE_SHADOW(PF_USE_SHADOW),
+        .PF_USE_MSHR(PF_USE_MSHR),
+        .PF_IDLE_GUARD(PF_IDLE_GUARD),
+        .PF_EPOCH_DEMANDS(PF_EPOCH_DEMANDS),
+        .PF_OFF_DEMANDS(PF_OFF_DEMANDS),
+        .PF_PROBE_BUDGET(PF_PROBE_BUDGET),
+        .PF_PROBE_REFILL(PF_PROBE_REFILL),
+        .PF_ON_REFILL(PF_ON_REFILL),
+        .VC_FORMAT_IN_SWAP(VC_FORMAT_IN_SWAP)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -421,6 +488,34 @@ module tb_l1d_cache #(
                     dut.vc_prefetched[victim_index]) begin
                     count_unused_resident = count_unused_resident + 1;
                 end
+            end
+        end
+    endfunction
+
+    function automatic logic sidecar_line_is_prefetched(
+        input logic [ADDR_WIDTH-1:0] line_addr
+    );
+        integer way_index;
+        integer victim_index;
+        logic [SET_BITS-1:0] set_index;
+        logic [TAG_BITS-1:0] tag_value;
+        begin
+            set_index = line_addr[OFFSET_BITS + SET_BITS-1:OFFSET_BITS];
+            tag_value = line_addr[ADDR_WIDTH-1 -: TAG_BITS];
+            sidecar_line_is_prefetched = 1'b0;
+            for (way_index = 0; way_index < NUM_WAYS;
+                 way_index = way_index + 1) begin
+                if (dut.valid_bits[way_index][set_index] &&
+                    dut.prefetched_bits[way_index][set_index] &&
+                    dut.debug_tag[way_index][set_index] == tag_value)
+                    sidecar_line_is_prefetched = 1'b1;
+            end
+            for (victim_index = 0; victim_index < VICTIM_ENTRIES;
+                 victim_index = victim_index + 1) begin
+                if (dut.vc_valid[victim_index] &&
+                    dut.vc_prefetched[victim_index] &&
+                    dut.vc_addr[victim_index] == line_addr)
+                    sidecar_line_is_prefetched = 1'b1;
             end
         end
     endfunction
@@ -872,6 +967,95 @@ module tb_l1d_cache #(
                 $display("FAIL victim hit counter did not increment");
                 errors = errors + 1;
             end
+        end
+    endtask
+
+    task automatic prepare_victim_formatter_line(
+        input logic [ADDR_WIDTH-1:0] base
+    );
+        begin
+            initialize_memory();
+            reset_cache();
+            cfg_prefetch_enable = 1'b0;
+            cfg_next_line_enable = 1'b0;
+            cpu_store(base, SIZE_BYTE, 64'h80);
+            update_golden_store(base, 64'h80, SIZE_BYTE);
+            cpu_store(base + 2, SIZE_HALF, 64'h8001);
+            update_golden_store(base + 2, 64'h8001, SIZE_HALF);
+            cpu_store(base + 4, SIZE_WORD, 64'h8000_0001);
+            update_golden_store(base + 4, 64'h8000_0001, SIZE_WORD);
+            cpu_store(base + 8, SIZE_DOUBLE, 64'h8877_6655_4433_2211);
+            update_golden_store(base + 8, 64'h8877_6655_4433_2211,
+                                SIZE_DOUBLE);
+            for (k = 1; k <= NUM_WAYS; k = k + 1) begin
+                expect_read(base + k*CONFLICT_STRIDE,
+                            memory_load(base + k*CONFLICT_STRIDE,
+                                        SIZE_DOUBLE, 1'b0),
+                            "formatter conflict fill");
+            end
+        end
+    endtask
+
+    task automatic expect_victim_formatted_load(
+        input logic [ADDR_WIDTH-1:0] base,
+        input logic [ADDR_WIDTH-1:0] addr,
+        input logic [1:0] size,
+        input logic unsigned_load,
+        input logic [DATA_WIDTH-1:0] expected,
+        input string label_text
+    );
+        logic [31:0] victim_before;
+        begin
+            prepare_victim_formatter_line(base);
+            victim_before = stat_victim_hits;
+            expect_load(addr, size, unsigned_load, expected, label_text);
+            if (stat_victim_hits != victim_before + 1) begin
+                $display("FAIL %s did not traverse victim formatter", label_text);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    task automatic test_victim_formatter_sizes;
+        logic [ADDR_WIDTH-1:0] base;
+        logic [31:0] victim_before;
+        begin
+            $display("TEST victim formatter sizes/sign/store, ways=%0d swap_stage=%0d",
+                     NUM_WAYS, VC_FORMAT_IN_SWAP);
+            base = 64'h0000_0000_0000_0200;
+            expect_victim_formatted_load(
+                base, base, SIZE_BYTE, 1'b0,
+                64'hffff_ffff_ffff_ff80, "victim LB sign extension");
+            expect_victim_formatted_load(
+                base, base, SIZE_BYTE, 1'b1,
+                64'h0000_0000_0000_0080, "victim LBU zero extension");
+            expect_victim_formatted_load(
+                base, base + 2, SIZE_HALF, 1'b0,
+                64'hffff_ffff_ffff_8001, "victim LH sign extension");
+            expect_victim_formatted_load(
+                base, base + 2, SIZE_HALF, 1'b1,
+                64'h0000_0000_0000_8001, "victim LHU zero extension");
+            expect_victim_formatted_load(
+                base, base + 4, SIZE_WORD, 1'b0,
+                64'hffff_ffff_8000_0001, "victim LW sign extension");
+            expect_victim_formatted_load(
+                base, base + 4, SIZE_WORD, 1'b1,
+                64'h0000_0000_8000_0001, "victim LWU zero extension");
+            expect_victim_formatted_load(
+                base, base + 8, SIZE_DOUBLE, 1'b0,
+                64'h8877_6655_4433_2211, "victim LD");
+
+            prepare_victim_formatter_line(base);
+            victim_before = stat_victim_hits;
+            cpu_store(base + 4, SIZE_WORD, 64'ha5a5_5a5a);
+            update_golden_store(base + 4, 64'ha5a5_5a5a, SIZE_WORD);
+            if (stat_victim_hits != victim_before + 1) begin
+                $display("FAIL victim store did not traverse swap path");
+                errors = errors + 1;
+            end
+            expect_load(base + 4, SIZE_WORD, 1'b1,
+                        64'h0000_0000_a5a5_5a5a,
+                        "victim store merge readback");
         end
     endtask
 
@@ -2452,6 +2636,11 @@ module tb_l1d_cache #(
             sidecar_measurement_was_active = 1'b0;
             sidecar_pf_addr = '0;
             sidecar_pf_addr_valid = 1'b0;
+            sidecar_pf_next_seq = 0;
+            sidecar_ext_valid = 1'b0;
+            sidecar_stream_valid = 1'b0;
+            sidecar_req_pf_valid = 1'b0;
+            sidecar_active_pf_valid = 1'b0;
             sidecar_prev_pf_returned = '0;
             sidecar_prev_pf_installed = '0;
             sidecar_prev_pf_merged = '0;
@@ -2465,12 +2654,23 @@ module tb_l1d_cache #(
             sidecar_prev_pf_suppressed_unsafe = '0;
             sidecar_prev_pf_caused_writebacks = '0;
             sidecar_prev_controller_state = '0;
+            for (sidecar_map_i = 0; sidecar_map_i < PF_RESIDENT_SLOTS;
+                 sidecar_map_i = sidecar_map_i + 1)
+                sidecar_resident_valid[sidecar_map_i] = 1'b0;
         end else if (!measurement_active) begin
             // Warmup is intentionally absent from the measurement sidecar.
-            // Synchronize the edge detector so the first measured cycle does
-            // not replay lifecycle transitions that happened during warmup.
+            // Synchronize all observer state; no inferred warmup event may
+            // leak into the first measurement cycle.
             sidecar_measurement_was_active = 1'b0;
             sidecar_pf_addr_valid = 1'b0;
+            sidecar_pf_next_seq = 0;
+            sidecar_ext_valid = 1'b0;
+            sidecar_stream_valid = 1'b0;
+            sidecar_req_pf_valid = 1'b0;
+            sidecar_active_pf_valid = 1'b0;
+            for (sidecar_map_i = 0; sidecar_map_i < PF_RESIDENT_SLOTS;
+                 sidecar_map_i = sidecar_map_i + 1)
+                sidecar_resident_valid[sidecar_map_i] = 1'b0;
             sidecar_prev_pf_returned = stat_pf_returned;
             sidecar_prev_pf_installed = stat_pf_installed;
             sidecar_prev_pf_merged = stat_pf_merged;
@@ -2487,6 +2687,14 @@ module tb_l1d_cache #(
         end else begin
             if (!sidecar_measurement_was_active) begin
                 sidecar_measurement_was_active = 1'b1;
+                sidecar_pf_next_seq = 0;
+                sidecar_ext_valid = 1'b0;
+                sidecar_stream_valid = 1'b0;
+                sidecar_req_pf_valid = 1'b0;
+                sidecar_active_pf_valid = 1'b0;
+                for (sidecar_map_i = 0; sidecar_map_i < PF_RESIDENT_SLOTS;
+                     sidecar_map_i = sidecar_map_i + 1)
+                    sidecar_resident_valid[sidecar_map_i] = 1'b0;
                 sidecar_prev_pf_returned = stat_pf_returned;
                 sidecar_prev_pf_installed = stat_pf_installed;
                 sidecar_prev_pf_merged = stat_pf_merged;
@@ -2512,26 +2720,24 @@ module tb_l1d_cache #(
                 end
             end
 
+            // Legacy/schema-2 issue and fill rows retain their frozen format.
             if (mem_req_valid && mem_req_ready && !mem_req_write &&
-                debug_req_is_prefetch) begin
+                debug_req_is_prefetch && access_sidecar_fd != 0 &&
+                (access_sidecar_schema == 2 || PREFETCH_POLICY == 0)) begin
                 sidecar_pf_addr = mem_req_addr;
                 sidecar_pf_addr_valid = 1'b1;
-                if (access_sidecar_fd != 0 && access_sidecar_schema == 2) begin
+                if (access_sidecar_schema == 2) begin
                     $fdisplay(access_sidecar_fd,
                               "schema=2 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory details=-",
                               cycles_since_reset - metric_cycles_base,
                               mem_req_addr, LINE_BYTES);
-                end else if (access_sidecar_fd != 0) begin
+                end else begin
                     $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory latency=-1 details=controller:%0d,mshr_valid:%0d,mshr_confidence:%0d",
+                              "schema=3 event=prefetch_issue seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory latency=-1 details=-",
                               cycles_since_reset - metric_cycles_base,
-                              mem_req_addr, LINE_BYTES,
-                              debug_pf_controller_state,
-                              debug_pf_mshr_valid,
-                              debug_pf_mshr_confidence);
+                              mem_req_addr, LINE_BYTES);
                 end
             end
-
             if (event_prefetch_fill && access_sidecar_fd != 0 &&
                 (access_sidecar_schema == 2 || PREFETCH_POLICY == 0)) begin
                 if (access_sidecar_schema == 2) begin
@@ -2547,132 +2753,449 @@ module tb_l1d_cache #(
                 end
             end
 
-            if (access_sidecar_fd != 0 && access_sidecar_schema == 3 &&
-                PREFETCH_POLICY == 1) begin
-                for (sidecar_delta_i = sidecar_prev_pf_candidates;
-                     sidecar_delta_i < stat_pf_candidates;
-                     sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_candidate seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=queued latency=-1 details=controller:%0d,confidence:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              (ext_prefetch_valid && ext_prefetch_ready) ?
-                              {ext_prefetch_addr[ADDR_WIDTH-1:OFFSET_BITS],
-                               {OFFSET_BITS{1'b0}}} :
-                              dut.next_line_candidate_addr,
-                              LINE_BYTES, debug_pf_controller_state,
-                              (ext_prefetch_valid && ext_prefetch_ready) ?
-                              3 : dut.next_line_candidate_confidence);
+            if (access_sidecar_schema == 3 && PREFETCH_POLICY == 1) begin
+                // Allocate identity when the candidate event actually occurs.
+                // The observer snapshots attribution before any queue turnover.
+                if (ext_prefetch_valid && ext_prefetch_ready) begin
+                    sidecar_ext_valid = 1'b1;
+                    sidecar_ext_seq = sidecar_pf_next_seq;
+                    sidecar_pf_next_seq = sidecar_pf_next_seq + 1;
+                    sidecar_ext_candidate_cycle =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_ext_addr =
+                        {ext_prefetch_addr[ADDR_WIDTH-1:OFFSET_BITS],
+                         {OFFSET_BITS{1'b0}}};
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_candidate seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=queued latency=-1 details=source:1,stream_id:0,generation:0,confidence:3",
+                                  sidecar_ext_seq,
+                                  sidecar_ext_candidate_cycle,
+                                  sidecar_ext_addr, LINE_BYTES);
                 end
-                for (sidecar_delta_i = sidecar_prev_pf_admitted;
-                     sidecar_delta_i < stat_pf_admitted;
-                     sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_admit seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=admitted latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              sidecar_pf_addr_valid ? sidecar_pf_addr :
-                              dut.req_line_addr_comb,
-                              LINE_BYTES, debug_pf_controller_state);
+                if (dut.next_line_candidate_valid && dut.pf_candidate_event) begin
+                    sidecar_stream_valid = 1'b1;
+                    sidecar_stream_seq = sidecar_pf_next_seq;
+                    sidecar_pf_next_seq = sidecar_pf_next_seq + 1;
+                    sidecar_stream_candidate_cycle =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_stream_addr = dut.next_line_candidate_addr;
+                    sidecar_stream_confidence =
+                        dut.next_line_candidate_confidence;
+                    sidecar_stream_id = dut.next_line_candidate_stream_id;
+                    sidecar_stream_generation =
+                        dut.next_line_candidate_generation;
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_candidate seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=queued latency=-1 details=source:0,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_stream_seq,
+                                  sidecar_stream_candidate_cycle,
+                                  sidecar_stream_addr, LINE_BYTES,
+                                  sidecar_stream_id,
+                                  sidecar_stream_generation,
+                                  sidecar_stream_confidence);
                 end
-                if (stat_pf_returned != sidecar_prev_pf_returned) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_return seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=returned latency=-1 details=controller:%0d,mshr_valid:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              sidecar_pf_addr_valid ? sidecar_pf_addr :
-                              debug_pf_mshr_addr,
-                              LINE_BYTES, debug_pf_controller_state,
-                              debug_pf_mshr_valid);
+
+                // Admission snapshots the chosen candidate.  Background P3
+                // admission and issue may share an edge; blocking assignments
+                // deliberately make the just-admitted identity visible below.
+                if (dut.pf_accept_ext || dut.pf_accept_bg_ext) begin
+                    if (!sidecar_ext_valid)
+                        $fatal(1, "sidecar external PF admitted without candidate identity");
+                    sidecar_req_pf_valid = 1'b1;
+                    sidecar_req_pf_seq = sidecar_ext_seq;
+                    sidecar_req_pf_source = 1;
+                    sidecar_req_pf_candidate_cycle =
+                        sidecar_ext_candidate_cycle;
+                    sidecar_req_pf_admit_cycle =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_req_pf_addr = sidecar_ext_addr;
+                    sidecar_req_pf_confidence = 2'b11;
+                    sidecar_req_pf_stream_id = '0;
+                    sidecar_req_pf_generation = '0;
+                    sidecar_ext_valid = 1'b0;
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_admit seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=admitted latency=%0d details=source:1,stream_id:0,generation:0,confidence:3",
+                                  sidecar_req_pf_seq,
+                                  sidecar_req_pf_admit_cycle,
+                                  sidecar_req_pf_addr, LINE_BYTES,
+                                  sidecar_req_pf_admit_cycle -
+                                      sidecar_req_pf_candidate_cycle);
+                end else if (dut.pf_accept_next) begin
+                    if (!sidecar_stream_valid)
+                        $fatal(1, "sidecar stream PF admitted without candidate identity");
+                    sidecar_req_pf_valid = 1'b1;
+                    sidecar_req_pf_seq = sidecar_stream_seq;
+                    sidecar_req_pf_source = 0;
+                    sidecar_req_pf_candidate_cycle =
+                        sidecar_stream_candidate_cycle;
+                    sidecar_req_pf_admit_cycle =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_req_pf_addr = sidecar_stream_addr;
+                    sidecar_req_pf_confidence = sidecar_stream_confidence;
+                    sidecar_req_pf_stream_id = sidecar_stream_id;
+                    sidecar_req_pf_generation = sidecar_stream_generation;
+                    sidecar_stream_valid = 1'b0;
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_admit seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=admitted latency=%0d details=source:0,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_req_pf_seq,
+                                  sidecar_req_pf_admit_cycle,
+                                  sidecar_req_pf_addr, LINE_BYTES,
+                                  sidecar_req_pf_admit_cycle -
+                                      sidecar_req_pf_candidate_cycle,
+                                  sidecar_req_pf_stream_id,
+                                  sidecar_req_pf_generation,
+                                  sidecar_req_pf_confidence);
                 end
-                if (stat_pf_installed != sidecar_prev_pf_installed) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_install seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              sidecar_pf_addr_valid ? sidecar_pf_addr :
-                              dut.req_line_addr_comb,
-                              LINE_BYTES, debug_pf_controller_state);
-                    sidecar_pf_addr_valid = 1'b0;
+
+                if (mem_req_valid && mem_req_ready && !mem_req_write &&
+                    debug_req_is_prefetch) begin
+                    if (!sidecar_req_pf_valid)
+                        $fatal(1, "sidecar PF issue has no admitted identity addr=%h",
+                               mem_req_addr);
+                    if (sidecar_active_pf_valid)
+                        $fatal(1, "sidecar observed overlapping PF identities");
+                    sidecar_active_pf_valid = 1'b1;
+                    sidecar_active_pf_seq = sidecar_req_pf_seq;
+                    sidecar_active_pf_source = sidecar_req_pf_source;
+                    sidecar_active_pf_candidate_cycle =
+                        sidecar_req_pf_candidate_cycle;
+                    sidecar_active_pf_admit_cycle =
+                        sidecar_req_pf_admit_cycle;
+                    sidecar_active_pf_issue_cycle =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_active_pf_addr = sidecar_req_pf_addr;
+                    sidecar_active_pf_confidence =
+                        sidecar_req_pf_confidence;
+                    sidecar_active_pf_stream_id =
+                        sidecar_req_pf_stream_id;
+                    sidecar_active_pf_generation = sidecar_req_pf_generation;
+                    sidecar_req_pf_valid = 1'b0;
+                    if (sidecar_active_pf_addr != mem_req_addr) begin
+                        $fatal(1, "sidecar PF identity/address mismatch id=%0d expected=%h issue=%h",
+                               sidecar_active_pf_seq,
+                               sidecar_active_pf_addr, mem_req_addr);
+                    end
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_issue seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=lower_memory latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d,admit_cycle:%0d",
+                                  sidecar_active_pf_seq,
+                                  sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  sidecar_active_pf_issue_cycle -
+                                      sidecar_active_pf_candidate_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence,
+                                  sidecar_active_pf_admit_cycle);
                 end
-                if (stat_pf_merged != sidecar_prev_pf_merged) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_merge seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=late_merge latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              debug_pf_mshr_valid ? debug_pf_mshr_addr :
-                              sidecar_pf_addr,
-                              LINE_BYTES, debug_pf_controller_state);
-                    sidecar_pf_addr_valid = 1'b0;
-                end
-                if (stat_pf_discarded != sidecar_prev_pf_discarded) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_discard seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=discarded latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              sidecar_pf_addr_valid ? sidecar_pf_addr :
-                              debug_pf_mshr_addr,
-                              LINE_BYTES, debug_pf_controller_state);
-                    sidecar_pf_addr_valid = 1'b0;
-                end
-                for (sidecar_delta_i = sidecar_prev_pf_useful;
-                     sidecar_delta_i < stat_prefetch_useful;
-                     sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_use seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=timely_use latency=0 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              dut.req_line_addr_comb, LINE_BYTES,
-                              debug_pf_controller_state);
-                end
-                for (sidecar_delta_i = sidecar_prev_pf_unused_evicted;
-                     sidecar_delta_i < stat_pf_unused_evicted;
-                     sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_evict seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=unused_evict latency=-1 details=vc_bypass:1,controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              dut.req_line_addr_comb, LINE_BYTES,
-                              debug_pf_controller_state);
-                end
-                for (sidecar_delta_i = sidecar_prev_pf_cancelled;
-                     sidecar_delta_i < stat_pf_cancelled;
-                     sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_cancel seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=cancelled latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              dut.req_line_addr_comb, LINE_BYTES,
-                              debug_pf_controller_state);
-                end
+
+                // Suppression counters can advance on the same edge as their
+                // terminal cancellation/discard counters.  Attribute the
+                // non-terminal reason before those terminal handlers retire
+                // the transaction identity below.
                 for (sidecar_delta_i = sidecar_prev_pf_suppressed_quota;
                      sidecar_delta_i < stat_pf_suppressed_quota;
                      sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_suppressed seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=quota latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              dut.next_line_candidate_addr, LINE_BYTES,
-                              debug_pf_controller_state);
+                    if (sidecar_req_pf_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_suppressed seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=quota latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                      sidecar_req_pf_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_req_pf_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_req_pf_candidate_cycle,
+                                      sidecar_req_pf_source,
+                                      sidecar_req_pf_stream_id,
+                                      sidecar_req_pf_generation,
+                                      sidecar_req_pf_confidence);
+                    end else if (sidecar_ext_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_suppressed seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=quota latency=%0d details=source:1,stream_id:0,generation:0,confidence:3",
+                                      sidecar_ext_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_ext_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_ext_candidate_cycle);
+                    end else if (sidecar_stream_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_suppressed seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=quota latency=%0d details=source:0,stream_id:%0d,generation:%0d,confidence:%0d",
+                                      sidecar_stream_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_stream_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_stream_candidate_cycle,
+                                      sidecar_stream_id,
+                                      sidecar_stream_generation,
+                                      sidecar_stream_confidence);
+                    end else begin
+                        $fatal(1, "sidecar quota suppression has no identity");
+                    end
                 end
                 for (sidecar_delta_i = sidecar_prev_pf_suppressed_unsafe;
                      sidecar_delta_i < stat_pf_suppressed_unsafe;
                      sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_suppressed seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=unsafe latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              dut.req_line_addr_comb, LINE_BYTES,
-                              debug_pf_controller_state);
+                    if (sidecar_req_pf_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_suppressed seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=unsafe latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                      sidecar_req_pf_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_req_pf_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_req_pf_candidate_cycle,
+                                      sidecar_req_pf_source,
+                                      sidecar_req_pf_stream_id,
+                                      sidecar_req_pf_generation,
+                                      sidecar_req_pf_confidence);
+                    end else if (sidecar_active_pf_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_suppressed seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=unsafe latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                      sidecar_active_pf_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_active_pf_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_active_pf_candidate_cycle,
+                                      sidecar_active_pf_source,
+                                      sidecar_active_pf_stream_id,
+                                      sidecar_active_pf_generation,
+                                      sidecar_active_pf_confidence);
+                    end else begin
+                        $fatal(1, "sidecar unsafe suppression has no live identity");
+                    end
                 end
+
+                if (stat_pf_returned != sidecar_prev_pf_returned) begin
+                    if (!sidecar_active_pf_valid)
+                        $fatal(1, "sidecar PF return has no issued identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_return seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=returned latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_active_pf_seq,
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence);
+                end
+
+                if (stat_pf_installed != sidecar_prev_pf_installed) begin
+                    if (!sidecar_active_pf_valid)
+                        $fatal(1, "sidecar PF install has no issued identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_install seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=l1_hit latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_active_pf_seq,
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence);
+                    sidecar_match_i = -1;
+                    sidecar_free_i = -1;
+                    for (sidecar_map_i = 0;
+                         sidecar_map_i < PF_RESIDENT_SLOTS;
+                         sidecar_map_i = sidecar_map_i + 1) begin
+                        if (sidecar_resident_valid[sidecar_map_i] &&
+                            sidecar_resident_addr[sidecar_map_i] ==
+                                sidecar_active_pf_addr)
+                            sidecar_match_i = sidecar_map_i;
+                        if (!sidecar_resident_valid[sidecar_map_i] &&
+                            sidecar_free_i == -1)
+                            sidecar_free_i = sidecar_map_i;
+                    end
+                    if (sidecar_match_i == -1)
+                        sidecar_match_i = sidecar_free_i;
+                    if (sidecar_match_i == -1)
+                        $fatal(1, "sidecar PF resident identity table overflow");
+                    sidecar_resident_valid[sidecar_match_i] = 1'b1;
+                    sidecar_resident_seq[sidecar_match_i] =
+                        sidecar_active_pf_seq;
+                    sidecar_resident_source[sidecar_match_i] =
+                        sidecar_active_pf_source;
+                    sidecar_resident_install_cycle[sidecar_match_i] =
+                        cycles_since_reset - metric_cycles_base;
+                    sidecar_resident_addr[sidecar_match_i] =
+                        sidecar_active_pf_addr;
+                    sidecar_resident_confidence[sidecar_match_i] =
+                        sidecar_active_pf_confidence;
+                    sidecar_resident_stream_id[sidecar_match_i] =
+                        sidecar_active_pf_stream_id;
+                    sidecar_resident_generation[sidecar_match_i] =
+                        sidecar_active_pf_generation;
+                    sidecar_active_pf_valid = 1'b0;
+                end
+                if (stat_pf_merged != sidecar_prev_pf_merged) begin
+                    if (!sidecar_active_pf_valid)
+                        $fatal(1, "sidecar PF merge has no issued identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_merge seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=late_merge latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_active_pf_seq,
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence);
+                    sidecar_active_pf_valid = 1'b0;
+                end
+                if (stat_pf_discarded != sidecar_prev_pf_discarded) begin
+                    if (!sidecar_active_pf_valid)
+                        $fatal(1, "sidecar PF discard has no issued identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_discard seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=discarded latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_active_pf_seq,
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence);
+                    sidecar_active_pf_valid = 1'b0;
+                end
+
+                for (sidecar_delta_i = sidecar_prev_pf_cancelled;
+                     sidecar_delta_i < stat_pf_cancelled;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    if (sidecar_req_pf_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_cancel seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=cancelled latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                      sidecar_req_pf_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_req_pf_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_req_pf_candidate_cycle,
+                                      sidecar_req_pf_source,
+                                      sidecar_req_pf_stream_id,
+                                      sidecar_req_pf_generation,
+                                      sidecar_req_pf_confidence);
+                        sidecar_req_pf_valid = 1'b0;
+                    end else if (sidecar_ext_valid) begin
+                        if (access_sidecar_fd != 0)
+                            $fdisplay(access_sidecar_fd,
+                                      "schema=3 event=prefetch_cancel seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=cancelled latency=%0d details=source:1,stream_id:0,generation:0,confidence:3",
+                                      sidecar_ext_seq,
+                                      cycles_since_reset - metric_cycles_base,
+                                      sidecar_ext_addr, LINE_BYTES,
+                                      cycles_since_reset - metric_cycles_base -
+                                          sidecar_ext_candidate_cycle);
+                        sidecar_ext_valid = 1'b0;
+                    end else begin
+                        $fatal(1, "sidecar PF cancellation has no candidate/admit identity");
+                    end
+                end
+
+                for (sidecar_delta_i = sidecar_prev_pf_useful;
+                     sidecar_delta_i < stat_prefetch_useful;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    sidecar_match_i = -1;
+                    for (sidecar_map_i = 0;
+                         sidecar_map_i < PF_RESIDENT_SLOTS;
+                         sidecar_map_i = sidecar_map_i + 1) begin
+                        if (sidecar_resident_valid[sidecar_map_i] &&
+                            sidecar_resident_addr[sidecar_map_i] ==
+                                dut.req_line_addr_comb)
+                            sidecar_match_i = sidecar_map_i;
+                    end
+                    if (sidecar_match_i == -1)
+                        $fatal(1, "sidecar PF use has no resident identity addr=%h",
+                               dut.req_line_addr_comb);
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_use seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=timely_use latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_resident_seq[sidecar_match_i],
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_resident_addr[sidecar_match_i],
+                                  LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_resident_install_cycle[
+                                          sidecar_match_i],
+                                  sidecar_resident_source[sidecar_match_i],
+                                  sidecar_resident_stream_id[sidecar_match_i],
+                                  sidecar_resident_generation[sidecar_match_i],
+                                  sidecar_resident_confidence[sidecar_match_i]);
+                    sidecar_resident_valid[sidecar_match_i] = 1'b0;
+                end
+                for (sidecar_delta_i = sidecar_prev_pf_unused_evicted;
+                     sidecar_delta_i < stat_pf_unused_evicted;
+                     sidecar_delta_i = sidecar_delta_i + 1) begin
+                    sidecar_match_i = -1;
+                    for (sidecar_map_i = 0;
+                         sidecar_map_i < PF_RESIDENT_SLOTS;
+                         sidecar_map_i = sidecar_map_i + 1) begin
+                        if (sidecar_resident_valid[sidecar_map_i] &&
+                            !sidecar_line_is_prefetched(
+                                sidecar_resident_addr[sidecar_map_i]) &&
+                            sidecar_match_i == -1)
+                            sidecar_match_i = sidecar_map_i;
+                    end
+                    if (sidecar_match_i == -1)
+                        $fatal(1, "sidecar PF eviction has no missing resident identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_evict seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=unused_evict latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d,vc_bypass:1",
+                                  sidecar_resident_seq[sidecar_match_i],
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_resident_addr[sidecar_match_i],
+                                  LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_resident_install_cycle[
+                                          sidecar_match_i],
+                                  sidecar_resident_source[sidecar_match_i],
+                                  sidecar_resident_stream_id[sidecar_match_i],
+                                  sidecar_resident_generation[sidecar_match_i],
+                                  sidecar_resident_confidence[sidecar_match_i]);
+                    sidecar_resident_valid[sidecar_match_i] = 1'b0;
+                end
+
                 for (sidecar_delta_i = sidecar_prev_pf_caused_writebacks;
                      sidecar_delta_i < stat_pf_caused_writebacks;
                      sidecar_delta_i = sidecar_delta_i + 1) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=prefetch_writeback seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=writeback latency=-1 details=controller:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              mem_req_addr, LINE_BYTES,
-                              debug_pf_controller_state);
+                    if (!sidecar_active_pf_valid)
+                        $fatal(1, "sidecar PF writeback has no issued identity");
+                    if (access_sidecar_fd != 0)
+                        $fdisplay(access_sidecar_fd,
+                                  "schema=3 event=prefetch_writeback seq=%0d cycle=%0d addr=%016h op=prefetch size=%0d outcome=writeback latency=%0d details=source:%0d,stream_id:%0d,generation:%0d,confidence:%0d",
+                                  sidecar_active_pf_seq,
+                                  cycles_since_reset - metric_cycles_base,
+                                  sidecar_active_pf_addr, LINE_BYTES,
+                                  cycles_since_reset - metric_cycles_base -
+                                      sidecar_active_pf_issue_cycle,
+                                  sidecar_active_pf_source,
+                                  sidecar_active_pf_stream_id,
+                                  sidecar_active_pf_generation,
+                                  sidecar_active_pf_confidence);
                 end
-                if (debug_pf_controller_state !=
-                    sidecar_prev_controller_state) begin
-                    $fdisplay(access_sidecar_fd,
-                              "schema=3 event=controller_state seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=state_%0d latency=0 details=mshr_valid:%0d,mshr_addr:%016h,mshr_confidence:%0d",
-                              cycles_since_reset - metric_cycles_base,
-                              {ADDR_WIDTH{1'b0}}, LINE_BYTES,
-                              debug_pf_controller_state,
-                              debug_pf_mshr_valid, debug_pf_mshr_addr,
-                              debug_pf_mshr_confidence);
-                end
+            end
+
+            if (access_sidecar_fd != 0 && access_sidecar_schema == 3 &&
+                debug_pf_controller_state != sidecar_prev_controller_state) begin
+                $fdisplay(access_sidecar_fd,
+                          "schema=3 event=controller_state seq=-1 cycle=%0d addr=%016h op=prefetch size=%0d outcome=state_%0d latency=0 details=mshr_valid:%0d,mshr_addr:%016h,mshr_confidence:%0d",
+                          cycles_since_reset - metric_cycles_base,
+                          {ADDR_WIDTH{1'b0}}, LINE_BYTES,
+                          debug_pf_controller_state,
+                          debug_pf_mshr_valid, debug_pf_mshr_addr,
+                          debug_pf_mshr_confidence);
             end
 
             sidecar_prev_pf_returned = stat_pf_returned;
@@ -2802,10 +3325,12 @@ module tb_l1d_cache #(
             // controller and shadow tests.  Reuse the synthetic workloads here
             // only as an end-to-end data/protocol smoke test.
             test_workload_boundaries();
+            test_victim_formatter_sizes();
         end else begin
             test_baseline();
             test_rv64_alignment_faults();
             test_victim_hit();
+            test_victim_formatter_sizes();
             test_dirty_victim_writeback();
             test_response_backpressure();
             test_randomized_scoreboard();

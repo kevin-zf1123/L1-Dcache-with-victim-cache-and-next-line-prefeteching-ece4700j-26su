@@ -18,6 +18,31 @@ readonly TRACE_LINE_BYTES=4096
 
 PREFETCH_POLICY="${L1D_PREFETCH_POLICY:-1}"
 PF_OPT_LEVEL="${L1D_PF_OPT_LEVEL:-3}"
+if (( PF_OPT_LEVEL >= 2 )); then
+    DEFAULT_PF_USE_STREAM=1
+    DEFAULT_PF_USE_ADAPTIVE=1
+else
+    DEFAULT_PF_USE_STREAM=0
+    DEFAULT_PF_USE_ADAPTIVE=0
+fi
+if (( PF_OPT_LEVEL >= 3 )); then
+    DEFAULT_PF_USE_SHADOW=1
+    DEFAULT_PF_USE_MSHR=1
+else
+    DEFAULT_PF_USE_SHADOW=0
+    DEFAULT_PF_USE_MSHR=0
+fi
+PF_USE_STREAM="${L1D_PF_USE_STREAM:-${DEFAULT_PF_USE_STREAM}}"
+PF_USE_ADAPTIVE="${L1D_PF_USE_ADAPTIVE:-${DEFAULT_PF_USE_ADAPTIVE}}"
+PF_USE_SHADOW="${L1D_PF_USE_SHADOW:-${DEFAULT_PF_USE_SHADOW}}"
+PF_USE_MSHR="${L1D_PF_USE_MSHR:-${DEFAULT_PF_USE_MSHR}}"
+PF_IDLE_GUARD="${L1D_PF_IDLE_GUARD:-2}"
+PF_EPOCH_DEMANDS="${L1D_PF_EPOCH_DEMANDS:-256}"
+PF_OFF_DEMANDS="${L1D_PF_OFF_DEMANDS:-512}"
+PF_PROBE_BUDGET="${L1D_PF_PROBE_BUDGET:-8}"
+PF_PROBE_REFILL="${L1D_PF_PROBE_REFILL:-16}"
+PF_ON_REFILL="${L1D_PF_ON_REFILL:-8}"
+VC_FORMAT_IN_SWAP="${L1D_VC_FORMAT_IN_SWAP:-1}"
 PRODUCER_PROFILE="${L1D_PRODUCER_PROFILE:-zero-bubble}"
 PRODUCER_GAP="${L1D_PRODUCER_GAP:-0}"
 SIDECAR_SCHEMA="${L1D_SIDECAR_SCHEMA:-3}"
@@ -35,6 +60,27 @@ if [[ "${PREFETCH_POLICY}" == 0 && "${PF_OPT_LEVEL}" != 0 ]]; then
 fi
 if [[ "${PREFETCH_POLICY}" == 1 && "${PF_OPT_LEVEL}" == 0 ]]; then
     echo "optimized L1D_PREFETCH_POLICY=1 requires L1D_PF_OPT_LEVEL in 1..3" >&2
+    exit 2
+fi
+for feature_name in PF_USE_STREAM PF_USE_ADAPTIVE PF_USE_SHADOW PF_USE_MSHR \
+                    VC_FORMAT_IN_SWAP; do
+    feature_value="${!feature_name}"
+    if [[ "${feature_value}" != 0 && "${feature_value}" != 1 ]]; then
+        echo "${feature_name} must be 0 or 1" >&2
+        exit 2
+    fi
+done
+for tuning_name in PF_IDLE_GUARD PF_EPOCH_DEMANDS PF_OFF_DEMANDS \
+                   PF_PROBE_BUDGET PF_PROBE_REFILL PF_ON_REFILL; do
+    tuning_value="${!tuning_name}"
+    if [[ ! "${tuning_value}" =~ ^[0-9]+$ ]]; then
+        echo "${tuning_name} must be a non-negative integer" >&2
+        exit 2
+    fi
+done
+if (( PF_IDLE_GUARD > 7 || PF_EPOCH_DEMANDS < 1 || PF_OFF_DEMANDS < 1 ||
+      PF_PROBE_BUDGET < 1 || PF_PROBE_REFILL < 1 || PF_ON_REFILL < 1 )); then
+    echo "prefetch tuning values are outside supported ranges" >&2
     exit 2
 fi
 case "${PRODUCER_PROFILE}" in
@@ -120,6 +166,17 @@ compile_case() {
         -P "tb_l1d_cache.ENABLE_PREFETCH=${prefetch}" \
         -P "tb_l1d_cache.PREFETCH_POLICY=${PREFETCH_POLICY}" \
         -P "tb_l1d_cache.PF_OPT_LEVEL=${PF_OPT_LEVEL}" \
+        -P "tb_l1d_cache.PF_USE_STREAM=${PF_USE_STREAM}" \
+        -P "tb_l1d_cache.PF_USE_ADAPTIVE=${PF_USE_ADAPTIVE}" \
+        -P "tb_l1d_cache.PF_USE_SHADOW=${PF_USE_SHADOW}" \
+        -P "tb_l1d_cache.PF_USE_MSHR=${PF_USE_MSHR}" \
+        -P "tb_l1d_cache.PF_IDLE_GUARD=${PF_IDLE_GUARD}" \
+        -P "tb_l1d_cache.PF_EPOCH_DEMANDS=${PF_EPOCH_DEMANDS}" \
+        -P "tb_l1d_cache.PF_OFF_DEMANDS=${PF_OFF_DEMANDS}" \
+        -P "tb_l1d_cache.PF_PROBE_BUDGET=${PF_PROBE_BUDGET}" \
+        -P "tb_l1d_cache.PF_PROBE_REFILL=${PF_PROBE_REFILL}" \
+        -P "tb_l1d_cache.PF_ON_REFILL=${PF_ON_REFILL}" \
+        -P "tb_l1d_cache.VC_FORMAT_IN_SWAP=${VC_FORMAT_IN_SWAP}" \
         -P "tb_l1d_cache.MEM_LATENCY=${MEM_LATENCY}" \
         -P "tb_l1d_cache.MEM_READY_MODE=${MEM_READY_MODE_CODE}" \
         -P "tb_l1d_cache.VICTIM_ENTRIES=${victim_entries}" \
@@ -211,17 +268,22 @@ PY
         echo "replay did not emit a PASS WORKLOAD_RESULT: ${log}" >&2
         return 2
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$(cd "$(dirname "${replay_trace}")" && pwd)/$(basename "${replay_trace}")" \
-        "${config}" \
-        "$(cd "$(dirname "${log}")" && pwd)/$(basename "${log}")" \
-        "$(cd "$(dirname "${sidecar}")" && pwd)/$(basename "${sidecar}")" \
-        "${sets}" "${ways}" "${line_bytes}" "${victim_entries}" "${prefetch}" \
-        "${trace_arg}" "${sidecar_arg}" \
-        "${PREFETCH_POLICY}" "${PF_OPT_LEVEL}" "${PRODUCER_PROFILE}" \
-        "${PRODUCER_PROFILE_CODE}" "${PRODUCER_GAP}" "${SIDECAR_SCHEMA}" \
-        "${MEM_LATENCY}" "${MEM_READY_MODE}" "${MEM_READY_MODE_CODE}" \
-        >> "${RUN_ROWS}"
+    local row=(
+        "$(cd "$(dirname "${replay_trace}")" && pwd)/$(basename "${replay_trace}")"
+        "${config}"
+        "$(cd "$(dirname "${log}")" && pwd)/$(basename "${log}")"
+        "$(cd "$(dirname "${sidecar}")" && pwd)/$(basename "${sidecar}")"
+        "${sets}" "${ways}" "${line_bytes}" "${victim_entries}" "${prefetch}"
+        "${trace_arg}" "${sidecar_arg}"
+        "${PREFETCH_POLICY}" "${PF_OPT_LEVEL}" "${PRODUCER_PROFILE}"
+        "${PRODUCER_PROFILE_CODE}" "${PRODUCER_GAP}" "${SIDECAR_SCHEMA}"
+        "${MEM_LATENCY}" "${MEM_READY_MODE}" "${MEM_READY_MODE_CODE}"
+        "${PF_USE_STREAM}" "${PF_USE_ADAPTIVE}" "${PF_USE_SHADOW}"
+        "${PF_USE_MSHR}" "${PF_IDLE_GUARD}" "${PF_EPOCH_DEMANDS}"
+        "${PF_OFF_DEMANDS}" "${PF_PROBE_BUDGET}" "${PF_PROBE_REFILL}"
+        "${PF_ON_REFILL}" "${VC_FORMAT_IN_SWAP}"
+    )
+    (IFS=$'\t'; printf '%s\n' "${row[*]}") >> "${RUN_ROWS}"
 }
 
 if [[ "${REPLAY_SCOPE}" == full ]]; then
@@ -336,7 +398,9 @@ columns = (
     "trace config log sidecar sets ways line_bytes victim_entries prefetch "
     "trace_arg sidecar_arg prefetch_policy pf_opt_level producer_profile "
     "producer_profile_code producer_gap sidecar_schema mem_latency "
-    "mem_ready_mode mem_ready_mode_code"
+    "mem_ready_mode mem_ready_mode_code pf_use_stream pf_use_adaptive "
+    "pf_use_shadow pf_use_mshr pf_idle_guard pf_epoch_demands pf_off_demands "
+    "pf_probe_budget pf_probe_refill pf_on_refill vc_format_in_swap"
 ).split()
 rows = []
 for line_number, line in enumerate(rows_path.read_text(encoding="utf-8").splitlines(), 1):
@@ -447,6 +511,43 @@ for row in rows:
     timing_profile = (
         f"blocking-fixed-latency{mem_latency}-{ready_profile}"
     )
+    compile_parameters = {
+        "NUM_WAYS": int(row["ways"]),
+        "NUM_SETS": int(row["sets"]),
+        "LINE_BYTES": int(row["line_bytes"]),
+        "VICTIM_ENTRIES": int(row["victim_entries"]),
+        "ENABLE_PREFETCH": int(row["prefetch"]),
+        "PREFETCH_POLICY": int(row["prefetch_policy"]),
+        "PF_OPT_LEVEL": int(row["pf_opt_level"]),
+        "PF_USE_STREAM": int(row["pf_use_stream"]),
+        "PF_USE_ADAPTIVE": int(row["pf_use_adaptive"]),
+        "PF_USE_SHADOW": int(row["pf_use_shadow"]),
+        "PF_USE_MSHR": int(row["pf_use_mshr"]),
+        "PF_IDLE_GUARD": int(row["pf_idle_guard"]),
+        "PF_EPOCH_DEMANDS": int(row["pf_epoch_demands"]),
+        "PF_OFF_DEMANDS": int(row["pf_off_demands"]),
+        "PF_PROBE_BUDGET": int(row["pf_probe_budget"]),
+        "PF_PROBE_REFILL": int(row["pf_probe_refill"]),
+        "PF_ON_REFILL": int(row["pf_on_refill"]),
+        "VC_FORMAT_IN_SWAP": int(row["vc_format_in_swap"]),
+        "MEM_LATENCY": mem_latency,
+        "MEM_READY_MODE": mem_ready_mode_code,
+    }
+    for parameter in (
+        "ENABLE_PREFETCH", "PREFETCH_POLICY", "PF_USE_STREAM",
+        "PF_USE_ADAPTIVE", "PF_USE_SHADOW", "PF_USE_MSHR",
+        "VC_FORMAT_IN_SWAP",
+    ):
+        if compile_parameters[parameter] not in (0, 1):
+            raise SystemExit(
+                f"invalid binary compile parameter {parameter}="
+                f"{compile_parameters[parameter]}"
+            )
+    compile_parameters_sha256 = hashlib.sha256(
+        json.dumps(
+            compile_parameters, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
     runs.append(
         {
             "benchmark": replay["benchmark"],
@@ -468,6 +569,8 @@ for row in rows:
             "simulation_cwd": str(Path.cwd().resolve()),
             "simulation_command": command,
             "simulation_command_sha256": command_sha256,
+            "simulation_compile_parameters": compile_parameters,
+            "simulation_compile_parameters_sha256": compile_parameters_sha256,
             "sets": int(row["sets"]),
             "ways": int(row["ways"]),
             "line_bytes": int(row["line_bytes"]),
@@ -475,8 +578,21 @@ for row in rows:
             "prefetch": int(row["prefetch"]),
             "prefetch_policy": int(row["prefetch_policy"]),
             "pf_opt_level": int(row["pf_opt_level"]),
+            "pf_use_stream": int(row["pf_use_stream"]),
+            "pf_use_adaptive": int(row["pf_use_adaptive"]),
+            "pf_use_shadow": int(row["pf_use_shadow"]),
+            "pf_use_mshr": int(row["pf_use_mshr"]),
+            "pf_idle_guard": int(row["pf_idle_guard"]),
+            "pf_epoch_demands": int(row["pf_epoch_demands"]),
+            "pf_off_demands": int(row["pf_off_demands"]),
+            "pf_probe_budget": int(row["pf_probe_budget"]),
+            "pf_probe_refill": int(row["pf_probe_refill"]),
+            "pf_on_refill": int(row["pf_on_refill"]),
+            "vc_format_in_swap": int(row["vc_format_in_swap"]),
             "producer_profile": row["producer_profile"],
+            "producer_profile_code": int(row["producer_profile_code"]),
             "producer_gap": int(row["producer_gap"]),
+            "sidecar_schema": int(row["sidecar_schema"]),
             "mem_latency": mem_latency,
             "mem_ready_mode": mem_ready_mode,
             "mem_ready_mode_code": mem_ready_mode_code,

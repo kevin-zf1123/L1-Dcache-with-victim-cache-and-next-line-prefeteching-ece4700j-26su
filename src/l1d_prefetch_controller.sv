@@ -131,6 +131,35 @@ module l1d_prefetch_controller #(
             epoch_help <= '0;
             saved <= '0;
             cost <= '0;
+        end else if (ADAPTIVE == 0) begin
+            // Fixed deploy profile: retain only the two-token rate limiter.
+            // Keeping the adaptive epoch/state arithmetic outside this
+            // elaborated branch lets synthesis remove its counters and wide
+            // saturating add/compare network completely.
+            controller_state_reg <= CTRL_ON;
+            demand_count <= '0;
+            probe_issues <= '0;
+            probe_second_epoch <= 1'b0;
+            weak_on <= 1'b0;
+            negative_epoch <= 1'b0;
+            epoch_pf_issued <= '0;
+            epoch_help <= '0;
+            saved <= '0;
+            cost <= '0;
+
+            if (consume_token && tokens != 0 &&
+                !(demand_access && refill_count == ON_REFILL-1))
+                tokens <= tokens - 1'b1;
+
+            if (demand_access) begin
+                if (refill_count == ON_REFILL-1) begin
+                    refill_count <= '0;
+                    if (!consume_token && tokens != 2)
+                        tokens <= tokens + 1'b1;
+                end else begin
+                    refill_count <= refill_count + 1'b1;
+                end
+            end
         end else begin
             if (saved_increment != 0)
                 saved <= saved_accumulate_value;

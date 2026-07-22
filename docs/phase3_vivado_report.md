@@ -1,6 +1,127 @@
 # Phase 3 Vivado Verification Report
 
-## Evidence Status (2026-07-13)
+## Deployment Closure (2026-07-22)
+
+This section supersedes the July 13 performance and PPA conclusion while
+retaining the older evidence below as history. The current deployment profile
+is `l1d_cache_deploy` with `ENABLE_PREFETCH=0`. Full P3 and P3-lite are
+explicit research configurations, not defaults.
+
+### Correctness and evidence integrity
+
+The closure fixed the prefetch lifecycle before measuring it:
+
+- controller token/cost accounting is charged only on an actual PF lower-
+  memory request handshake;
+- a late merge receives causal shadow credit rather than a timing proxy;
+- a response returning after runtime disable is discarded instead of
+  installed;
+- candidate address/generation snapshots remain stable across FIFO-head
+  turnover, and suppression is emitted before same-edge cancellation so every
+  sidecar event retains the correct sequence identity; and
+- the PF scheduler is registered S0 capture/S1 issue, with request valid and
+  address held stable for arbitrary lower-memory backpressure; and
+- an explicit lower-port ownership grant prevents a state-owned demand read or
+  write-back from being misclassified and charged as a PF handshake.
+
+The exact 5,028-access sqlite gap-4 reproduction passed with 1,425 candidates,
+1,425 admissions/cancellations, 1,033 unsafe suppressions, and 392 same-line
+coalesces. The complete single-lane matrix then finished with
+`MATRIX_ALL_PASS`: all 26 campaigns were executed afresh. Every campaign
+validated 50 runs/25 exact pairs, except full P3's
+100 runs/25 pairs including its standalone geometry controls. No run reported
+a watchdog, protocol, duplicate-line, or lifecycle-conservation failure.
+
+### Replay conclusion
+
+| Variant | Off cycles | On cycles | Delta | Byte overhead | Harmful / neutral / helpful | Issued / merged / installed |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| legacy | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| P1 | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| P2 | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| full P3 | 850,547 | 850,546 | -1 | 0% | 4 / 16 / 5 | 508 / 508 / 0 |
+| P3-lite | 850,547 | 850,578 | +31 | 0% | 9 / 8 / 8 | 1,301 / 1,301 / 0 |
+
+Full P3's 0.000118% improvement and P3-lite's 0.003645% slowdown both fail
+the required 1% improvement. P3-lite has only 16/25 non-slow windows versus a
+20/25 requirement. It passes zero bandwidth overhead, maximum per-window
+slowdown, and zero PF-caused write-back gates. Tuning does not change the
+decision: the best `PF_ON_REFILL=16` sweep point still adds 17 cycles.
+
+Sensitivity exposes why a single main timing model is insufficient. Legacy
+prefetch increases cycles by 33.66%, 33.66%, 25.48%, 14.10%, and 0.74% under
+sequential and fixed-gap 1/2/4/8 producers, with 53.80% byte overhead. P3-lite
+safely suppresses or cancels those opportunities and stays byte-neutral, but
+does not produce an improvement. At zero-bubble latency 0 it is neutral; at
+latency 8 it adds 9 cycles with periodic ready and 146 cycles with
+deterministic-random ready.
+
+### OOC synthesis and structural attribution
+
+All configurations use two ways, four sets, 16-byte lines, VC4, and the same
+deployment seam unless the row explicitly names the legacy top.
+
+| Configuration | LUTs | FFs | WNS at 10 ns | Vectorless dynamic |
+| --- | ---: | ---: | ---: | ---: |
+| `optimized_pf0_deploy` (VC swap format) | 6,048 | 2,047 | +0.363 ns | 0.023 W |
+| `optimized_pf0_deploy_vc_lookup` | 5,647 | 2,034 | -0.675 ns | 0.015 W |
+| `p3_research` | 9,740 | 4,817 | -5.186 ns | 0.044 W |
+| `p3_deploy` | 9,488 | 3,928 | -5.404 ns | 0.042 W |
+| `p3_no_shadow_proxy` | 9,048 | 3,161 | -6.123 ns | 0.042 W |
+| `p3_lite_mshr_fixed` | 10,055 | 3,095 | -5.896 ns | 0.040 W |
+| `stream_detector_only` | 7,302 | 2,549 | -5.688 ns | 0.021 W |
+| `legacy_matched` | 5,349 | 2,074 | -2.007 ns | 0.014 W |
+
+`VC_FORMAT_IN_SWAP=1` costs 401 LUTs and 13 registers relative to lookup-stage
+formatting, but improves WNS by 1.038 ns and is the only PF0 OOC variant to
+meet the 10 ns setup constraint. It is therefore the retained formatter.
+
+Hierarchical OOC utilization isolates the dominant speculative structures:
+
+| Configuration / module | LUTs | FFs |
+| --- | ---: | ---: |
+| P3 deploy controller | 264 | 73 |
+| P3 deploy shadow | 368 | 741 |
+| P3 deploy stream detector | 1,006 | 414 |
+| P3-lite controller | 8 | 5 |
+| P3-lite stream detector | 977 | 414 |
+| stream-only controller | 6 | 5 |
+| stream-only detector | 882 | 414 |
+
+Constant folding removes nearly all controller and shadow state in P3-lite,
+yet area and WNS remain far outside the gate. The stream detector and its
+candidate logic are therefore a structural limit under the current interface,
+not a parameter-tuning problem.
+
+### Independent post-route implementation and activity power
+
+The scalar-I/O FPGA harness eliminates the earlier impossible raw-cache I/O
+top. Each row was independently synthesized, placed, and routed with a 10 ns
+clock; SAIF was generated by its matching deploy-profile simulation.
+
+| Configuration | LUTs | FFs | WNS | WHS | Activity dynamic | Matched nets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `optimized_pf0_deploy` | 751 | 748 | -0.407 ns | +0.118 ns | 0.008 W | 128 / 1,646 |
+| `p3_deploy` | 3,593 | 3,146 | -3.721 ns | +0.019 ns | 0.020 W | 565 / 7,525 |
+| `p3_lite_mshr_fixed` | 2,955 | 2,280 | -4.169 ns | +0.065 ns | 0.015 W | 575 / 5,804 |
+| `legacy_matched` | 1,259 | 1,411 | -0.444 ns | +0.106 ns | 0.008 W | 488 / 2,956 |
+
+All four rows are hold-clean and have zero unconstrained paths, but all fail
+setup. Against PF0, P3-lite adds 66.25% OOC LUTs, 51.20% OOC FFs, 87.5%
+activity dynamic power, and yields a -36.154% achieved-Fmax execution-time
+proxy. The hardware gate therefore fails every required item except hold and
+constraint completeness.
+
+The final remote execution exited 0. Its `l1d-vivado-evidence-v3` manifest
+validated 15 XSim logs, eight OOC syntheses, four implementations, required
+VCD/SAIF/checkpoint/report artifacts, and 121 downloaded log/report files with
+zero findings. The combined evaluator decision is
+`DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT`; a failed design gate is recorded
+as an experimental result, not as a collector failure. Public address-free
+evidence is in
+[`evidence/2026-07-22-prefetch-ppa/`](evidence/2026-07-22-prefetch-ppa/README.md).
+
+## Historical Evidence Status (2026-07-13)
 
 The 2026-07-01 simulation/PPA and SPEC tables below are historical. Simulation
 used `NUM_SETS=4`, whereas synthesis silently used the RTL default
@@ -15,7 +136,7 @@ The current replacement now meets that rule. The stale-free Vivado run and the
 private process-attributable SPEC capture/replay/analyzer chain all report
 `PASS`. The historical tables remain invalid and are retained only as history.
 
-## Optimized P3 Verification Status (2026-07-13)
+## Historical Optimized P3 Verification Status (2026-07-13)
 
 The adaptive direct-L1 implementation has passed the local Icarus matrix,
 directed P3 regression, true zero-bubble replay, and 82 Python analyzer/runner
@@ -184,7 +305,7 @@ tables below are not part of the replacement evidence.
 
 This report records the Phase 3 workload-driven Vivado evidence collected on
 2026-07-01. The run used remote Vivado 2024.2.1 on `192.168.1.101`, staged
-under the ASCII Windows path `C:/Users/kevin/l1d_codex_ascii_20260701_r10`.
+under the ASCII Windows path `C:/Users/<remote-user>/l1d_codex_ascii_20260701_r10`.
 The Vivado Tcl source was passed as a Windows `C:/...` path, and the remote
 password was not stored in repository files or logs.
 
@@ -381,7 +502,9 @@ MSHR. The broader placement/replacement policy matrix remains a design gap:
 - paired replay sidecars now provide true L1/lower-memory help and pollution,
   but PF events have no shared transaction identity for a per-prefetch
   candidate/issue/return latency distribution; and
-- no post-route timing or activity-based power analysis.
+- post-route timing and activity-based power are now complete and fail the
+  deployment gates; manual all-path waveform review and any architectural
+  redesign remain future work.
 
 The historical invalid campaign covered labels `708`, `721`, `767`, and
 `777`; it is not benchmark-attributable. The process-attributable replacement

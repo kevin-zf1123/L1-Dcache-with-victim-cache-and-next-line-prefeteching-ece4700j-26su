@@ -1256,6 +1256,22 @@ def _parse_key_value_line(line: str, context: str) -> dict[str, str]:
     return result
 
 
+def _parse_sidecar_details(value: str, context: str) -> dict[str, str]:
+    if value == "-":
+        return {}
+    result: dict[str, str] = {}
+    for item in value.split(","):
+        if item.count(":") != 1:
+            _fail(context, f"invalid details item {item!r}")
+        key, detail_value = item.split(":", 1)
+        if not key or not detail_value:
+            _fail(context, f"empty details key/value in {item!r}")
+        if key in result:
+            _fail(context, f"duplicate details key {key!r}")
+        result[key] = detail_value
+    return result
+
+
 SIDECAR_V2_FIELDS = frozenset(
     {"schema", "event", "seq", "cycle", "addr", "op", "size", "outcome", "details"}
 )
@@ -1313,6 +1329,10 @@ def parse_sidecar(
     last_seq: int | None = None
     sidecar_schema: int | None = None
     lifecycle_cycles: dict[int, dict[str, int]] = defaultdict(dict)
+    pf_lifecycle: dict[int, dict[str, tuple[int, int, int]]] = defaultdict(dict)
+    pf_metadata: dict[int, dict[str, str]] = {}
+    identified_pf_events = False
+    unidentified_pf_events = False
     for line_number, line in noncomment:
         context = f"sidecar {path}:{line_number}"
         if header is None:
@@ -1362,10 +1382,12 @@ def parse_sidecar(
                 seq = int(str(row["seq"]), 0)
             except ValueError:
                 _fail(context, f"seq is not an integer: {row['seq']!r}")
-            if seq != -1:
-                _fail(context, f"{event} seq must be -1, got {seq}")
             if event == "controller_state":
+                if seq != -1:
+                    _fail(context, f"controller_state seq must be -1, got {seq}")
                 continue
+            if seq < -1:
+                _fail(context, f"{event} seq must be -1 or non-negative, got {seq}")
             if str(row["op"]) != "prefetch":
                 _fail(context, f"{event} op must be 'prefetch'")
             size = _int(row["size"], context, "size", minimum=1)
@@ -1389,6 +1411,29 @@ def parse_sidecar(
                     context,
                     f"{event} outcome must be {expected_outcome!r}",
                 )
+            if schema == 2 or seq == -1:
+                unidentified_pf_events = True
+                continue
+
+            identified_pf_events = True
+            metadata = _parse_sidecar_details(details, context)
+            required_metadata = {"source", "stream_id", "generation", "confidence"}
+            missing_metadata = required_metadata - set(metadata)
+            if missing_metadata:
+                _fail(
+                    context,
+                    f"identified {event} lacks metadata {sorted(missing_metadata)}",
+                )
+            snapshot = {key: metadata[key] for key in required_metadata}
+            if seq in pf_metadata and pf_metadata[seq] != snapshot:
+                _fail(
+                    context,
+                    f"prefetch seq {seq} metadata changed from {pf_metadata[seq]} to {snapshot}",
+                )
+            pf_metadata[seq] = snapshot
+            if event in pf_lifecycle[seq]:
+                _fail(context, f"duplicate {event} for prefetch seq {seq}")
+            pf_lifecycle[seq][event] = (cycle, addr, latency)
             continue
 
         seq = _int(row["seq"], context, "seq")
@@ -1453,6 +1498,67 @@ def parse_sidecar(
                 <= events["demand_response"]
             ):
                 _fail(f"sidecar {path}", f"demand seq {seq} lifecycle cycles regress")
+        if identified_pf_events and unidentified_pf_events:
+            _fail(
+                f"sidecar {path}",
+                "mixes identified and seq=-1 prefetch lifecycle events",
+            )
+        terminal_events = {
+            "prefetch_install",
+            "prefetch_merge",
+            "prefetch_discard",
+        }
+        for seq, events in pf_lifecycle.items():
+            context = f"sidecar {path} prefetch seq {seq}"
+            addresses = {entry[1] for entry in events.values()}
+            if len(addresses) != 1:
+                _fail(context, f"lifecycle addresses differ: {sorted(addresses)}")
+            if "prefetch_admit" in events and "prefetch_candidate" not in events:
+                _fail(context, "admit is missing candidate")
+            if "prefetch_issue" in events and "prefetch_admit" not in events:
+                _fail(context, "issue is missing admit")
+            if "prefetch_return" in events and "prefetch_issue" not in events:
+                _fail(context, "return is missing issue")
+            terminals = terminal_events & set(events)
+            if len(terminals) > 1:
+                _fail(context, f"multiple response outcomes {sorted(terminals)}")
+            if terminals and "prefetch_return" not in events:
+                _fail(context, f"{sorted(terminals)} is missing return")
+            if "prefetch_admit" in events and not (
+                "prefetch_issue" in events or "prefetch_cancel" in events
+            ):
+                _fail(context, "admitted transaction neither issued nor cancelled")
+            if "prefetch_issue" in events and "prefetch_return" not in events:
+                _fail(context, "issued transaction did not return")
+            if "prefetch_return" in events and len(terminals) != 1:
+                _fail(context, "returned transaction lacks one install/merge/discard outcome")
+            if "prefetch_cancel" in events and "prefetch_issue" in events:
+                _fail(context, "issued transaction was also cancelled")
+            if "prefetch_use" in events and "prefetch_install" not in events:
+                _fail(context, "use is missing install")
+            if "prefetch_evict" in events and "prefetch_install" not in events:
+                _fail(context, "evict is missing install")
+            if "prefetch_use" in events and "prefetch_evict" in events:
+                _fail(context, "installed line was both used and unused-evicted")
+
+            order = [
+                "prefetch_candidate",
+                "prefetch_admit",
+                "prefetch_issue",
+                "prefetch_return",
+            ]
+            ordered_cycles = [events[name][0] for name in order if name in events]
+            if ordered_cycles != sorted(ordered_cycles):
+                _fail(context, "candidate/admit/issue/return cycles regress")
+            if terminals:
+                terminal = next(iter(terminals))
+                if events[terminal][0] < events["prefetch_return"][0]:
+                    _fail(context, f"{terminal} precedes return")
+            for terminal in ("prefetch_use", "prefetch_evict"):
+                if terminal in events and (
+                    events[terminal][0] < events["prefetch_install"][0]
+                ):
+                    _fail(context, f"{terminal} precedes install")
     return accesses, dict(event_counts)
 
 

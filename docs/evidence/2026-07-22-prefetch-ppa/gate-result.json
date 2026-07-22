@@ -1,0 +1,304 @@
+{
+  "combined_gate_pass": false,
+  "decision": "DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT",
+  "generated_at": "2026-07-22T03:01:14.500757+00:00",
+  "main_replay": "p3-lite",
+  "replays": {
+    "legacy": {
+      "artifacts": {
+        "aggregate.csv": "d5b1bdd2893f2472d19b09ae34ad2d66cf61ec3e666f86ce29ff264915f8bdaa",
+        "campaign_manifest.json": "89ea6d72b057e4b10c1ac0449967a1ebf479eac14d551fe04d21d15fd7763de0",
+        "pairs.csv": "77234b415cd0c7a1a9b56ce958c6fac792c2b47d70ebe993995caf44124ec403",
+        "validation.json": "d619fca78fc009c561156384e3115194281819759c44b8693a8ed70a3aabde5b"
+      },
+      "bandwidth_overhead_fraction": 0.0,
+      "checks": {
+        "aggregate_cycle_improvement_ge_1pct": false,
+        "bandwidth_overhead_le_10pct": true,
+        "max_window_slowdown_le_5pct": true,
+        "non_slow_windows_ge_20": true,
+        "pf_caused_writebacks_zero": true
+      },
+      "counters": {
+        "off_read_bytes": 948400,
+        "off_write_bytes": 300736,
+        "on_pf_admitted": 0,
+        "on_pf_cancelled": 0,
+        "on_pf_candidates": 59250,
+        "on_pf_caused_writebacks": 0,
+        "on_pf_demand_block_cycles": 0,
+        "on_pf_discarded": 0,
+        "on_pf_installed": 0,
+        "on_pf_issued": 0,
+        "on_pf_merged": 0,
+        "on_pf_returned": 0,
+        "on_pf_unused_evicted": 0,
+        "on_pf_unused_resident": 0,
+        "on_read_bytes": 948400,
+        "on_write_bytes": 300736
+      },
+      "cycle_improvement_fraction": 0.0,
+      "max_window_slowdown_fraction": 0.0,
+      "name": "legacy",
+      "non_slow_windows": 25,
+      "off_cycles": 850547,
+      "off_total_bytes": 1249136,
+      "on_cycles": 850547,
+      "on_total_bytes": 1249136,
+      "pair_count": 25,
+      "profile": {
+        "pf_opt_level": "0",
+        "prefetch_policy": "0",
+        "producer_gap": "0",
+        "producer_profile": "zero-bubble",
+        "timing_profile": "blocking-fixed-latency2-periodic-ready"
+      },
+      "replay_gate_pass": false,
+      "root": "private-build/replay/legacy"
+    },
+    "p1": {
+      "artifacts": {
+        "aggregate.csv": "2c4d36562fb0315f4b05dba0f2760dbf287b03b9b8abbe807984604974b2f32c",
+        "campaign_manifest.json": "af6551e916afb54273df4e7a8b9542302a27987fc9ba5fbe33b3b515d5172b3f",
+        "pairs.csv": "b7b1685f05f0a5d4ff15a513b384d6b5c7d3990e8ea2d7784f2eff03392d9587",
+        "validation.json": "a3f50177f29c30c6c5946ee2d4d2fa983de70567952e0b334747e36e03ed7bfc"
+      },
+      "bandwidth_overhead_fraction": 0.0,
+      "checks": {
+        "aggregate_cycle_improvement_ge_1pct": false,
+        "bandwidth_overhead_le_10pct": true,
+        "max_window_slowdown_le_5pct": true,
+        "non_slow_windows_ge_20": true,
+        "pf_caused_writebacks_zero": true
+      },
+      "counters": {
+        "off_read_bytes": 948400,
+        "off_write_bytes": 300736,
+        "on_pf_admitted": 0,
+        "on_pf_cancelled": 0,
+        "on_pf_candidates": 59083,
+        "on_pf_caused_writebacks": 0,
+        "on_pf_demand_block_cycles": 0,
+        "on_pf_discarded": 0,
+        "on_pf_installed": 0,
+        "on_pf_issued": 0,
+        "on_pf_merged": 0,
+        "on_pf_returned": 0,
+        "on_pf_unused_evicted": 0,
+        "on_pf_unused_resident": 0,
+        "on_read_bytes": 948400,
+        "on_write_bytes": 300736
+      },
+      "cycle_improvement_fraction": 0.0,
+      "max_window_slowdown_fraction": 0.0,
+      "name": "p1",
+      "non_slow_windows": 25,
+      "off_cycles": 850547,
+      "off_total_bytes": 1249136,
+      "on_cycles": 850547,
+      "on_total_bytes": 1249136,
+      "pair_count": 25,
+      "profile": {
+        "pf_opt_level": "1",
+        "prefetch_policy": "1",
+        "producer_gap": "0",
+        "producer_profile": "zero-bubble",
+        "timing_profile": "blocking-fixed-latency2-periodic-ready"
+      },
+      "replay_gate_pass": false,
+      "root": "private-build/replay/p1"
+    },
+    "p2": {
+      "artifacts": {
+        "aggregate.csv": "96088f68f9285cdee624e2c7a6246a02062ce54fbd1159e5878c7faddd3893b9",
+        "campaign_manifest.json": "8524180637075edccbc83d7a52fb96a4be686bc01e60fe0c1fd477c957d86c7e",
+        "pairs.csv": "88aa5b98beafbd7a0cbd45a5f92a5d80c9e7b35b262cc88c88d2d2ef3e80d644",
+        "validation.json": "80233025bc82ff1b4b9cbdc630b9c07f3947534a4e02553f057c331b639c215f"
+      },
+      "bandwidth_overhead_fraction": 0.0,
+      "checks": {
+        "aggregate_cycle_improvement_ge_1pct": false,
+        "bandwidth_overhead_le_10pct": true,
+        "max_window_slowdown_le_5pct": true,
+        "non_slow_windows_ge_20": true,
+        "pf_caused_writebacks_zero": true
+      },
+      "counters": {
+        "off_read_bytes": 948400,
+        "off_write_bytes": 300736,
+        "on_pf_admitted": 0,
+        "on_pf_cancelled": 0,
+        "on_pf_candidates": 12797,
+        "on_pf_caused_writebacks": 0,
+        "on_pf_demand_block_cycles": 0,
+        "on_pf_discarded": 0,
+        "on_pf_installed": 0,
+        "on_pf_issued": 0,
+        "on_pf_merged": 0,
+        "on_pf_returned": 0,
+        "on_pf_unused_evicted": 0,
+        "on_pf_unused_resident": 0,
+        "on_read_bytes": 948400,
+        "on_write_bytes": 300736
+      },
+      "cycle_improvement_fraction": 0.0,
+      "max_window_slowdown_fraction": 0.0,
+      "name": "p2",
+      "non_slow_windows": 25,
+      "off_cycles": 850547,
+      "off_total_bytes": 1249136,
+      "on_cycles": 850547,
+      "on_total_bytes": 1249136,
+      "pair_count": 25,
+      "profile": {
+        "pf_opt_level": "2",
+        "prefetch_policy": "1",
+        "producer_gap": "0",
+        "producer_profile": "zero-bubble",
+        "timing_profile": "blocking-fixed-latency2-periodic-ready"
+      },
+      "replay_gate_pass": false,
+      "root": "private-build/replay/p2"
+    },
+    "p3": {
+      "artifacts": {
+        "aggregate.csv": "f087af8a6380c22a1b64568a62d085c0abe4cb446884fac289be7312b1bf43d6",
+        "campaign_manifest.json": "2a1376c69e54b01949715c6c09fbe8bd83d59e99da6c5aff7e3136b3bc823ad5",
+        "pairs.csv": "e424ba45448eba2d1b74f8376e3159c1993ced0f62495fcf8cf4a199ce9762da",
+        "validation.json": "65d2643e8010c88ef1b28c6170c871d7dede29ec7343fd192a83f7c27ee2567a"
+      },
+      "bandwidth_overhead_fraction": 0.0,
+      "checks": {
+        "aggregate_cycle_improvement_ge_1pct": false,
+        "bandwidth_overhead_le_10pct": true,
+        "max_window_slowdown_le_5pct": true,
+        "non_slow_windows_ge_20": true,
+        "pf_caused_writebacks_zero": true
+      },
+      "counters": {
+        "off_read_bytes": 948400,
+        "off_write_bytes": 300736,
+        "on_pf_admitted": 508,
+        "on_pf_cancelled": 0,
+        "on_pf_candidates": 11239,
+        "on_pf_caused_writebacks": 0,
+        "on_pf_demand_block_cycles": 1722,
+        "on_pf_discarded": 0,
+        "on_pf_installed": 0,
+        "on_pf_issued": 508,
+        "on_pf_merged": 508,
+        "on_pf_returned": 508,
+        "on_pf_unused_evicted": 0,
+        "on_pf_unused_resident": 0,
+        "on_read_bytes": 948400,
+        "on_write_bytes": 300736
+      },
+      "cycle_improvement_fraction": 1.175713981708242e-06,
+      "max_window_slowdown_fraction": 0.00073066,
+      "name": "p3",
+      "non_slow_windows": 21,
+      "off_cycles": 850547,
+      "off_total_bytes": 1249136,
+      "on_cycles": 850546,
+      "on_total_bytes": 1249136,
+      "pair_count": 25,
+      "profile": {
+        "pf_opt_level": "3",
+        "prefetch_policy": "1",
+        "producer_gap": "0",
+        "producer_profile": "zero-bubble",
+        "timing_profile": "blocking-fixed-latency2-periodic-ready"
+      },
+      "replay_gate_pass": false,
+      "root": "private-build/replay/p3"
+    },
+    "p3-lite": {
+      "artifacts": {
+        "aggregate.csv": "430998345944768467a6d1f5d00fc3db5569379881437ac6a6e405969bb453d1",
+        "campaign_manifest.json": "0f93345c13433c9dd2578cf301dbbeea839b5baac09f3677b022db4b4a38165e",
+        "pairs.csv": "a09aab90f18bda3ec409ff1fd391a815f11ccf36ccd5aa15c9e4b0cb984f64f0",
+        "validation.json": "106ef24a00aa4178319a2563eb2280934bcb4fd8a137938f1738cc9bd34c4478"
+      },
+      "bandwidth_overhead_fraction": 0.0,
+      "checks": {
+        "aggregate_cycle_improvement_ge_1pct": false,
+        "bandwidth_overhead_le_10pct": true,
+        "max_window_slowdown_le_5pct": true,
+        "non_slow_windows_ge_20": false,
+        "pf_caused_writebacks_zero": true
+      },
+      "counters": {
+        "off_read_bytes": 948400,
+        "off_write_bytes": 300736,
+        "on_pf_admitted": 1301,
+        "on_pf_cancelled": 0,
+        "on_pf_candidates": 24902,
+        "on_pf_caused_writebacks": 0,
+        "on_pf_demand_block_cycles": 4477,
+        "on_pf_discarded": 0,
+        "on_pf_installed": 0,
+        "on_pf_issued": 1301,
+        "on_pf_merged": 1301,
+        "on_pf_returned": 1301,
+        "on_pf_unused_evicted": 0,
+        "on_pf_unused_resident": 0,
+        "on_read_bytes": 948400,
+        "on_write_bytes": 300736
+      },
+      "cycle_improvement_fraction": -3.64471334329555e-05,
+      "max_window_slowdown_fraction": 0.000693902,
+      "name": "p3-lite",
+      "non_slow_windows": 16,
+      "off_cycles": 850547,
+      "off_total_bytes": 1249136,
+      "on_cycles": 850578,
+      "on_total_bytes": 1249136,
+      "pair_count": 25,
+      "profile": {
+        "pf_opt_level": "3",
+        "prefetch_policy": "1",
+        "producer_gap": "0",
+        "producer_profile": "zero-bubble",
+        "timing_profile": "blocking-fixed-latency2-periodic-ready"
+      },
+      "replay_gate_pass": false,
+      "root": "private-build/replay/p3-lite"
+    }
+  },
+  "schema": "l1d-prefetch-gate-v1",
+  "status": "PASS",
+  "vivado": {
+    "activity_dynamic_power_overhead_fraction": 0.8749999999999999,
+    "checks": {
+      "achieved_frequency_time_improves": false,
+      "activity_dynamic_power_overhead_le_10pct": false,
+      "ff_overhead_le_15pct": false,
+      "lut_overhead_le_15pct": false,
+      "ooc_p3_lite_wns_nonnegative": false,
+      "post_route_hold_clean": true,
+      "post_route_no_unconstrained_paths": true,
+      "post_route_wns_nonnegative": false
+    },
+    "execution_time_proxy_improvement_fraction": -0.3615370826783522,
+    "ff_overhead_fraction": 0.5119687347337567,
+    "hardware_gate_pass": false,
+    "lut_overhead_fraction": 0.6625330687830688,
+    "manifest": "private-build/vivado/evidence_manifest.json",
+    "manifest_sha256": "439780fa38d31d11b30eb687d543512b742b4775f98d96ec39926f65a6ad2a5c",
+    "ooc_p3_lite_wns_ns": -5.896,
+    "p3_lite_slack_derived_fmax_mhz": 70.57661091114404,
+    "pf0_slack_derived_fmax_mhz": 96.08917075045642,
+    "post_route_p3_lite_whs_ns": 0.065,
+    "post_route_p3_lite_wns_ns": -4.169,
+    "repository": {
+      "commit": "465dd46813bd2ca1802b96f05dc4caa57a2d179c",
+      "dirty": true
+    },
+    "tool": {
+      "clock_period_ns": 10.0,
+      "launcher": "redacted",
+      "part": "xc7a35tcpg236-1",
+      "vivado_version": "2024.2.1"
+    }
+  }
+}

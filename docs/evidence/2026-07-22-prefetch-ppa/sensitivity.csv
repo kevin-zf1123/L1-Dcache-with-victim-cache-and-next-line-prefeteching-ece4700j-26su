@@ -1,0 +1,17 @@
+profile,variant,prefetch_policy,pf_opt_level,producer_profile,producer_gap,timing_profile,pairs,accesses,off_cycles,on_cycles,cycle_delta,cycle_delta_fraction,off_total_bytes,on_total_bytes,byte_delta,bandwidth_overhead,harmful,neutral,helpful,pf_candidates,pf_admitted,pf_issued,pf_returned,pf_installed,pf_merged,pf_discarded,pf_cancelled,pf_unused_evicted,pf_unused_resident,pf_caused_writebacks,pf_demand_block_cycles
+sequential,legacy,0,0,sequential,0,blocking-fixed-latency2-periodic-ready,25,125511,977392,1306388,328996,0.336605988,1249136,1921168,672032,0.537997464,25,0,0,44193,44193,44193,44193,44193,0,0,0,34573,88,0,0
+sequential,p3-lite,1,3,sequential,0,blocking-fixed-latency2-periodic-ready,25,125511,977392,977392,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,24906,0,0,0,0,0,0,0,0,0,0,0
+gap1,legacy,0,0,fixed-gap,1,blocking-fixed-latency2-periodic-ready,25,125511,977392,1306388,328996,0.336605988,1249136,1921168,672032,0.537997464,25,0,0,44193,44193,44193,44193,44193,0,0,0,34573,88,0,0
+gap1,p3-lite,1,3,fixed-gap,1,blocking-fixed-latency2-periodic-ready,25,125511,977392,977392,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,24906,0,0,0,0,0,0,0,0,0,0,0
+gap2,legacy,0,0,fixed-gap,2,blocking-fixed-latency2-periodic-ready,25,125511,1101373,1382027,280654,0.254821936,1249136,1921168,672032,0.537997464,25,0,0,44193,44193,44193,44193,44193,0,0,0,34573,88,0,0
+gap2,p3-lite,1,3,fixed-gap,2,blocking-fixed-latency2-periodic-ready,25,125511,1101373,1101373,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,24906,0,0,0,0,0,0,0,0,0,0,0
+gap4,legacy,0,0,fixed-gap,4,blocking-fixed-latency2-periodic-ready,25,125511,1353861,1544715,190854,0.140970159,1249136,1921168,672032,0.537997464,24,0,1,44193,44193,44193,44193,44193,0,0,0,34573,88,0,0
+gap4,p3-lite,1,3,fixed-gap,4,blocking-fixed-latency2-periodic-ready,25,125511,1353861,1353861,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,27330,27330,0,0,0,0,0,27330,0,0,0,0
+gap8,legacy,0,0,fixed-gap,8,blocking-fixed-latency2-periodic-ready,25,125511,1854635,1868380,13745,0.007411162,1249136,1921168,672032,0.537997464,17,0,8,44193,44193,44193,44193,44193,0,0,0,34573,88,0,0
+gap8,p3-lite,1,3,fixed-gap,8,blocking-fixed-latency2-periodic-ready,25,125511,1854635,1854635,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,27330,27330,0,0,0,0,0,27330,0,0,0,0
+latency0-always,legacy,0,0,zero-bubble,0,blocking-fixed-latency0-always-ready,25,125511,721825,721825,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,59250,0,0,0,0,0,0,0,0,0,0,0
+latency0-always,p3-lite,1,3,zero-bubble,0,blocking-fixed-latency0-always-ready,25,125511,721825,721825,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,24902,1301,1301,1301,0,1301,0,0,0,0,0,4345
+latency8-periodic,legacy,0,0,zero-bubble,0,blocking-fixed-latency8-periodic-ready,25,125511,1203956,1203956,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,59250,0,0,0,0,0,0,0,0,0,0,0
+latency8-periodic,p3-lite,1,3,zero-bubble,0,blocking-fixed-latency8-periodic-ready,25,125511,1203956,1203965,9,0.000007475,1249136,1249136,0,0.000000000,7,11,7,24902,1301,1301,1301,0,1301,0,0,0,0,0,4384
+latency8-random,legacy,0,0,zero-bubble,0,blocking-fixed-latency8-deterministic-random-ready,25,125511,1224305,1224305,0,0.000000000,1249136,1249136,0,0.000000000,0,25,0,59250,0,0,0,0,0,0,0,0,0,0,0
+latency8-random,p3-lite,1,3,zero-bubble,0,blocking-fixed-latency8-deterministic-random-ready,25,125511,1224305,1224451,146,0.000119251,1249136,1249136,0,0.000000000,4,17,4,24902,1300,1300,1300,0,1300,0,0,0,0,0,4493

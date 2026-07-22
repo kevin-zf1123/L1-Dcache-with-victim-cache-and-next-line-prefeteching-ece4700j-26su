@@ -2,7 +2,115 @@
 
 英文 `docs/phase3_vivado_report.md` 是权威版本。
 
-## 证据状态（2026-07-13）
+## 部署收尾（2026-07-22）
+
+本节取代 7 月 13 日的 performance 和 PPA 结论，但保留后文旧证据作为历史。
+当前部署 profile 为 `l1d_cache_deploy`，默认 `ENABLE_PREFETCH=0`。Full P3
+和 P3-lite 是必须显式选择的研究配置，不是默认值。
+
+### 正确性与证据完整性
+
+收尾工作在测量前先修复了 prefetch lifecycle：
+
+- controller token/cost 只在 PF 下级内存请求真正 handshake 时计费；
+- late merge 获得 causal shadow credit，而不是 timing proxy；
+- runtime disable 之后返回的 response 会被 discard，不会 install；
+- candidate address/generation snapshot 在 FIFO head 切换时保持稳定，且同一个
+  edge 先记录 suppression 再 cancellation，使每个 sidecar event 保留正确 sequence
+  identity；
+- PF scheduler 使用注册化 S0 capture/S1 issue，request valid 和 address 可在任意
+  下级内存 backpressure 期间保持稳定；
+- 显式 lower-port ownership grant 避免将 state-owned demand read 或 write-back
+  错误分类并计费为 PF handshake。
+
+精确的 5,028-access sqlite gap-4 复现通过：1,425 个 candidate、1,425 次
+admission/cancellation、1,033 次 unsafe suppression 和 392 次 same-line coalesce。
+随后，完整单通道 matrix 以 `MATRIX_ALL_PASS` 结束：26 个 campaign 全部重新执行。
+每个 campaign 验证 50 run/25 个精确 pair；full P3
+还包含 standalone geometry control，共 100 run/25 pair。没有任何 run 报告 watchdog、
+protocol、duplicate-line 或 lifecycle-conservation failure。
+
+### Replay 结论
+
+| 变体 | Off cycles | On cycles | Delta | Byte overhead | Harmful / neutral / helpful | Issued / merged / installed |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| legacy | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| P1 | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| P2 | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| full P3 | 850,547 | 850,546 | -1 | 0% | 4 / 16 / 5 | 508 / 508 / 0 |
+| P3-lite | 850,547 | 850,578 | +31 | 0% | 9 / 8 / 8 | 1,301 / 1,301 / 0 |
+
+Full P3 的 0.000118% improvement 和 P3-lite 的 0.003645% slowdown 都未达到
+1% 要求。P3-lite 只有 16/25 non-slow window，低于 20/25 门禁。它通过了
+零 bandwidth overhead、单 window 最大 slowdown 和零 PF-caused write-back 门禁。
+调参不改变决策：最佳 `PF_ON_REFILL=16` sweep 点仍增加 17 cycle。
+
+Sensitivity 说明不能只依赖一种 main timing model。Legacy prefetch 在 sequential 和
+fixed-gap 1/2/4/8 producer 下分别增加 33.66%、33.66%、25.48%、14.10% 和
+0.74% cycle，byte overhead 为 53.80%。P3-lite 安全 suppress 或 cancel 这些机会，
+保持 byte-neutral，但没有 improvement。Zero-bubble latency 0 下为 neutral；latency 8
+下，periodic ready 增加 9 cycle，deterministic-random ready 增加 146 cycle。
+
+### OOC Synthesis 与结构归因
+
+除显式标记 legacy top 的行外，所有配置均使用 2-way、4-set、16-byte line、
+VC4 和同一部署 seam。
+
+| 配置 | LUT | FF | 10 ns WNS | Vectorless dynamic |
+| --- | ---: | ---: | ---: | ---: |
+| `optimized_pf0_deploy`（VC swap format） | 6,048 | 2,047 | +0.363 ns | 0.023 W |
+| `optimized_pf0_deploy_vc_lookup` | 5,647 | 2,034 | -0.675 ns | 0.015 W |
+| `p3_research` | 9,740 | 4,817 | -5.186 ns | 0.044 W |
+| `p3_deploy` | 9,488 | 3,928 | -5.404 ns | 0.042 W |
+| `p3_no_shadow_proxy` | 9,048 | 3,161 | -6.123 ns | 0.042 W |
+| `p3_lite_mshr_fixed` | 10,055 | 3,095 | -5.896 ns | 0.040 W |
+| `stream_detector_only` | 7,302 | 2,549 | -5.688 ns | 0.021 W |
+| `legacy_matched` | 5,349 | 2,074 | -2.007 ns | 0.014 W |
+
+`VC_FORMAT_IN_SWAP=1` 比 lookup-stage format 多 401 LUT 和 13 register，但 WNS 改善
+1.038 ns，且是唯一满足 10 ns OOC setup 约束的 PF0 变体，因此保留。
+
+Hierarchical OOC utilization 隔离出主要 speculative 结构：
+
+| 配置 / module | LUT | FF |
+| --- | ---: | ---: |
+| P3 deploy controller | 264 | 73 |
+| P3 deploy shadow | 368 | 741 |
+| P3 deploy stream detector | 1,006 | 414 |
+| P3-lite controller | 8 | 5 |
+| P3-lite stream detector | 977 | 414 |
+| stream-only controller | 6 | 5 |
+| stream-only detector | 882 | 414 |
+
+Constant folding 在 P3-lite 中移除了几乎全部 controller 和 shadow state，但面积和
+WNS 仍远超门禁。因此，在当前接口下，stream detector 和 candidate 逻辑是结构
+限制，而不是参数调整问题。
+
+### 独立 Post-route Implementation 与 Activity Power
+
+标量 I/O FPGA harness 消除了先前 raw-cache I/O top 无法放置的问题。每行都在
+10 ns 时钟下独立 synthesis、place 和 route；SAIF 由匹配的 deploy-profile simulation 生成。
+
+| 配置 | LUT | FF | WNS | WHS | Activity dynamic | Matched nets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `optimized_pf0_deploy` | 751 | 748 | -0.407 ns | +0.118 ns | 0.008 W | 128 / 1,646 |
+| `p3_deploy` | 3,593 | 3,146 | -3.721 ns | +0.019 ns | 0.020 W | 565 / 7,525 |
+| `p3_lite_mshr_fixed` | 2,955 | 2,280 | -4.169 ns | +0.065 ns | 0.015 W | 575 / 5,804 |
+| `legacy_matched` | 1,259 | 1,411 | -0.444 ns | +0.106 ns | 0.008 W | 488 / 2,956 |
+
+四行的 hold 都满足要求，unconstrained path 都为零，但 setup 全部失败。相对 PF0，
+P3-lite 增加 66.25% OOC LUT、51.20% OOC FF 和 87.5% activity dynamic power，
+并得到 -36.154% 的 achieved-Fmax execution-time proxy。因此硬件门禁中只有 hold 和
+constraint completeness 通过。
+
+最终远程执行退出状态为 0。`l1d-vivado-evidence-v3` manifest 验证了
+15 份 XSim log、8 个 OOC synthesis、4 个 implementation、必需 VCD/SAIF/checkpoint/report
+artifact 和 121 个下载的 log/report，finding 为零。综合 evaluator 决策是
+`DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT`；设计门禁失败是实验结果，不是
+collector failure。公开无地址证据位于
+[`../evidence/2026-07-22-prefetch-ppa/`](../evidence/2026-07-22-prefetch-ppa/README.md)。
+
+## 历史证据状态（2026-07-13）
 
 下文 2026-07-01 simulation/PPA 与 SPEC 表格属于历史结果。Simulation 使用
 `NUM_SETS=4`，而 synthesis 静默采用 RTL 默认 `NUM_SETS=8`；direct-mapped 与
@@ -15,7 +123,7 @@ two-way replay 还同时改变了 L1 capacity。SPEC trace 是全系统多 vCPU 
 可归因到进程的 SPEC capture/replay/analyzer 证据链均为 `PASS`。
 历史表格仍然无效，仅作历史记录。
 
-## Optimized P3 验证状态（2026-07-13）
+## 历史 Optimized P3 验证状态（2026-07-13）
 
 自适应 direct-L1 实现已通过本地 Icarus matrix、定向 P3 回归、真正的
 zero-bubble replay 和 82 个 Python analyzer/runner 测试。Vivado 流程已升级为
@@ -175,7 +283,7 @@ Analyzer 验证接受了 25 对严格 prefetch off/on pair。
 
 本报告记录 2026-07-01 收集的 Phase 3 workload-driven Vivado 证据。本次
 运行使用 `192.168.1.101` 上的远程 Vivado 2024.2.1，工程暂存于 ASCII
-Windows 路径 `C:/Users/kevin/l1d_codex_ascii_20260701_r10`。Vivado Tcl
+Windows 路径 `C:/Users/<remote-user>/l1d_codex_ascii_20260701_r10`。Vivado Tcl
 source 使用 Windows `C:/...` 路径传入，远程密码没有写入仓库文件或日志。
 
 最终远程流程返回状态码 0，下载了仿真日志、波形、资源、时序和 vectorless
@@ -358,7 +466,8 @@ placement/replacement policy matrix 仍是设计缺口：
 - paired replay sidecar 现已提供真实 L1/下级内存 help 与 pollution，
   但 PF event 没有用于逐 prefetch candidate/issue/return latency distribution 的
   共享 transaction identity；
-- 没有 post-route timing 或 activity-based power analysis。
+- post-route timing 和 activity-based power 现已完成，但未通过部署门禁；所有路径的
+  手工 waveform 检查和任何架构重设仍是后续工作。
 
 历史无效 campaign 覆盖了 `708`、`721`、`767` 和 `777` 标签，但不能
 归因到 benchmark。这四个 benchmark 的可归因替代私有 campaign 已于

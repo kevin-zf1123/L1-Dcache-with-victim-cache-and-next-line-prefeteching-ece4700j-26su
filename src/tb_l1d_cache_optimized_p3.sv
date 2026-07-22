@@ -23,6 +23,7 @@ module tb_l1d_cache_optimized_p3;
   integer reads=0;
   integer check_i;
   integer response_i;
+  integer late_merge_events=0;
   logic [31:0] stat_cpu_hits, stat_cpu_misses, stat_victim_hits;
   logic [31:0] stat_writebacks, stat_prefetch_fills;
   logic [31:0] stat_prefetch_useful, stat_prefetch_useless;
@@ -77,6 +78,7 @@ module tb_l1d_cache_optimized_p3;
       read_outstanding <= 0;
       last_read_addr <= 0;
       reads <= 0;
+      late_merge_events <= 0;
     end else begin
       if (mem_req_valid && mem_req_ready && !mem_req_write) begin
         if (read_outstanding) $fatal(1,"more than one lower read");
@@ -85,6 +87,8 @@ module tb_l1d_cache_optimized_p3;
         reads <= reads+1;
       end
       if (mem_rsp_valid) read_outstanding <= 0;
+      if (dut.pf_late_merge_event)
+        late_merge_events <= late_merge_events + 1;
     end
   end
 
@@ -156,14 +160,74 @@ module tb_l1d_cache_optimized_p3;
     cpu_req_wdata=0; cpu_req_valid=1;
     @(posedge clk); @(negedge clk);
     if(debug_state != 4'd0 || mem_req_valid || stat_pf_issued != 0 ||
-       stat_pf_cancelled != 1)
-      $fatal(1,"lookup PF was not cancelled before lower-read declaration");
+       stat_pf_cancelled != 1 || dut.prefetch_controller.tokens != 1 ||
+       dut.prefetch_controller.probe_issues != 0 ||
+       dut.prefetch_controller.epoch_pf_issued != 0 ||
+       dut.controller_cost != stat_pf_demand_block_cycles)
+      $fatal(1,"lookup PF cancellation mismatch state=%0d mem_valid=%0b issued=%0d cancelled=%0d tokens=%0d probe=%0d epoch_issued=%0d cost=%0d blocked=%0d",
+             debug_state, mem_req_valid, stat_pf_issued, stat_pf_cancelled,
+             dut.prefetch_controller.tokens,
+             dut.prefetch_controller.probe_issues,
+             dut.prefetch_controller.epoch_pf_issued, dut.controller_cost,
+             stat_pf_demand_block_cycles);
     if(!cpu_req_ready)
       $fatal(1,"demand was not given priority after lookup cancellation");
     @(posedge clk); @(negedge clk); cpu_req_valid=0;
     wait(read_outstanding && last_read_addr==64'h2000);
     respond_line(128'h0_3333333333333333);
     wait_rsp(64'h3333333333333333);
+
+    // Fault-inject the otherwise excluded overlap to lock down the lower-port
+    // arbiter invariant: a state-owned demand read must suppress a pending
+    // background PF grant and its issue accounting.  This protects future FSM
+    // changes from treating mem_req_ready as a handshake for the wrong owner.
+    $display("P3 scenario explicit lower-read arbitration start");
+    reset_dut();
+    force dut.pf_mshr_valid = 1'b1;
+    force dut.pf_mshr_issued = 1'b0;
+    force dut.pf_mshr_addr = 64'h4140;
+    force dut.req_addr = 64'h5200;
+    force dut.req_is_prefetch = 1'b0;
+    force dut.state = 4'd6; // ST_MEM_READ_REQ
+    #1;
+    if(!dut.background_pf_request || dut.background_pf_grant ||
+       dut.background_pf_issue || !mem_req_valid || mem_req_write ||
+       mem_req_addr!=64'h5200 || debug_req_is_prefetch)
+      $fatal(1,"demand lower read did not own explicit PF arbitration");
+    release dut.state;
+    release dut.req_is_prefetch;
+    release dut.req_addr;
+    release dut.pf_mshr_addr;
+    release dut.pf_mshr_issued;
+    release dut.pf_mshr_valid;
+
+    // A full FIFO can replace or expire its head without deasserting valid.
+    // The cache must publish a new identity for the changed head exactly once.
+    $display("P3 scenario candidate head turnover start");
+    reset_dut(); cfg_next_line_enable=0;
+    force dut.stream_candidate_valid = 1'b1;
+    force dut.stream_candidate_addr = 64'h7e00;
+    force dut.stream_candidate_confidence = 2'b01;
+    force dut.stream_candidate_id = 2'b00;
+    force dut.stream_candidate_generation = 2'b01;
+    @(posedge clk); @(negedge clk);
+    if(stat_pf_candidates!=1 || dut.stream_candidate_new)
+      $fatal(1,"initial forced candidate identity was not sampled once");
+    force dut.stream_candidate_addr = 64'h7e40;
+    force dut.stream_candidate_generation = 2'b10;
+    #1;
+    if(!dut.stream_candidate_new)
+      $fatal(1,"valid-high candidate head change was not detected");
+    @(posedge clk); @(negedge clk);
+    if(stat_pf_candidates!=2 || dut.stream_candidate_new ||
+       dut.stream_candidate_seen_addr!=64'h7e40 ||
+       dut.stream_candidate_seen_generation!=2'b10)
+      $fatal(1,"changed candidate head identity was not sampled once");
+    release dut.stream_candidate_valid;
+    release dut.stream_candidate_addr;
+    release dut.stream_candidate_confidence;
+    release dut.stream_candidate_id;
+    release dut.stream_candidate_generation;
 
     // Queue a candidate behind a demand miss.  It launches on the response
     // transfer edge, and a request already holding valid merges next cycle.
@@ -182,6 +246,46 @@ module tb_l1d_cache_optimized_p3;
     wait_rsp(64'h2222222222222222);
     if(stat_pf_issued!=1 || stat_pf_merged!=1)
       $fatal(1,"zero-bubble background issue/merge missing");
+
+    // The registered scheduler must advertise and hold one stable PF request
+    // while lower memory is backpressured.  Admission alone must not consume a
+    // token; the request and the waiting same-line demand complete normally
+    // after the eventual handshake.
+    $display("P3 scenario registered scheduler backpressure start");
+    reset_dut();
+    start_req(64'h8100,0,0);
+    wait(read_outstanding); enqueue_pf(64'h8140);
+    respond_line(128'h0_0101010101010101);
+    wait(cpu_rsp_valid);
+    @(negedge clk); mem_req_ready=0; cpu_req_addr=64'h8140;
+    cpu_req_write=0; cpu_req_wdata=0; cpu_req_valid=1;
+    @(posedge clk); // capture S0 while the previous response transfers
+    @(negedge clk);
+    if(!mem_req_valid || mem_req_write || mem_req_addr!=64'h8140 ||
+       !dut.pf_mshr_valid || dut.pf_mshr_issued || stat_pf_admitted!=1 ||
+       stat_pf_issued!=0 || dut.prefetch_controller.tokens!=1)
+      $fatal(1,"registered PF request was not admitted before handshake");
+    if(!cpu_req_ready)
+      $fatal(1,"registered PF request suppressed the next demand handshake");
+    @(posedge clk); // accept the same-line demand while PF remains stalled
+    @(negedge clk); cpu_req_valid=0;
+    repeat(3) begin
+      if(!mem_req_valid || mem_req_write || mem_req_addr!=64'h8140 ||
+         dut.pf_mshr_issued || stat_pf_issued!=0 ||
+         dut.prefetch_controller.tokens!=1)
+        $fatal(1,"stalled registered PF payload/accounting changed");
+      @(posedge clk); @(negedge clk);
+    end
+    mem_req_ready=1;
+    @(posedge clk); @(negedge clk);
+    if(!dut.pf_mshr_issued || stat_pf_issued!=1 ||
+       dut.prefetch_controller.tokens!=0 ||
+       dut.prefetch_controller.probe_issues!=1)
+      $fatal(1,"registered PF handshake did not charge exactly once");
+    respond_line(128'h0_0202020202020202);
+    wait_rsp(64'h0202020202020202);
+    if(stat_pf_merged!=1 || stat_pf_discarded!=0)
+      $fatal(1,"stalled registered PF did not merge after handshake");
 
     // A resident hit completes while an unrelated PF read is still in flight.
     $display("P3 scenario hit-under start");
@@ -302,6 +406,9 @@ module tb_l1d_cache_optimized_p3;
     // Same-line load merges into the MSHR and is served by its response.
     $display("P3 scenario load merge start");
     reset_dut(); issue_pf(64'h3000);
+    if(dut.prefetch_controller.tokens != 0 ||
+       dut.prefetch_controller.probe_issues != 1 || dut.controller_cost != 1)
+      $fatal(1,"actual PF handshake did not consume exactly one issue token");
     start_req(64'h3000,0,0);
     wait(dut.pf_waiter_valid && dut.pf_waiter_same_line);
     respond_line(128'h0_a5a5a5a55a5a5a5a);
@@ -309,6 +416,40 @@ module tb_l1d_cache_optimized_p3;
     if(stat_pf_merged!=1 || stat_pf_installed!=0 ||
        stat_pf_same_line_coalesced!=1)
       $fatal(1,"same-line load lifecycle mismatch");
+
+    // A same-line merge is not causal help when the demand-only shadow would
+    // have hit.  Populate both caches through demand, remove only the actual
+    // copy to model prior speculative pollution, then merge the refetch.
+    $display("P3 scenario noncausal shadow-hit merge start");
+    reset_dut(); cfg_prefetch_enable=0;
+    start_req(64'h3400,0,0);
+    respond_line(128'h0_3333444455556666);
+    wait_rsp(64'h3333444455556666);
+    @(negedge clk);
+    dut.valid_bits[0][0]=1'b0;
+    dut.dirty_bits[0][0]=1'b0;
+    dut.prefetched_bits[0][0]=1'b0;
+    cfg_prefetch_enable=1;
+    issue_pf(64'h3400);
+    start_req(64'h3400,0,0);
+    wait(dut.pf_waiter_valid && dut.pf_waiter_same_line);
+    respond_line(128'h0_777788889999aaaa);
+    wait_rsp(64'h777788889999aaaa);
+    if(stat_pf_merged!=1 || late_merge_events!=0 || dut.controller_saved!=0)
+      $fatal(1,"shadow-hit merge received non-causal late-merge reward");
+
+    // A causal merge that waits at least the estimated miss penalty has saved
+    // no cycles.  It remains a merge, but its controller credit must be zero.
+    $display("P3 scenario zero-savings merge start");
+    reset_dut(); issue_pf(64'h3800);
+    start_req(64'h3800,0,0);
+    wait(dut.pf_waiter_valid && dut.pf_waiter_same_line);
+    repeat(10) @(posedge clk);
+    respond_line(128'h0_bbbbccccddddeeee);
+    wait_rsp(64'hbbbbccccddddeeee);
+    if(stat_pf_merged!=1 || late_merge_events!=1 ||
+       dut.late_merge_credit!=0 || dut.controller_saved!=0)
+      $fatal(1,"no-savings merge received nonzero controller credit");
 
     // A merged store updates refill data, returns it, and installs dirty.
     $display("P3 scenario store merge start");
@@ -339,7 +480,31 @@ module tb_l1d_cache_optimized_p3;
     wait(!debug_pf_mshr_valid);
     if(stat_pf_discarded!=1) $fatal(1,"disable did not discard response");
 
-    $display("PASS P3 flight/backpressure, skid TTL, EWMA, merge/discard/revalidate");
+    // Controller OFF is also a response-time cancellation condition for a
+    // still-speculative line.
+    $display("P3 scenario controller-off speculative discard start");
+    reset_dut(); issue_pf(64'h7400);
+    force dut.prefetch_controller.controller_state_reg = 2'd0;
+    respond_line(128'h0_1111000022220000);
+    wait(!debug_pf_mshr_valid);
+    if(stat_pf_discarded!=1 || stat_pf_installed!=0)
+      $fatal(1,"controller OFF did not discard speculative response");
+    release dut.prefetch_controller.controller_state_reg;
+
+    // If OFF becomes visible with the same-line demand lookup, the returned
+    // line is mandatory demand data and must still merge and respond.
+    $display("P3 scenario controller-off mandatory merge start");
+    reset_dut(); issue_pf(64'h7800);
+    start_req(64'h7800,0,0);
+    force dut.prefetch_controller.controller_state_reg = 2'd0;
+    wait(dut.pf_waiter_valid && dut.pf_waiter_same_line);
+    respond_line(128'h0_123456789abcdef0);
+    wait_rsp(64'h123456789abcdef0);
+    if(stat_pf_merged!=1 || stat_pf_discarded!=0)
+      $fatal(1,"controller OFF discarded mandatory demand waiter");
+    release dut.prefetch_controller.controller_state_reg;
+
+    $display("PASS P3 accounting, causal merge, registered payload stability, flight/backpressure, skid TTL, EWMA, discard/revalidate");
     $finish;
   end
 endmodule

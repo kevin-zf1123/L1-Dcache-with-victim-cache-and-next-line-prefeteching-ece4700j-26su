@@ -129,7 +129,57 @@ PF lifecycle timing 取代该 proxy。
 neutral，大于零为 harmful。其他指标仍保留在 paired 与 aggregate 表中，不会
 暗中改变该标签。
 
-## Optimized P0–P3 Campaign（2026-07-13）
+## 部署门禁 Replay 收尾（2026-07-22）
+
+7 月 22 日 campaign 取代 7 月 13 日 optimized performance 结论。它复用相同的
+已验证、可归因到进程的 25 个 window，以及等容量 2-way/4-set/16-byte-line/VC4
+paired geometry，但纳入了修正后的 schema-3 observer identity、注册化 PF scheduler、
+runtime response discard 和真实 handshake cost accounting。
+
+可复现的串行 orchestrator 为：
+
+```sh
+scripts/run_feedback_replay_matrix.sh --list
+scripts/run_feedback_replay_matrix.sh
+```
+
+它包含 26 个 job，并故意始终只运行一个 simulator。只有在独立确认 campaign 和
+analysis validation file 为当前版本且状态为 `PASS` 后，才可用 `--skip` 复用该 job。
+最终收尾从头重新执行全部 26 个 job，并以 `MATRIX_ALL_PASS` 结束。
+
+主结果为：
+
+| Policy / profile | Cycles off | Cycles on | Delta | Byte overhead | Harmful / neutral / helpful | PF issued / merged / installed |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| 冻结 legacy `0/0` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Safe P1 `1/1` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Adaptive P2 `1/2` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Full P3 `1/3` | 850,547 | 850,546 | -1 | 0% | 4 / 16 / 5 | 508 / 508 / 0 |
+| P3-lite deploy candidate | 850,547 | 850,578 | +31 | 0% | 9 / 8 / 8 | 1,301 / 1,301 / 0 |
+
+修复 lifecycle 和 observer 后，full P3 不再复现历史 `-724` 结果；当前只改善
+1 cycle。P3-lite 是硬件门禁的 main replay，因为它在保留 stream detection 和 PF MSHR
+的同时移除 adaptive 和 shadow 结构。它未通过 aggregate improvement 和 non-slow-window
+门禁，但通过 bandwidth overhead、单 window 最大 slowdown 和 PF-caused write-back 门禁。
+
+P3-lite 参数 sweep 的 cycle delta 为：default、`idle_guard=1`、`idle_guard=4` 和
+`epoch_demands=512` 均为 +31；`on_refill=4` 为 +23；`on_refill=16` 为 +17。
+没有任何点改善 aggregate cycle。
+
+完整 producer/timing sensitivity matrix 验证了 16 个 profile（legacy 和 P3-lite 各 8 个）。
+Legacy sequential 和 gap 1/2/4/8 的 cycle 分别变化 +328,996、+328,996、+280,654、
++190,854 和 +13,745，每个 profile 都增加 672,032 byte。P3-lite 保持 byte-neutral：
+它 suppress 全部 sequential/gap-1/gap-2 candidate，并在 issue 前 admit 后 cancel 全部 gap-4/gap-8
+candidate。它的 latency-0 delta 为零；latency-8 periodic 和 deterministic-random delta
+分别为 +9 和 +146 cycle。
+
+所有 main、sweep 和 sensitivity campaign 均闭合精确 run/pair/counter/sidecar 守恒，
+watchdog、protocol 和 duplicate-line error 均为零。无地址公开汇总位于
+[`../evidence/2026-07-22-prefetch-ppa/`](../evidence/2026-07-22-prefetch-ppa/README.md)。
+许可 trace、address、raw sidecar 和私有 manifest 仍保留在被忽略的
+`build/spec2026/` 路径中。
+
+## 历史 Optimized P0–P3 Campaign（2026-07-13）
 
 最终 optimized campaign 复用相同 25 个可归因 window，以及相同的 2-way、
 4-set、16-byte-line、VC4 paired geometry。Producer 改为真正的 zero-bubble

@@ -25,21 +25,33 @@ scripts/run_spec_trace_replay.sh \
   build/spec2026/replay/logs
 ```
 
-The runner now defaults to optimized P3, true zero-bubble production, and
-schema 3. The final July 13 main profile completed 100 four-configuration
-replays and 25 exact prefetch off/on pairs. P3 saved 724 aggregate service
-cycles with zero byte overhead; all 25 windows were non-degrading. Address-free
-results are in the [optimized evidence package](docs/evidence/2026-07-13-optimized/README.md).
+The research replay runner defaults to optimized P3, true zero-bubble
+production, and schema 3. Deployment uses the separate `l1d_cache_deploy`
+seam, whose default is `ENABLE_PREFETCH=0`; P3 and P3-lite are opt-in research
+profiles.
 
-The final optimized remote Vivado 2024.2.1 campaign also passed. It validated
-11 XSim logs containing 83 schema-3 workload rows with closed prefetch
-lifecycle conservation, and produced four synthesis configurations with all
-12 utilization/timing/power reports. The OOP workload matrix uses a sequential
-producer; cross-simulator true-zero-bubble behavior is covered by the directed
-optimized-P3 test, while the performance conclusion above comes from the local
-true-zero-bubble trace campaign. Current post-synthesis PPA, the matching PF1
-versus PF0 deltas, and the setup/I/O/vectorless-power limitations are recorded
-in the [Phase 3 Vivado report](docs/phase3_vivado_report.md).
+The July 22 closure reran the complete local matrix as one serial lane. All 26
+campaigns were executed afresh and passed their run, pair,
+sidecar, lifecycle, watchdog, protocol, and duplicate-line checks. On the main
+25-window profile, full P3 changed aggregate service cycles from 850,547 to
+850,546 (`-1`), while the deployable P3-lite profile changed them to 850,578
+(`+31`). Both had zero byte overhead and zero prefetch-caused write-backs, but
+neither met the required 1% aggregate improvement; P3-lite had only 16/25
+non-slow windows.
+
+The matching remote Vivado 2024.2.1 campaign passed evidence collection with
+15 XSim logs, eight OOC synthesis configurations, four independent post-route
+implementations, activity-based power reports, and no manifest findings. The
+P3-lite comparison against optimized PF0 measured +66.25% OOC LUTs, +51.20%
+OOC FFs, -4.169 ns post-route WNS, and +87.5% activity-based dynamic power.
+Only hold timing and the no-unconstrained-path check passed. The combined gate
+therefore records `DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT`.
+
+Address-free CSVs, the redacted gate result, and provenance hashes are in the
+[July 22 evidence package](docs/evidence/2026-07-22-prefetch-ppa/README.md).
+The [Phase 3 Vivado report](docs/phase3_vivado_report.md) records the exact
+PPA table and explains why the research prefetch structures remain disabled
+by default.
 
 To reproduce the frozen sequential legacy baseline instead, select its policy,
 producer, and schema explicitly:
@@ -54,7 +66,9 @@ scripts/run_spec_trace_replay.sh \
 
 That legacy experiment increased service cycles in all 25 pairs. Its public
 artifacts remain in the [historical aggregate](docs/evidence/2026-07-13/aggregate.csv)
-and adjacent CSV/SVG/provenance files.
+and adjacent CSV/SVG/provenance files. The July 13 optimized result is also
+retained as historical evidence, but the July 22 rerun supersedes its
+performance and PPA conclusions.
 Licensed traces, addresses, logs, sidecars, and private manifests remain ignored.
 The [public provenance index](docs/evidence/2026-07-13/provenance.json) records
 their hashes and exclusions; the [prior legacy redacted Vivado manifest](docs/evidence/vivado-2026-07-13.json)

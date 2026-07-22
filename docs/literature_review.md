@@ -152,6 +152,31 @@ table, candidate queues, shadow model, and PF MSHR contain only addresses,
 tags, dirty bits, confidence, generations, and control metadata. Returned data
 exists only in the normal transient refill register.
 
+### Evidence-led deployment conclusion (2026-07-22)
+
+The final controlled replay and Vivado campaign does not support enabling this
+research prefetcher in the deployment profile. On 25 true-zero-bubble SPEC
+windows, full P3 saved one aggregate serialized service cycle and P3-lite added
+31; neither reached the required 1% improvement. P3-lite issued and merged
+1,301 reads but installed no line, so its zero byte overhead does not offset
+its stream-detection, queueing, and arbitration cost.
+
+The matching FPGA comparison reinforces that conclusion. Relative to the
+optimized PF0 deployment seam, P3-lite adds 66.25% OOC LUTs and 51.20% OOC
+registers, changes post-route WNS from -0.407 ns to -4.169 ns, and increases
+SAIF-based dynamic power from 0.008 W to 0.015 W. Removing adaptive and shadow
+logic did not close those gaps; the stream detector remains the dominant
+structural cost and critical-path source.
+
+Accordingly, `l1d_cache_deploy` defaults to prefetch disabled, while full P3
+and P3-lite remain explicit research configurations. This result does not
+invalidate stream or feedback-directed prefetching in general. It bounds this
+particular direct-L1, one-outstanding-memory-interface implementation at the
+tested tiny geometry. A future attempt should first change the architectural
+trade-off—such as a separate prefetch buffer, a deeper/non-blocking lower
+interface, or a substantially smaller detector—then repeat the same paired
+performance and PPA gates.
+
 ## Review of the Current RTL
 
 ### Supported by the literature
@@ -182,6 +207,10 @@ assertions, and a randomized golden-memory reference model. Remaining work is:
   and
 - evaluate whether multiple demand MSHRs are justified; the implemented single
   PF MSHR intentionally does not make the demand cache fully non-blocking.
+
+Post-route timing and activity-based power are now measured rather than future
+work; they fail the deployment gates and are recorded in
+`docs/evidence/2026-07-22-prefetch-ppa/`.
 
 ## Proposal Reference Audit
 

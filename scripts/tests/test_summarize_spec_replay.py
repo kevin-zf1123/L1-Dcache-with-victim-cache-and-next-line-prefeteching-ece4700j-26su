@@ -16,11 +16,56 @@ from scripts.summarize_spec_replay import (
     analyze_trace,
     load_campaign,
     main as summarize_main,
+    parse_sidecar,
 )
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class SidecarPrefetchIdentityTests(unittest.TestCase):
+    def _rows(self) -> list[str]:
+        demand = [
+            "schema=3 event=demand_present seq=0 cycle=0 addr=0x0 op=load size=3 outcome=pending latency=-1 details=-",
+            "schema=3 event=demand_accept seq=0 cycle=1 addr=0x0 op=load size=3 outcome=pending latency=0 details=-",
+            "schema=3 event=demand_response seq=0 cycle=4 addr=0x0 op=load size=3 outcome=lower_memory latency=3 details=-",
+        ]
+        details = "source:0,stream_id:2,generation:1,confidence:3"
+        prefetch = [
+            f"schema=3 event=prefetch_candidate seq=7 cycle=0 addr=0x1000 op=prefetch size=16 outcome=queued latency=-1 details={details}",
+            f"schema=3 event=prefetch_admit seq=7 cycle=1 addr=0x1000 op=prefetch size=16 outcome=admitted latency=1 details={details}",
+            f"schema=3 event=prefetch_issue seq=7 cycle=2 addr=0x1000 op=prefetch size=16 outcome=lower_memory latency=2 details={details}",
+            f"schema=3 event=prefetch_return seq=7 cycle=5 addr=0x1000 op=prefetch size=16 outcome=returned latency=3 details={details}",
+            f"schema=3 event=prefetch_install seq=7 cycle=6 addr=0x1000 op=prefetch size=16 outcome=l1_hit latency=4 details={details}",
+            f"schema=3 event=prefetch_use seq=7 cycle=9 addr=0x1000 op=prefetch size=16 outcome=timely_use latency=3 details={details}",
+        ]
+        return demand + prefetch
+
+    def test_identified_prefetch_lifecycle_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sidecar.tsv"
+            path.write_text("\n".join(self._rows()) + "\n", encoding="utf-8")
+            accesses, counts = parse_sidecar(path, line_bytes=16)
+            self.assertEqual(len(accesses), 1)
+            self.assertEqual(counts["prefetch_issue"], 1)
+
+    def test_identified_prefetch_address_change_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sidecar.tsv"
+            rows = self._rows()
+            rows[6] = rows[6].replace("addr=0x1000", "addr=0x1010")
+            path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "lifecycle addresses differ"):
+                parse_sidecar(path, line_bytes=16)
+
+    def test_identified_prefetch_return_requires_terminal_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sidecar.tsv"
+            rows = self._rows()[:-2]
+            path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "lacks one install/merge/discard"):
+                parse_sidecar(path, line_bytes=16)
 
 
 class CampaignFixture:

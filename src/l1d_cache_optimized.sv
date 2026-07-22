@@ -13,7 +13,18 @@ module l1d_cache_optimized #(
     parameter integer NUM_WAYS         = 2,
     parameter integer VICTIM_ENTRIES   = 4,
     parameter integer ENABLE_PREFETCH  = 1,
-    parameter integer PF_OPT_LEVEL     = 3
+    parameter integer PF_OPT_LEVEL     = 3,
+    parameter integer PF_USE_STREAM    = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_ADAPTIVE  = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_SHADOW    = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_USE_MSHR      = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_IDLE_GUARD    = 2,
+    parameter integer PF_EPOCH_DEMANDS = 256,
+    parameter integer PF_OFF_DEMANDS   = 512,
+    parameter integer PF_PROBE_BUDGET  = 8,
+    parameter integer PF_PROBE_REFILL  = 16,
+    parameter integer PF_ON_REFILL     = 8,
+    parameter integer VC_FORMAT_IN_SWAP = 1
 ) (
     input  logic                         clk,
     input  logic                         rst_n,
@@ -96,7 +107,6 @@ module l1d_cache_optimized #(
     localparam integer VC_BITS         = (VICTIM_ENTRIES > 1) ? $clog2(VICTIM_ENTRIES) : 1;
     localparam integer STREAM_ENTRIES  = 4;
     localparam integer STREAM_BITS     = $clog2(STREAM_ENTRIES);
-    localparam integer IDLE_GUARD      = 2;
 
     localparam logic [1:0] ACCESS_BYTE   = 2'b00;
     localparam logic [1:0] ACCESS_HALF   = 2'b01;
@@ -169,6 +179,7 @@ module l1d_cache_optimized #(
     logic req_miss_recorded;
 
     logic pf_mshr_valid;
+    logic pf_mshr_issued;
     logic [ADDR_WIDTH-1:0] pf_mshr_addr;
     logic pf_mshr_external;
     logic [1:0] pf_mshr_confidence;
@@ -178,12 +189,17 @@ module l1d_cache_optimized #(
     logic [1:0] pf_response_age;
     logic pf_waiter_valid;
     logic pf_waiter_same_line;
+    logic pf_waiter_shadow_lower;
+    logic pf_waiter_shadow_pending;
+    logic background_pf_capture;
+    logic background_pf_request;
+    logic background_pf_grant;
     logic background_pf_issue;
 
     assign debug_state = state;
     // Background P3 reads launch while req_* still describes the completing
     // demand response, so expose the actual lower request class explicitly.
-    assign debug_req_is_prefetch = req_is_prefetch || background_pf_issue;
+    assign debug_req_is_prefetch = req_is_prefetch || background_pf_grant;
 
     logic [WAY_BITS-1:0] selected_way;
     logic [VC_BITS-1:0] selected_vc;
@@ -229,6 +245,11 @@ module l1d_cache_optimized #(
     logic stream_event_dropped;
     logic stream_event_expired;
     logic stream_candidate_seen;
+    logic [ADDR_WIDTH-1:0] stream_candidate_seen_addr;
+    logic [1:0] stream_candidate_seen_confidence;
+    logic [STREAM_BITS-1:0] stream_candidate_seen_id;
+    logic [1:0] stream_candidate_seen_generation;
+    logic stream_candidate_new;
     logic stream_demand_access;
     logic stream_demand_lower_miss;
     logic stream_demand_prefetch_hit;
@@ -470,7 +491,7 @@ module l1d_cache_optimized #(
         .LINE_BYTES(LINE_BYTES),
         .STREAM_ENTRIES(STREAM_ENTRIES),
         .CANDIDATE_TTL(16),
-        .MODE_STREAM(PF_OPT_LEVEL >= 2)
+        .MODE_STREAM(PF_USE_STREAM != 0)
     ) stream_prefetch (
         .clk(clk),
         .rst_n(rst_n),
@@ -497,10 +518,12 @@ module l1d_cache_optimized #(
     );
 
     l1d_prefetch_controller #(
-        .ADAPTIVE(PF_OPT_LEVEL >= 2),
-        .EPOCH_DEMANDS(256),
-        .OFF_DEMANDS(512),
-        .PROBE_BUDGET(8)
+        .ADAPTIVE(PF_USE_ADAPTIVE != 0),
+        .EPOCH_DEMANDS(PF_EPOCH_DEMANDS),
+        .OFF_DEMANDS(PF_OFF_DEMANDS),
+        .PROBE_BUDGET(PF_PROBE_BUDGET),
+        .PROBE_REFILL(PF_PROBE_REFILL),
+        .ON_REFILL(PF_ON_REFILL)
     ) prefetch_controller (
         .clk(clk),
         .rst_n(rst_n),
@@ -532,7 +555,7 @@ module l1d_cache_optimized #(
     ) shadow_cache (
         .clk(clk),
         .rst_n(rst_n),
-        .access_valid(shadow_access_valid && PF_OPT_LEVEL >= 3),
+        .access_valid(shadow_access_valid && PF_USE_SHADOW != 0),
         .access_line_addr(req_line_addr_comb),
         .access_write(req_write),
         .actual_level(shadow_actual_level),
@@ -543,12 +566,12 @@ module l1d_cache_optimized #(
         .event_shadow_lower(shadow_lower)
     );
 
-    assign debug_pf_mshr_valid = (PF_OPT_LEVEL >= 3) && pf_mshr_valid;
+    assign debug_pf_mshr_valid = (PF_USE_MSHR != 0) && pf_mshr_valid;
     assign debug_pf_mshr_addr = pf_mshr_addr;
     assign debug_pf_mshr_confidence = pf_mshr_confidence;
-    assign controller_feedback_help = (PF_OPT_LEVEL >= 3) ?
+    assign controller_feedback_help = (PF_USE_SHADOW != 0) ?
                                       shadow_true_help : event_prefetch_useful;
-    assign controller_feedback_pollution = (PF_OPT_LEVEL >= 3) ?
+    assign controller_feedback_pollution = (PF_USE_SHADOW != 0) ?
                                            shadow_true_pollution :
                                            event_prefetch_pollution;
 
@@ -631,10 +654,13 @@ module l1d_cache_optimized #(
         controller_issue_enable;
     assign accept_ext = (state == ST_IDLE) && !cpu_req_valid &&
         (ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
-        idle_age >= IDLE_GUARD && controller_issue_enable &&
+        idle_age >= PF_IDLE_GUARD && controller_issue_enable &&
         controller_token_available && ext_pending_valid &&
-        !(PF_OPT_LEVEL >= 3 && pf_mshr_valid);
-    assign background_pf_issue = (PF_OPT_LEVEL >= 3) &&
+        !(PF_USE_MSHR != 0 && pf_mshr_valid);
+    // Stage S0 performs candidate, confidence, same-line, and residency
+    // qualification.  The accepted payload is registered in the PF MSHR;
+    // Stage S1 then advertises a stable lower-memory request until handshake.
+    assign background_pf_capture = (PF_USE_MSHR != 0) &&
         (state == ST_RESP) && cpu_rsp_ready && cpu_req_valid &&
         (ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
         (ext_pending_valid || cfg_next_line_enable) &&
@@ -645,10 +671,9 @@ module l1d_cache_optimized #(
         controller_issue_enable && controller_token_available &&
         (ext_pending_valid ||
          (stream_candidate_valid &&
-          stream_candidate_confidence >= controller_min_confidence)) &&
-        mem_req_ready;
-    assign accept_bg_ext = background_pf_issue && ext_pending_valid;
-    assign accept_bg_next = background_pf_issue && !ext_pending_valid &&
+          stream_candidate_confidence >= controller_min_confidence));
+    assign accept_bg_ext = background_pf_capture && ext_pending_valid;
+    assign accept_bg_next = background_pf_capture && !ext_pending_valid &&
                             stream_candidate_valid;
     assign background_pf_addr = accept_bg_ext ? ext_pending_addr :
                                 stream_candidate_addr;
@@ -658,6 +683,16 @@ module l1d_cache_optimized #(
                                      stream_candidate_id;
     assign background_pf_stream_generation = accept_bg_ext ? '0 :
         stream_candidate_generation;
+    assign background_pf_request = (PF_USE_MSHR != 0) &&
+                                   pf_mshr_valid && !pf_mshr_issued;
+    // State-owned demand reads and writebacks have priority on the single
+    // lower-memory port.  Keep the PF handshake/accounting predicate tied to
+    // that explicit grant, rather than merely to a pending MSHR and ready.
+    assign background_pf_grant = background_pf_request &&
+                                 state != ST_WB_REQ &&
+                                 state != ST_PF_MERGE_WB &&
+                                 state != ST_MEM_READ_REQ;
+    assign background_pf_issue = background_pf_grant && mem_req_ready;
 
     always @* begin : background_residency_lookup
         background_next_l1_hit = 1'b0;
@@ -681,13 +716,25 @@ module l1d_cache_optimized #(
     assign stream_candidate_ready = ((state == ST_IDLE) && !cpu_req_valid &&
         (ENABLE_PREFETCH != 0) && cfg_prefetch_enable &&
         cfg_next_line_enable &&
-        idle_age >= IDLE_GUARD && controller_issue_enable &&
+        idle_age >= PF_IDLE_GUARD && controller_issue_enable &&
         controller_token_available && !ext_pending_valid &&
         stream_candidate_confidence >= controller_min_confidence &&
-        !(PF_OPT_LEVEL >= 3 && pf_mshr_valid)) || accept_bg_next;
+        !(PF_USE_MSHR != 0 && pf_mshr_valid)) || accept_bg_next;
     assign accept_next = stream_candidate_ready && stream_candidate_valid;
-    assign controller_consume_token = accept_ext ||
-        (accept_next && !accept_bg_next) || background_pf_issue;
+    // FIFO latest-wins replacement and TTL expiry can change the head while
+    // candidate_valid remains asserted.  The complete head identity, rather
+    // than only valid's rising edge, defines a new candidate event.
+    assign stream_candidate_new = stream_candidate_valid &&
+        (!stream_candidate_seen ||
+         stream_candidate_addr != stream_candidate_seen_addr ||
+         stream_candidate_confidence != stream_candidate_seen_confidence ||
+         stream_candidate_id != stream_candidate_seen_id ||
+         stream_candidate_generation != stream_candidate_seen_generation);
+    // Admission remains cancellable until a lower-memory read handshakes.
+    // Charge the controller only for work that actually reaches memory.
+    assign controller_consume_token =
+        ((state == ST_MEM_READ_REQ) && req_is_prefetch && mem_req_ready) ||
+        background_pf_issue;
     assign cpu_req_ready = (state == ST_IDLE);
     assign cpu_rsp_valid = (state == ST_RESP);
     assign cpu_rsp_rdata = response_data;
@@ -698,13 +745,13 @@ module l1d_cache_optimized #(
     // edge.  Runtime-disable gating above prevents a queued internal candidate
     // from being admitted while the testbench clocks it away during drain.
     assign cache_idle = (state == ST_IDLE) &&
-                        !(PF_OPT_LEVEL >= 3 && pf_mshr_valid) &&
+                        !(PF_USE_MSHR != 0 && pf_mshr_valid) &&
                         !pf_response_pending && !ext_pending_valid;
     assign event_prefetch_dropped = stream_event_dropped ||
                                     stream_event_expired ||
                                     ext_event_dropped;
     assign pf_demand_block_event =
-        ((PF_OPT_LEVEL >= 3) && pf_waiter_valid &&
+        ((PF_USE_MSHR != 0) && pf_waiter_valid &&
          !pf_waiter_same_line && state == ST_PF_WAIT) ||
         (cpu_req_valid && !cpu_req_ready &&
          (req_is_prefetch || state == ST_PF_REVALIDATE ||
@@ -747,10 +794,10 @@ module l1d_cache_optimized #(
         array_wtag = req_tag_comb;
         array_wdata = working_line;
 
-        if (background_pf_issue) begin
+        if (background_pf_grant) begin
             mem_req_valid = 1'b1;
             mem_req_write = 1'b0;
-            mem_req_addr = background_pf_addr;
+            mem_req_addr = pf_mshr_addr;
         end
 
         if (state == ST_IDLE) begin
@@ -759,7 +806,7 @@ module l1d_cache_optimized #(
                     array_en = 1'b1;
                     array_addr = address_set(cpu_req_addr);
                 end
-            end else if (PF_OPT_LEVEL >= 3 && pf_response_pending) begin
+            end else if (PF_USE_MSHR != 0 && pf_response_pending) begin
                 array_en = 1'b1;
                 array_addr = address_set(pf_mshr_addr);
             end else if (accept_ext) begin
@@ -836,6 +883,7 @@ module l1d_cache_optimized #(
             req_pf_stream_generation <= '0;
             req_miss_recorded <= 1'b0;
             pf_mshr_valid <= 1'b0;
+            pf_mshr_issued <= 1'b0;
             pf_mshr_addr <= '0;
             pf_mshr_external <= 1'b0;
             pf_mshr_confidence <= '0;
@@ -845,6 +893,8 @@ module l1d_cache_optimized #(
             pf_response_age <= '0;
             pf_waiter_valid <= 1'b0;
             pf_waiter_same_line <= 1'b0;
+            pf_waiter_shadow_lower <= 1'b0;
+            pf_waiter_shadow_pending <= 1'b0;
             pf_late_merge_event <= 1'b0;
             miss_penalty_ewma <= 8'd8;
             wb_penalty_ewma <= 8'd8;
@@ -880,6 +930,10 @@ module l1d_cache_optimized #(
             ext_event_dropped <= 1'b0;
             idle_age <= '0;
             stream_candidate_seen <= 1'b0;
+            stream_candidate_seen_addr <= '0;
+            stream_candidate_seen_confidence <= '0;
+            stream_candidate_seen_id <= '0;
+            stream_candidate_seen_generation <= '0;
             stream_unused_feedback <= 1'b0;
             stream_unused_id <= '0;
             stream_unused_generation <= '0;
@@ -965,11 +1019,11 @@ module l1d_cache_optimized #(
                 ext_event_dropped) begin
                 stat_prefetch_dropped <= stat_prefetch_dropped + 1'b1;
             end
-            if ((PF_OPT_LEVEL >= 3 && shadow_true_help) ||
-                (PF_OPT_LEVEL < 3 && event_prefetch_useful))
+            if ((PF_USE_SHADOW != 0 && shadow_true_help) ||
+                (PF_USE_SHADOW == 0 && event_prefetch_useful))
                 stat_pf_true_help <= stat_pf_true_help + 1'b1;
-            if ((PF_OPT_LEVEL >= 3 && shadow_true_pollution) ||
-                (PF_OPT_LEVEL < 3 && event_prefetch_pollution))
+            if ((PF_USE_SHADOW != 0 && shadow_true_pollution) ||
+                (PF_USE_SHADOW == 0 && event_prefetch_pollution))
                 stat_pf_true_pollution <= stat_pf_true_pollution + 1'b1;
             if (pf_demand_block_event)
                 stat_pf_demand_block_cycles <=
@@ -1007,17 +1061,33 @@ module l1d_cache_optimized #(
                 pf_wait_cycles <= '0;
             end
 
+            // Stage S1 completion.  The registered MSHR payload is the only
+            // source of the request, so valid/address remain stable for any
+            // number of mem_req_ready-low cycles.  Token/cost accounting is
+            // charged exactly once, on this handshake edge.
+            if (background_pf_issue) begin
+                pf_mshr_issued <= 1'b1;
+                pf_response_pending <= mem_rsp_valid;
+                pf_response_age <= '0;
+                stat_pf_issued <= stat_pf_issued + 1'b1;
+                if (mem_rsp_valid) begin
+                    fill_line <= mem_rsp_rdata;
+                    stat_pf_returned <= stat_pf_returned + 1'b1;
+                end
+            end
+
             // A PF response has no backpressure pin.  Capture it immediately
             // into the existing transient refill register, independent of the
             // demand FSM's current hit/response state.
-            if (PF_OPT_LEVEL >= 3 && pf_mshr_valid && mem_rsp_valid &&
+            if (PF_USE_MSHR != 0 && pf_mshr_valid && pf_mshr_issued &&
+                mem_rsp_valid &&
                 !pf_response_pending) begin
                 fill_line <= mem_rsp_rdata;
                 pf_response_pending <= 1'b1;
                 pf_response_age <= '0;
                 stat_pf_returned <= stat_pf_returned + 1'b1;
             end
-            if (PF_OPT_LEVEL >= 3 && pf_response_pending) begin
+            if (PF_USE_MSHR != 0 && pf_response_pending) begin
                 if ((state == ST_IDLE && !cpu_req_valid) ||
                     state == ST_PF_WAIT || state == ST_PF_REVALIDATE ||
                     (state == ST_LOOKUP && !req_is_prefetch &&
@@ -1030,6 +1100,7 @@ module l1d_cache_optimized #(
                     // persistent prefetch buffer.  If array arbitration cannot
                     // consume the response within two cycles, drop it.
                     pf_mshr_valid <= 1'b0;
+                    pf_mshr_issued <= 1'b0;
                     pf_response_pending <= 1'b0;
                     pf_response_age <= '0;
                     stat_pf_discarded <= stat_pf_discarded + 1'b1;
@@ -1075,8 +1146,14 @@ module l1d_cache_optimized #(
 
             if (!stream_candidate_valid) begin
                 stream_candidate_seen <= 1'b0;
-            end else if (!stream_candidate_seen) begin
+            end else if (stream_candidate_new) begin
                 stream_candidate_seen <= 1'b1;
+                stream_candidate_seen_addr <= stream_candidate_addr;
+                stream_candidate_seen_confidence <=
+                    stream_candidate_confidence;
+                stream_candidate_seen_id <= stream_candidate_id;
+                stream_candidate_seen_generation <=
+                    stream_candidate_generation;
                 if (!controller_issue_enable ||
                     !controller_token_available ||
                     stream_candidate_confidence < controller_min_confidence)
@@ -1084,10 +1161,10 @@ module l1d_cache_optimized #(
                         stat_pf_suppressed_quota + 1'b1;
             end
             if ((ext_prefetch_valid && ext_prefetch_ready) &&
-                (stream_candidate_valid && !stream_candidate_seen))
+                stream_candidate_new)
                 stat_pf_candidates <= stat_pf_candidates + 2'd2;
             else if ((ext_prefetch_valid && ext_prefetch_ready) ||
-                     (stream_candidate_valid && !stream_candidate_seen))
+                     stream_candidate_new)
                 stat_pf_candidates <= stat_pf_candidates + 1'b1;
             if (accept_next)
                 stream_candidate_seen <= 1'b0;
@@ -1117,7 +1194,7 @@ module l1d_cache_optimized #(
                         end else begin
                             state <= ST_LOOKUP;
                         end
-                    end else if (PF_OPT_LEVEL >= 3 &&
+                    end else if (PF_USE_MSHR != 0 &&
                                  pf_response_pending) begin
                         state <= ST_PF_REVALIDATE;
                     end else if (accept_ext) begin
@@ -1251,19 +1328,21 @@ module l1d_cache_optimized #(
                                     req_wdata, req_size
                                 );
                                 working_dirty <= 1'b1;
-                                response_data <= line_load_data(
-                                    merge_store_data(vc_data[victim_hit_comb],
-                                                     req_addr, req_wdata,
-                                                     req_size),
-                                    req_addr, req_size, req_unsigned
-                                );
+                                if (VC_FORMAT_IN_SWAP == 0)
+                                    response_data <= line_load_data(
+                                        merge_store_data(
+                                            vc_data[victim_hit_comb],
+                                            req_addr, req_wdata, req_size),
+                                        req_addr, req_size, req_unsigned
+                                    );
                             end else begin
                                 working_line <= vc_data[victim_hit_comb];
                                 working_dirty <= vc_dirty[victim_hit_comb];
-                                response_data <= line_load_data(
-                                    vc_data[victim_hit_comb], req_addr,
-                                    req_size, req_unsigned
-                                );
+                                if (VC_FORMAT_IN_SWAP == 0)
+                                    response_data <= line_load_data(
+                                        vc_data[victim_hit_comb], req_addr,
+                                        req_size, req_unsigned
+                                    );
                             end
                             if (vc_prefetched[victim_hit_comb]) begin
                                 stat_prefetch_useful <= stat_prefetch_useful + 1'b1;
@@ -1277,7 +1356,7 @@ module l1d_cache_optimized #(
                             event_cpu_miss <= 1'b1;
                             req_miss_recorded <= 1'b1;
                         end
-                        if (!req_is_prefetch && PF_OPT_LEVEL >= 3 &&
+                        if (!req_is_prefetch && PF_USE_MSHR != 0 &&
                             pf_mshr_valid) begin
                             // Lower memory is occupied by the sole PF MSHR.
                             // Hits above took their normal path; only a lower
@@ -1285,6 +1364,10 @@ module l1d_cache_optimized #(
                             pf_waiter_valid <= 1'b1;
                             pf_waiter_same_line <=
                                 (req_line_addr_comb == pf_mshr_addr);
+                            // l1d_shadow_cache publishes this demand's outcome
+                            // one edge later.  Capture it once in ST_PF_WAIT so
+                            // subsequent idle cycles cannot overwrite identity.
+                            pf_waiter_shadow_pending <= 1'b1;
                             if (req_line_addr_comb == pf_mshr_addr)
                                 stat_pf_same_line_coalesced <=
                                     stat_pf_same_line_coalesced + 1'b1;
@@ -1385,6 +1468,9 @@ module l1d_cache_optimized #(
                 end
 
                 ST_VC_SWAP: begin
+                    if (VC_FORMAT_IN_SWAP != 0)
+                        response_data <= line_load_data(
+                            working_line, req_addr, req_size, req_unsigned);
                     valid_bits[selected_way][req_set_comb] <= 1'b1;
                     dirty_bits[selected_way][req_set_comb] <= working_dirty;
                     prefetched_bits[selected_way][req_set_comb] <= 1'b0;
@@ -1462,8 +1548,9 @@ module l1d_cache_optimized #(
                     if (mem_req_ready) begin
                         if (req_is_prefetch) begin
                             stat_pf_issued <= stat_pf_issued + 1'b1;
-                            if (PF_OPT_LEVEL >= 3) begin
+                            if (PF_USE_MSHR != 0) begin
                                 pf_mshr_valid <= 1'b1;
+                                pf_mshr_issued <= 1'b1;
                                 pf_mshr_addr <= req_line_addr_comb;
                                 pf_mshr_external <= req_pf_external;
                                 pf_mshr_confidence <= req_pf_confidence;
@@ -1472,6 +1559,8 @@ module l1d_cache_optimized #(
                                     req_pf_stream_generation;
                                 pf_waiter_valid <= 1'b0;
                                 pf_waiter_same_line <= 1'b0;
+                                pf_waiter_shadow_lower <= 1'b0;
+                                pf_waiter_shadow_pending <= 1'b0;
                                 pf_response_pending <= mem_rsp_valid;
                                 if (mem_rsp_valid) begin
                                     fill_line <= mem_rsp_rdata;
@@ -1496,7 +1585,8 @@ module l1d_cache_optimized #(
                             stat_pf_returned <= stat_pf_returned + 1'b1;
                         end
                         if (req_is_prefetch &&
-                            (!cfg_prefetch_enable || ENABLE_PREFETCH == 0)) begin
+                            (!cfg_prefetch_enable || ENABLE_PREFETCH == 0 ||
+                             !controller_issue_enable)) begin
                             // A runtime disable never forces a stale response
                             // into L1.  The transient response is discarded.
                             stat_pf_discarded <= stat_pf_discarded + 1'b1;
@@ -1602,6 +1692,10 @@ module l1d_cache_optimized #(
                 end
 
                 ST_PF_WAIT: begin
+                    if (pf_waiter_shadow_pending) begin
+                        pf_waiter_shadow_lower <= shadow_lower;
+                        pf_waiter_shadow_pending <= 1'b0;
+                    end
                     if (pf_response_pending) begin
                         if (pf_waiter_same_line) begin
                             // The combinational SRAM controls launch the
@@ -1613,9 +1707,12 @@ module l1d_cache_optimized #(
                             // before replaying that demand lookup.
                             stat_pf_discarded <= stat_pf_discarded + 1'b1;
                             pf_mshr_valid <= 1'b0;
+                            pf_mshr_issued <= 1'b0;
                             pf_response_pending <= 1'b0;
                             pf_waiter_valid <= 1'b0;
                             pf_waiter_same_line <= 1'b0;
+                            pf_waiter_shadow_lower <= 1'b0;
+                            pf_waiter_shadow_pending <= 1'b0;
                             state <= ST_LOOKUP;
                         end
                     end
@@ -1764,6 +1861,7 @@ module l1d_cache_optimized #(
                         end
                     end else if (!cfg_prefetch_enable ||
                                  ENABLE_PREFETCH == 0 ||
+                                 !controller_issue_enable ||
                                  pf_resp_l1_hit_comb ||
                                  pf_resp_victim_hit_valid_comb ||
                                  !pf_resp_safe_comb) begin
@@ -1771,14 +1869,20 @@ module l1d_cache_optimized #(
                         // intervening demand hits/VC swaps may have changed
                         // replacement state or residency.
                         stat_pf_discarded <= stat_pf_discarded + 1'b1;
-                        if (!pf_resp_l1_hit_comb &&
+                        if (controller_issue_enable &&
+                            !pf_resp_l1_hit_comb &&
                             !pf_resp_victim_hit_valid_comb &&
-                            cfg_prefetch_enable && ENABLE_PREFETCH != 0)
+                            cfg_prefetch_enable && ENABLE_PREFETCH != 0 &&
+                            !pf_resp_safe_comb)
                             stat_pf_suppressed_unsafe <=
                                 stat_pf_suppressed_unsafe + 1'b1;
                         pf_mshr_valid <= 1'b0;
+                        pf_mshr_issued <= 1'b0;
                         pf_response_pending <= 1'b0;
                         pf_waiter_valid <= 1'b0;
+                        pf_waiter_same_line <= 1'b0;
+                        pf_waiter_shadow_lower <= 1'b0;
+                        pf_waiter_shadow_pending <= 1'b0;
                         state <= ST_IDLE;
                     end else begin
                         quota_drop_pf <=
@@ -1918,6 +2022,7 @@ module l1d_cache_optimized #(
                     quota_drop_pf <= 1'b0;
 
                     pf_mshr_valid <= 1'b0;
+                    pf_mshr_issued <= 1'b0;
                     pf_response_pending <= 1'b0;
                     pf_waiter_same_line <= 1'b0;
                     if (pf_waiter_valid) begin
@@ -1926,9 +2031,13 @@ module l1d_cache_optimized #(
                         stat_pf_merged <= stat_pf_merged + 1'b1;
                         late_merge_credit <=
                             (miss_penalty_ewma > pf_wait_cycles) ?
-                            (miss_penalty_ewma - pf_wait_cycles) : 8'd1;
-                        pf_late_merge_event <= 1'b1;
+                            (miss_penalty_ewma - pf_wait_cycles) : 8'd0;
+                        // Reward only latency avoided relative to the
+                        // demand-only counterfactual lower miss.
+                        pf_late_merge_event <= pf_waiter_shadow_lower;
                         pf_waiter_valid <= 1'b0;
+                        pf_waiter_shadow_lower <= 1'b0;
+                        pf_waiter_shadow_pending <= 1'b0;
                         state <= ST_RESP;
                     end else begin
                         replacement_way[pf_resp_set_comb] <= selected_way;
@@ -1941,14 +2050,13 @@ module l1d_cache_optimized #(
 
                 ST_RESP: begin
                     if (cpu_rsp_ready) begin
-                        if (background_pf_issue) begin
-                            // Zero-bubble P3 same-line promotion: a candidate
-                            // may launch with the previous response only when
-                            // the already-visible next demand names that line.
-                            // A different waiting demand always wins lower
-                            // memory arbitration.  No cache metadata is
-                            // reserved or modified here.
+                        if (background_pf_capture) begin
+                            // Stage S0 of zero-bubble same-line promotion.
+                            // Register all request identity before it reaches
+                            // the lower-memory interface; the request is then
+                            // held by background_pf_request until handshake.
                             pf_mshr_valid <= 1'b1;
+                            pf_mshr_issued <= 1'b0;
                             pf_mshr_addr <= background_pf_addr;
                             pf_mshr_external <= accept_bg_ext;
                             pf_mshr_confidence <=
@@ -1958,17 +2066,14 @@ module l1d_cache_optimized #(
                                 background_pf_stream_generation;
                             pf_waiter_valid <= 1'b0;
                             pf_waiter_same_line <= 1'b0;
-                            pf_response_pending <= mem_rsp_valid;
+                            pf_waiter_shadow_lower <= 1'b0;
+                            pf_waiter_shadow_pending <= 1'b0;
+                            pf_response_pending <= 1'b0;
+                            pf_response_age <= '0;
                             stat_pf_admitted <= stat_pf_admitted + 1'b1;
-                            stat_pf_issued <= stat_pf_issued + 1'b1;
                             if (accept_bg_ext) begin
                                 ext_pending_valid <= 1'b0;
                                 ext_pending_age <= '0;
-                            end
-                            if (mem_rsp_valid) begin
-                                fill_line <= mem_rsp_rdata;
-                                stat_pf_returned <=
-                                    stat_pf_returned + 1'b1;
                             end
                         end
                         state <= ST_IDLE;
@@ -2009,6 +2114,17 @@ module l1d_cache_optimized #(
         if (ADDR_WIDTH <= OFFSET_BITS + SET_BITS) begin
             $error("ADDR_WIDTH is too small for the configured cache geometry");
         end
+        if ((PF_USE_STREAM != 0 && PF_USE_STREAM != 1) ||
+            (PF_USE_ADAPTIVE != 0 && PF_USE_ADAPTIVE != 1) ||
+            (PF_USE_SHADOW != 0 && PF_USE_SHADOW != 1) ||
+            (PF_USE_MSHR != 0 && PF_USE_MSHR != 1) ||
+            PF_IDLE_GUARD < 0 || PF_IDLE_GUARD > 7 ||
+            PF_EPOCH_DEMANDS < 1 || PF_OFF_DEMANDS < 1 ||
+            PF_PROBE_BUDGET < 1 || PF_PROBE_REFILL < 1 ||
+            PF_ON_REFILL < 1 ||
+            (VC_FORMAT_IN_SWAP != 0 && VC_FORMAT_IN_SWAP != 1)) begin
+            $error("Invalid prefetch feature/tuning or VC formatter parameter");
+        end
     end
 
 `ifndef SYNTHESIS
@@ -2030,13 +2146,19 @@ module l1d_cache_optimized #(
                 stat_pf_installed + stat_pf_merged + stat_pf_discarded >
                     stat_pf_returned)
                 $fatal(1, "Prefetch lifecycle counters are not conserved");
-            if (PF_OPT_LEVEL >= 3 && pf_response_pending && !pf_mshr_valid)
+            if (PF_USE_MSHR != 0 && pf_response_pending &&
+                (!pf_mshr_valid || !pf_mshr_issued))
                 $fatal(1, "PF response exists without an MSHR owner");
-            if (PF_OPT_LEVEL >= 3 && pf_waiter_valid && !pf_mshr_valid)
+            if (PF_USE_MSHR != 0 && pf_waiter_valid && !pf_mshr_valid)
                 $fatal(1, "Demand waiter exists without an MSHR owner");
-            if (PF_OPT_LEVEL >= 3 && pf_mshr_valid && mem_req_valid &&
+            if (PF_USE_MSHR != 0 && pf_mshr_valid && pf_mshr_issued &&
+                mem_req_valid &&
                 !mem_req_write)
                 $fatal(1, "Second lower read issued while PF MSHR is live");
+            if (background_pf_issue &&
+                (!mem_req_valid || mem_req_write ||
+                 mem_req_addr != pf_mshr_addr))
+                $fatal(1, "Background PF accounting without granted PF read");
             for (assert_i = 0; assert_i < NUM_SETS;
                  assert_i = assert_i + 1) begin
                 assert_j = 0;
@@ -2076,7 +2198,7 @@ module l1d_cache_optimized #(
                                    assert_j,
                                    vc_addr[assert_j]);
                     end
-                    if (PF_OPT_LEVEL >= 3 && pf_mshr_valid &&
+                    if (PF_USE_MSHR != 0 && pf_mshr_valid &&
                         valid_bits[assert_way][assert_i] &&
                         compose_line_address(
                             tag_mirror[assert_way][assert_i], assert_i) ==
@@ -2094,7 +2216,7 @@ module l1d_cache_optimized #(
                         $fatal(1, "Duplicate line in victim cache");
                     end
                 end
-                if (PF_OPT_LEVEL >= 3 && pf_mshr_valid &&
+                if (PF_USE_MSHR != 0 && pf_mshr_valid &&
                     vc_valid[assert_i] && vc_addr[assert_i] == pf_mshr_addr)
                     $fatal(1, "PF MSHR line already exists in victim cache");
             end

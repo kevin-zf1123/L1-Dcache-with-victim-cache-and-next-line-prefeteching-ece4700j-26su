@@ -20,7 +20,8 @@
 ### Adaptive direct-L1 prefetcher (P0–P3)
 
 - [x] Preserve the original blocking next-line engine behind
-  `PREFETCH_POLICY=0` and make optimized policy level 3 the wrapper default.
+  `PREFETCH_POLICY=0`, keep optimized policy level 3 as the research-wrapper
+  default, and provide a deployment wrapper whose default disables prefetch.
 - [x] Add true zero-bubble, sequential, and fixed-gap 1/2/4/8 producers.
 - [x] Upgrade replay sidecars and conservation checks to schema 3 while
   retaining schema-2 input compatibility.
@@ -34,6 +35,14 @@
   hysteretic OFF/PROBE/ON controller.
 - [x] Implement P3 demand-only tag/dirty shadow L1/VC and one metadata-only PF
   MSHR with hit-under-prefetch, load/store merge, and bounded discard.
+- [x] Add constant-foldable deployment feature parameters plus
+  `l1d_cache_deploy` and `l1d_fpga_harness` seams with prefetch disabled by
+  default.
+- [x] Register the prefetch S0 candidate capture and hold a stable S1 PF-MSHR
+  issue identity across lower-memory backpressure and candidate turnover; bind
+  issue/token accounting to an explicit lower-port ownership grant.
+- [x] Compare swap-register and VC-lookup formatting in an A/B synthesis run
+  and retain the swap-register implementation that closes OOC timing.
 - [x] Add directed and randomized Icarus regressions for stream/controller,
   safe insertion, shadow attribution, zero-bubble merge, TTL, EWMA, response
   backpressure, runtime disable, and discard/revalidation paths.
@@ -41,8 +50,9 @@
   campaign against all stated performance and bandwidth gates.
 - [x] Complete the sequential, fixed-gap 1/2/4/8, latency-0/always-ready, and
   latency-8/random-backpressure paired sensitivity campaigns.
-- [x] Run the optimized P3 XSim matrix (11 logs / 83 schema-3 rows) and the
-  four-configuration Vivado synthesis/PPA campaign (12 reports).
+- [x] Run the deployment-closure Vivado campaign: 15 XSim logs, eight OOC
+  synthesis configurations, four independent post-route implementations, and
+  121 downloaded artifacts validated by the evidence manifest.
 
 - [x] Add deterministic randomized golden-memory scoreboard.
 - [x] Verify RV64 load/store sizes, sign/zero extension, and misaligned errors.
@@ -80,6 +90,9 @@
   flow.
 - [x] Classify validated windows and publish paired metrics and plots under
   `docs/evidence/2026-07-13/`.
+- [x] Publish the 2026-07-22 deployment-gate replay, sensitivity, OOC,
+  post-route timing, and activity-power evidence under
+  `docs/evidence/2026-07-22-prefetch-ppa/`.
 
 ## Vivado and PPA
 
@@ -91,7 +104,7 @@
 - [x] Add a baseline 10 ns clock constraint.
 - [x] Calculate an approximate RV64 post-synthesis Fmax from Vivado STA reports.
 - [x] Run RV64 vectorless FPGA power estimation and document its assumptions.
-- [ ] Run implementation/post-route timing and activity-based power analysis.
+- [x] Run implementation/post-route timing and activity-based power analysis.
 - [x] Compare baseline, victim-cache, prefetch, and combined configurations.
 - [x] Re-run the comparison with equal L1 capacity and identical simulation/PPA
   geometry.

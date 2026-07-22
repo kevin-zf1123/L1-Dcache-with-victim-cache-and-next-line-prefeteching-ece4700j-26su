@@ -128,6 +128,27 @@ late-merge credit、blocked demand cycle、speculative issue cost 和归因 writ
 PF MSHR 只包含地址、tag、dirty bit、confidence、generation 与 control
 metadata；返回数据只出现在普通 transient refill register 中。
 
+## 证据驱动的部署结论（2026-07-22）
+
+最终受控 replay 和 Vivado campaign 不支持在部署 profile 中启用该研究
+prefetcher。在 25 个真正的 zero-bubble SPEC window 上，full P3 只节省 1 个
+aggregate serialized service cycle，P3-lite 增加 31 cycle；两者都未达到要求的
+1% improvement。P3-lite issue 并 merge 了 1,301 次 read，但没有 install 任何
+line，因此零 byte overhead 不能抵消 stream detection、queue 和 arbitration 成本。
+
+匹配的 FPGA 比较进一步支持该结论。相对 optimized PF0 部署 seam，
+P3-lite 增加 66.25% OOC LUT 和 51.20% OOC register，post-route WNS 从
+-0.407 ns 变为 -4.169 ns，SAIF-based dynamic power 从 0.008 W 增加到
+0.015 W。删除 adaptive 和 shadow 逻辑也未闭合差距；stream detector 仍是主要
+结构成本和关键路径来源。
+
+因此，`l1d_cache_deploy` 默认禁用 prefetch，full P3 和 P3-lite 仍是必须
+显式选择的研究配置。这一结果并不否定一般意义上的 stream 或 feedback-directed
+prefetching；它只界定了本次测试的小 geometry、direct-L1、单 outstanding memory
+interface 实现。未来尝试应先改变架构权衡，例如增加独立 prefetch buffer、
+更深/非阻塞 lower interface 或大幅精简 detector，然后重复相同的 paired performance
+和 PPA 门禁。
+
 ## 当前 RTL 审查结论
 
 已有文献支持的部分：
@@ -152,6 +173,9 @@ feedback、line-uniqueness assertion 和 randomized golden-memory reference mode
 - 在现有 simulation assertion 之上增加 dirty-data-preservation formal property；
 - 评估是否有必要增加多 demand MSHR；已实现的单 PF MSHR 故意不将
   demand cache 变为完全 non-blocking。
+
+Post-route timing 和基于 activity 的 power 现已实测，而不是后续项；它们未通过
+部署门禁，记录在 `docs/evidence/2026-07-22-prefetch-ppa/` 中。
 
 ## Proposal 引用审查
 

@@ -144,7 +144,64 @@ Every validated pair also produces `classification.csv` and
 harmful. Other metrics remain visible in the paired and aggregate tables and
 do not silently change that label.
 
-## Optimized P0–P3 Campaign (2026-07-13)
+## Deployment-Gate Replay Closure (2026-07-22)
+
+The July 22 campaign supersedes the July 13 optimized performance conclusion.
+It reuses the same validated, process-attributable 25 windows and equal
+2-way/4-set/16-byte-line/VC4 paired geometry, but incorporates the corrected
+schema-3 observer identity, registered PF scheduler, runtime-response discard,
+and actual-handshake cost accounting.
+
+The reproducible serial orchestrator is:
+
+```sh
+scripts/run_feedback_replay_matrix.sh --list
+scripts/run_feedback_replay_matrix.sh
+```
+
+It contains 26 jobs and deliberately runs only one simulator at a time. A job
+can be reused only by naming it with `--skip` after independently confirming
+that its campaign and analysis validation files are current and `PASS`. The
+final closure reran all 26 jobs from scratch and ended with
+`MATRIX_ALL_PASS`.
+
+The main results are:
+
+| Policy / profile | Cycles off | Cycles on | Delta | Byte overhead | Harmful / neutral / helpful | PF issued / merged / installed |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| Frozen legacy `0/0` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Safe P1 `1/1` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Adaptive P2 `1/2` | 850,547 | 850,547 | 0 | 0% | 0 / 25 / 0 | 0 / 0 / 0 |
+| Full P3 `1/3` | 850,547 | 850,546 | -1 | 0% | 4 / 16 / 5 | 508 / 508 / 0 |
+| P3-lite deploy candidate | 850,547 | 850,578 | +31 | 0% | 9 / 8 / 8 | 1,301 / 1,301 / 0 |
+
+Full P3 no longer reproduces the historical `-724` result after lifecycle and
+observer fixes; its current improvement is one cycle. P3-lite is the hardware
+gate's main replay because it removes adaptive and shadow structures while
+retaining stream detection and the PF MSHR. It fails aggregate improvement
+and non-slow-window gates, although bandwidth overhead, maximum per-window
+slowdown, and PF-caused write-back gates pass.
+
+The P3-lite parameter sweep produced deltas of +31 cycles for default,
+`idle_guard=1`, `idle_guard=4`, and `epoch_demands=512`; +23 for
+`on_refill=4`; and +17 for `on_refill=16`. No point improves aggregate cycles.
+
+The complete producer/timing sensitivity matrix validated 16 profiles (eight
+each for legacy and P3-lite). Legacy sequential and gaps 1/2/4/8 changed
+cycles by +328,996, +328,996, +280,654, +190,854, and +13,745 respectively,
+with +672,032 bytes in every profile. P3-lite remained byte-neutral: it
+suppressed all sequential/gap-1/gap-2 candidates and admitted then cancelled
+all gap-4/gap-8 candidates before issue. Its latency-0 delta was zero;
+latency-8 periodic and deterministic-random deltas were +9 and +146 cycles.
+
+All main, sweep, and sensitivity campaigns closed exact run/pair/counter/
+sidecar conservation and reported zero watchdog, protocol, and duplicate-line
+errors. The address-free roll-up is
+[`evidence/2026-07-22-prefetch-ppa/`](evidence/2026-07-22-prefetch-ppa/README.md).
+Licensed traces, addresses, raw sidecars, and private manifests remain under
+ignored `build/spec2026/` paths.
+
+## Historical Optimized P0–P3 Campaign (2026-07-13)
 
 The final optimized campaign reuses the same 25 attributable windows and equal
 2-way, 4-set, 16-byte-line, VC4 paired geometry. It changes the producer to a

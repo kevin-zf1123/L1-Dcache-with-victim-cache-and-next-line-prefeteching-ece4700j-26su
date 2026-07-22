@@ -1,0 +1,13 @@
+stage,config_id,sets,ways,line_bytes,victim_entries,enable_prefetch,pf_opt_level,pf_use_stream,pf_use_adaptive,pf_use_shadow,pf_use_mshr,luts,lut_as_memory,registers,bram_tiles,wns_ns,tns_ns,whs_ns,ths_ns,fmax_mhz,vectorless_total_w,vectorless_dynamic_w,vectorless_static_w,vectorless_confidence,activity_total_w,activity_dynamic_w,activity_static_w,activity_confidence,activity_matched_nets,activity_total_nets,activity_source
+synthesis,optimized_pf0_deploy,4,2,16,4,0,1,0,0,0,0,6048,372,2047,0,0.363,0.0,-0.276,-79.016,103.76673238559717,0.092,0.023,0.068,Medium,,,,,,,
+synthesis,optimized_pf0_deploy_vc_lookup,4,2,16,4,0,1,0,0,0,0,5647,372,2034,0,-0.675,-8.024,-0.276,-74.978,93.67681498829039,0.083,0.015,0.068,Medium,,,,,,,
+synthesis,p3_research,4,2,16,4,1,3,1,1,1,1,9740,372,4817,0,-5.186,-2269.223,-0.276,-98.504,65.85012511523772,0.113,0.044,0.068,Medium,,,,,,,
+synthesis,p3_deploy,4,2,16,4,1,3,1,1,1,1,9488,372,3928,0,-5.404,-1641.503,-0.253,-84.312,64.91820306413919,0.11,0.042,0.068,Medium,,,,,,,
+synthesis,p3_no_shadow_proxy,4,2,16,4,1,3,1,1,0,1,9048,372,3161,0,-6.123,-1327.239,-0.26,-79.537,62.023196675556655,0.111,0.042,0.068,Medium,,,,,,,
+synthesis,p3_lite_mshr_fixed,4,2,16,4,1,3,1,0,0,1,10055,372,3095,0,-5.896,-1545.3,-0.253,-81.298,62.90890790135883,0.108,0.04,0.068,Medium,,,,,,,
+synthesis,stream_detector_only,4,2,16,4,1,3,1,0,0,0,7302,372,2549,0,-5.688,-772.073,-0.26,-81.987,63.742988271290166,0.089,0.021,0.068,Medium,,,,,,,
+synthesis,legacy_matched,4,2,16,4,1,0,0,0,0,0,5349,372,2074,0,-2.007,-92.259,-0.253,-68.602,83.28475056217206,0.083,0.014,0.068,Medium,,,,,,,
+implementation,optimized_pf0_deploy,4,2,16,4,0,1,0,0,0,0,751,132,748,0,-0.407,-9.27,0.118,0.0,96.08917075045642,0.079,0.009,0.07,Medium,0.079,0.008,0.07,Medium,128,1646,build/vivado/reports/activity/optimized_pf0_deploy.saif
+implementation,p3_deploy,4,2,16,4,1,3,1,1,1,1,3593,244,3146,0,-3.721,-3315.023,0.019,0.0,72.88098535092195,0.093,0.023,0.07,Medium,0.09,0.02,0.07,Medium,565,7525,build/vivado/reports/activity/p3_deploy.saif
+implementation,p3_lite_mshr_fixed,4,2,16,4,1,3,1,0,0,1,2955,244,2280,0,-4.169,-1873.664,0.065,0.0,70.57661091114404,0.089,0.019,0.07,Medium,0.085,0.015,0.07,Medium,575,5804,build/vivado/reports/activity/p3_lite_mshr_fixed.saif
+implementation,legacy_matched,4,2,16,4,1,0,0,0,0,0,1259,244,1411,0,-0.444,-10.109,0.106,0.0,95.74875526618153,0.079,0.009,0.07,Medium,0.078,0.008,0.07,Medium,488,2956,build/vivado/reports/activity/legacy_matched.saif

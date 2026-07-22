@@ -56,6 +56,10 @@ class ReplayRunnerTests(unittest.TestCase):
                 "always-ready, periodic, or deterministic-random",
             ),
             ({"L1D_REPLAY_SCOPE": "pair"}, "full or paired"),
+            ({"L1D_PF_USE_SHADOW": "2"}, "PF_USE_SHADOW must be 0 or 1"),
+            ({"L1D_PF_IDLE_GUARD": "8"}, "outside supported ranges"),
+            ({"L1D_PF_EPOCH_DEMANDS": "0"}, "outside supported ranges"),
+            ({"L1D_VC_FORMAT_IN_SWAP": "lookup"}, "VC_FORMAT_IN_SWAP must be 0 or 1"),
         )
         for overrides, expected in cases:
             with self.subTest(overrides=overrides):
@@ -334,6 +338,26 @@ class ReplayRunnerTests(unittest.TestCase):
             for run in generated["runs"]:
                 self.assertEqual(run["prefetch_policy"], 1)
                 self.assertEqual(run["pf_opt_level"], 3)
+                self.assertEqual(run["pf_use_stream"], 1)
+                self.assertEqual(run["pf_use_adaptive"], 1)
+                self.assertEqual(run["pf_use_shadow"], 1)
+                self.assertEqual(run["pf_use_mshr"], 1)
+                self.assertEqual(run["pf_idle_guard"], 2)
+                self.assertEqual(run["pf_epoch_demands"], 256)
+                self.assertEqual(run["pf_off_demands"], 512)
+                self.assertEqual(run["pf_probe_budget"], 8)
+                self.assertEqual(run["pf_probe_refill"], 16)
+                self.assertEqual(run["pf_on_refill"], 8)
+                self.assertEqual(run["vc_format_in_swap"], 1)
+                self.assertEqual(run["producer_profile_code"], 1)
+                self.assertEqual(run["sidecar_schema"], 3)
+                self.assertIn("simulation_compile_parameters", run)
+                self.assertEqual(
+                    run["simulation_compile_parameters"]["PF_ON_REFILL"], 8
+                )
+                self.assertEqual(
+                    len(run["simulation_compile_parameters_sha256"]), 64
+                )
                 self.assertEqual(run["producer_profile"], "zero-bubble")
                 self.assertEqual(run["producer_gap"], 0)
                 self.assertEqual(run["mem_latency"], 2)
@@ -361,6 +385,16 @@ class ReplayRunnerTests(unittest.TestCase):
             paired_logs.mkdir(parents=True)
             paired_environment = os.environ.copy()
             paired_environment["L1D_REPLAY_SCOPE"] = "paired"
+            paired_environment.update(
+                {
+                    "L1D_PF_USE_ADAPTIVE": "0",
+                    "L1D_PF_USE_SHADOW": "0",
+                    "L1D_PF_IDLE_GUARD": "4",
+                    "L1D_PF_EPOCH_DEMANDS": "512",
+                    "L1D_PF_ON_REFILL": "4",
+                    "L1D_VC_FORMAT_IN_SWAP": "0",
+                }
+            )
             paired_run = subprocess.run(
                 [
                     str(REPO / "scripts" / "run_spec_trace_replay.sh"),
@@ -388,6 +422,13 @@ class ReplayRunnerTests(unittest.TestCase):
                 paired_manifest["paired_config_ids"],
                 ["2w_s4_vc4_pf0", "2w_s4_vc4_pf1"],
             )
+            for run in paired_manifest["runs"]:
+                self.assertEqual(run["pf_use_adaptive"], 0)
+                self.assertEqual(run["pf_use_shadow"], 0)
+                self.assertEqual(run["pf_idle_guard"], 4)
+                self.assertEqual(run["pf_epoch_demands"], 512)
+                self.assertEqual(run["pf_on_refill"], 4)
+                self.assertEqual(run["vc_format_in_swap"], 0)
             self.assertEqual(paired_manifest["standalone_config_ids"], [])
             self.assertEqual(
                 {path.stem for path in (paired_root / "bin").glob("*.vvp")},

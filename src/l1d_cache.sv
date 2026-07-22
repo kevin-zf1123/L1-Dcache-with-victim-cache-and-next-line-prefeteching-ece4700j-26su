@@ -11,7 +11,18 @@ module l1d_cache #(
     parameter integer VICTIM_ENTRIES   = 4,
     parameter integer ENABLE_PREFETCH  = 1,
     parameter integer PREFETCH_POLICY  = 1,
-    parameter integer PF_OPT_LEVEL     = 3
+    parameter integer PF_OPT_LEVEL     = 3,
+    parameter integer PF_USE_STREAM    = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_ADAPTIVE  = (PF_OPT_LEVEL >= 2),
+    parameter integer PF_USE_SHADOW    = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_USE_MSHR      = (PF_OPT_LEVEL >= 3),
+    parameter integer PF_IDLE_GUARD    = 2,
+    parameter integer PF_EPOCH_DEMANDS = 256,
+    parameter integer PF_OFF_DEMANDS   = 512,
+    parameter integer PF_PROBE_BUDGET  = 8,
+    parameter integer PF_PROBE_REFILL  = 16,
+    parameter integer PF_ON_REFILL     = 8,
+    parameter integer VC_FORMAT_IN_SWAP = 1
 ) (
     input  logic                         clk,
     input  logic                         rst_n,
@@ -109,6 +120,18 @@ module l1d_cache #(
     wire next_line_candidate_ready;
     wire [ADDR_WIDTH-1:0] next_line_candidate_addr;
     wire [1:0] next_line_candidate_confidence;
+    wire [1:0] next_line_candidate_stream_id;
+    wire [1:0] next_line_candidate_generation;
+    wire pf_candidate_seen;
+    wire pf_candidate_event;
+    wire pf_accept_ext;
+    wire pf_accept_next;
+    wire pf_accept_bg_ext;
+    wire pf_accept_bg_next;
+    wire pf_req_external;
+    wire [1:0] pf_req_confidence;
+    wire [1:0] pf_req_stream_id;
+    wire [1:0] pf_req_stream_generation;
     wire [TAG_BITS-1:0] debug_tag [0:NUM_WAYS-1][0:NUM_SETS-1];
 `endif
 
@@ -204,6 +227,18 @@ module l1d_cache #(
             assign next_line_candidate_addr =
                 u_cache.next_line_candidate_addr;
             assign next_line_candidate_confidence = 2'b11;
+            assign next_line_candidate_stream_id = 2'b00;
+            assign next_line_candidate_generation = 2'b00;
+            assign pf_candidate_seen = 1'b0;
+            assign pf_candidate_event = 1'b0;
+            assign pf_accept_ext = 1'b0;
+            assign pf_accept_next = 1'b0;
+            assign pf_accept_bg_ext = 1'b0;
+            assign pf_accept_bg_next = 1'b0;
+            assign pf_req_external = 1'b0;
+            assign pf_req_confidence = 2'b00;
+            assign pf_req_stream_id = 2'b00;
+            assign pf_req_stream_generation = 2'b00;
 
             genvar legacy_way;
             genvar legacy_set;
@@ -238,7 +273,18 @@ module l1d_cache #(
                 .NUM_WAYS(NUM_WAYS),
                 .VICTIM_ENTRIES(VICTIM_ENTRIES),
                 .ENABLE_PREFETCH(ENABLE_PREFETCH),
-                .PF_OPT_LEVEL(PF_OPT_LEVEL)
+                .PF_OPT_LEVEL(PF_OPT_LEVEL),
+                .PF_USE_STREAM(PF_USE_STREAM),
+                .PF_USE_ADAPTIVE(PF_USE_ADAPTIVE),
+                .PF_USE_SHADOW(PF_USE_SHADOW),
+                .PF_USE_MSHR(PF_USE_MSHR),
+                .PF_IDLE_GUARD(PF_IDLE_GUARD),
+                .PF_EPOCH_DEMANDS(PF_EPOCH_DEMANDS),
+                .PF_OFF_DEMANDS(PF_OFF_DEMANDS),
+                .PF_PROBE_BUDGET(PF_PROBE_BUDGET),
+                .PF_PROBE_REFILL(PF_PROBE_REFILL),
+                .PF_ON_REFILL(PF_ON_REFILL),
+                .VC_FORMAT_IN_SWAP(VC_FORMAT_IN_SWAP)
             ) u_cache (
                 .clk(clk),
                 .rst_n(rst_n),
@@ -321,6 +367,21 @@ module l1d_cache #(
                 u_cache.stream_candidate_addr;
             assign next_line_candidate_confidence =
                 u_cache.stream_candidate_confidence;
+            assign next_line_candidate_stream_id =
+                u_cache.stream_candidate_id;
+            assign next_line_candidate_generation =
+                u_cache.stream_candidate_generation;
+            assign pf_candidate_seen = u_cache.stream_candidate_seen;
+            assign pf_candidate_event = u_cache.stream_candidate_new;
+            assign pf_accept_ext = u_cache.accept_ext;
+            assign pf_accept_next = u_cache.accept_next;
+            assign pf_accept_bg_ext = u_cache.accept_bg_ext;
+            assign pf_accept_bg_next = u_cache.accept_bg_next;
+            assign pf_req_external = u_cache.req_pf_external;
+            assign pf_req_confidence = u_cache.req_pf_confidence;
+            assign pf_req_stream_id = u_cache.req_pf_stream_id;
+            assign pf_req_stream_generation =
+                u_cache.req_pf_stream_generation;
 
             genvar optimized_way;
             genvar optimized_set;
@@ -358,6 +419,19 @@ module l1d_cache #(
             (PREFETCH_POLICY == 1 &&
              (PF_OPT_LEVEL < 1 || PF_OPT_LEVEL > 3))) begin
             $error("PF_OPT_LEVEL must be 0..3 for legacy or 1..3 for optimized");
+        end
+        if ((PF_USE_STREAM != 0 && PF_USE_STREAM != 1) ||
+            (PF_USE_ADAPTIVE != 0 && PF_USE_ADAPTIVE != 1) ||
+            (PF_USE_SHADOW != 0 && PF_USE_SHADOW != 1) ||
+            (PF_USE_MSHR != 0 && PF_USE_MSHR != 1)) begin
+            $error("PF_USE_* feature-ablation parameters must be 0 or 1");
+        end
+        if (PF_IDLE_GUARD < 0 || PF_IDLE_GUARD > 7 ||
+            PF_EPOCH_DEMANDS < 1 || PF_OFF_DEMANDS < 1 ||
+            PF_PROBE_BUDGET < 1 || PF_PROBE_REFILL < 1 ||
+            PF_ON_REFILL < 1 ||
+            (VC_FORMAT_IN_SWAP != 0 && VC_FORMAT_IN_SWAP != 1)) begin
+            $error("Invalid prefetch tuning or VC formatter parameter");
         end
     end
 endmodule

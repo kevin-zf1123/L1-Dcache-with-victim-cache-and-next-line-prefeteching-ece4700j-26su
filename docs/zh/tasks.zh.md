@@ -21,8 +21,9 @@
 
 ### 自适应 Direct-L1 Prefetcher（P0–P3）
 
-- [x] 在 `PREFETCH_POLICY=0` 后保留原 blocking next-line engine，并将
-  optimized policy level 3 设为 wrapper 默认。
+- [x] 在 `PREFETCH_POLICY=0` 后保留原 blocking next-line engine，将
+  optimized policy level 3 保留为研究 wrapper 默认，并提供默认关闭
+  prefetch 的部署 wrapper。
 - [x] 增加真正的 zero-bubble、sequential 和固定 gap 1/2/4/8 producer。
 - [x] 将 replay sidecar 与守恒检查升级为 schema 3，同时保留 schema-2
   输入兼容性。
@@ -35,6 +36,13 @@
   OFF/PROBE/ON controller。
 - [x] 实现 P3 demand-only tag/dirty shadow L1/VC 与单 metadata-only PF MSHR，
   包括 hit-under-prefetch、load/store merge 和有界 discard。
+- [x] 增加可在综合时常量折叠的部署特性参数，以及默认关闭 prefetch 的
+  `l1d_cache_deploy` 和 `l1d_fpga_harness` 接缝。
+- [x] 寄存 prefetch S0 candidate capture，并在下级内存 backpressure 和
+  candidate turnover 期间保持稳定的 S1 PF-MSHR issue identity；同时将
+  issue/token 记账绑定到显式的 lower-port ownership grant。
+- [x] 通过 A/B 综合比较 swap-register 与 VC-lookup formatter，并保留可使
+  OOC timing 收敛的 swap-register 实现。
 - [x] 为 stream/controller、安全 insertion、shadow attribution、zero-bubble merge、
   TTL、EWMA、response backpressure、runtime disable 与 discard/revalidation 路径
   增加定向和 randomized Icarus 回归。
@@ -42,8 +50,9 @@
   并检查所有 performance 与 bandwidth 门槛。
 - [x] 完成 sequential、fixed-gap 1/2/4/8、latency-0/always-ready 和
   latency-8/random-backpressure paired sensitivity campaign。
-- [x] 运行 optimized P3 XSim matrix（11 份 log / 83 行 schema-3 record）与
-  四配置 Vivado synthesis/PPA campaign（12 份 report）。
+- [x] 运行部署收尾 Vivado campaign：15 份 XSim log、八种 OOC synthesis
+  配置、四次相互独立的 post-route implementation，以及由 evidence manifest
+  验证的 121 份下载 artifact。
 
 - [x] 增加 deterministic randomized golden-memory scoreboard。
 - [x] 验证 RV64 load/store size、符号/零扩展和未对齐错误。
@@ -81,6 +90,9 @@
   SPEC 区间。
 - [x] 对有效 window 分类，并在 `docs/evidence/2026-07-13/` 发布
   paired metric 与图表。
+- [x] 在 `docs/evidence/2026-07-22-prefetch-ppa/` 发布 2026-07-22
+  deployment-gate replay、sensitivity、OOC、post-route timing 和
+  activity-power 证据。
 
 ## Vivado 与 PPA
 
@@ -92,7 +104,7 @@
 - [x] 添加基线 10 ns 时钟约束。
 - [x] 根据 RV64 Vivado STA 报告计算近似综合后 Fmax。
 - [x] 运行 RV64 vectorless FPGA power estimation 并记录其假设。
-- [ ] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
+- [x] 运行 implementation/post-route timing 和基于 activity 的功耗分析。
 - [x] 比较 baseline、victim cache、prefetch 和组合配置。
 - [x] 使用相同 L1 容量及完全一致的 simulation/PPA geometry 重跑比较。
 

@@ -40,11 +40,14 @@ DEFAULT_UPLOADS = [
     "src/l1d_cache_legacy.sv",
     "src/l1d_cache_optimized.sv",
     "src/l1d_cache.sv",
+    "src/l1d_cache_deploy.sv",
+    "src/l1d_fpga_harness.sv",
     "src/tb_l1d_cache.sv",
     "src/tb_l1d_cache_oop.sv",
     "src/tb_l1d_prefetch_units.sv",
     "src/tb_l1d_cache_p3.sv",
     "src/tb_l1d_cache_optimized_p3.sv",
+    "src/tb_l1d_fpga_harness.sv",
     "scripts/run_vivado.tcl",
     "constraints/l1d_baseline.xdc",
     "traces/smoke.trace",
@@ -100,19 +103,92 @@ for _geometry in SIMULATION_CONFIGURATIONS.values():
     _geometry["pf_opt_level"] = 3
 
 SYNTHESIS_CONFIGURATIONS = {
-    name: SIMULATION_CONFIGURATIONS[name]
+    "optimized_pf0_deploy": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 0, "prefetch_policy": 1, "pf_opt_level": 1,
+        "pf_use_stream": 0, "pf_use_adaptive": 0,
+        "pf_use_shadow": 0, "pf_use_mshr": 0,
+        "top": "l1d_cache_deploy", "profile": "deploy",
+    },
+    "optimized_pf0_deploy_vc_lookup": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 0, "prefetch_policy": 1, "pf_opt_level": 1,
+        "pf_use_stream": 0, "pf_use_adaptive": 0,
+        "pf_use_shadow": 0, "pf_use_mshr": 0,
+        "vc_format_in_swap": 0,
+        "top": "l1d_cache_deploy", "profile": "deploy-vc-lookup-ab",
+    },
+    "p3_research": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 1, "pf_opt_level": 3,
+        "pf_use_stream": 1, "pf_use_adaptive": 1,
+        "pf_use_shadow": 1, "pf_use_mshr": 1,
+        "top": "l1d_cache", "profile": "research",
+    },
+    "p3_deploy": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 1, "pf_opt_level": 3,
+        "pf_use_stream": 1, "pf_use_adaptive": 1,
+        "pf_use_shadow": 1, "pf_use_mshr": 1,
+        "top": "l1d_cache_deploy", "profile": "deploy",
+    },
+    "p3_no_shadow_proxy": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 1, "pf_opt_level": 3,
+        "pf_use_stream": 1, "pf_use_adaptive": 1,
+        "pf_use_shadow": 0, "pf_use_mshr": 1,
+        "top": "l1d_cache_deploy", "profile": "deploy-raw-proxy",
+    },
+    "p3_lite_mshr_fixed": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 1, "pf_opt_level": 3,
+        "pf_use_stream": 1, "pf_use_adaptive": 0,
+        "pf_use_shadow": 0, "pf_use_mshr": 1,
+        "top": "l1d_cache_deploy", "profile": "deploy-fixed",
+    },
+    "stream_detector_only": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 1, "pf_opt_level": 3,
+        "pf_use_stream": 1, "pf_use_adaptive": 0,
+        "pf_use_shadow": 0, "pf_use_mshr": 0,
+        "top": "l1d_cache_deploy", "profile": "deploy-stream-only",
+    },
+    "legacy_matched": {
+        "sets": 4, "ways": 2, "line_bytes": 16, "victim_entries": 4,
+        "prefetch": 1, "prefetch_policy": 0, "pf_opt_level": 0,
+        "pf_use_stream": 0, "pf_use_adaptive": 0,
+        "pf_use_shadow": 0, "pf_use_mshr": 0,
+        "top": "l1d_cache_deploy", "profile": "legacy",
+    },
+}
+for _geometry in SYNTHESIS_CONFIGURATIONS.values():
+    _geometry.setdefault("vc_format_in_swap", 1)
+    _geometry.setdefault("pf_idle_guard", 2)
+    _geometry.setdefault("pf_epoch_demands", 256)
+    _geometry.setdefault("pf_off_demands", 512)
+    _geometry.setdefault("pf_probe_budget", 8)
+    _geometry.setdefault("pf_probe_refill", 16)
+    _geometry.setdefault("pf_on_refill", 8)
+
+IMPLEMENTATION_CONFIGURATIONS = {
+    name: SYNTHESIS_CONFIGURATIONS[name]
     for name in (
-        "dm_s8_vc4_pf0",
-        "2w_s4_vc4_pf0",
-        "2w_s4_vc8_pf0",
-        "2w_s4_vc4_pf1",
+        "optimized_pf0_deploy",
+        "p3_deploy",
+        "p3_lite_mshr_fixed",
+        "legacy_matched",
     )
+}
+
+ACTIVITY_SIMULATIONS = {
+    f"harness_{name}": "PASS: deploy harness"
+    for name in IMPLEMENTATION_CONFIGURATIONS
 }
 
 AUXILIARY_SIMULATIONS = {
     "prefetch_units": "directed prefetch-unit checks",
     "p3_prefetch_mshr": "directed P3 PF-MSHR checks",
-    "p3_prefetch_edges": "P3 flight/backpressure, skid TTL, EWMA",
+    "p3_prefetch_edges": "PASS P3 accounting",
 }
 
 BASE_WORKLOADS = (
@@ -164,10 +240,51 @@ SYNTHESIS_PARAMETER_FIELDS = {
     "ENABLE_PREFETCH": "prefetch",
     "PREFETCH_POLICY": "prefetch_policy",
     "PF_OPT_LEVEL": "pf_opt_level",
+    "PF_USE_STREAM": "pf_use_stream",
+    "PF_USE_ADAPTIVE": "pf_use_adaptive",
+    "PF_USE_SHADOW": "pf_use_shadow",
+    "PF_USE_MSHR": "pf_use_mshr",
+    "PF_IDLE_GUARD": "pf_idle_guard",
+    "PF_EPOCH_DEMANDS": "pf_epoch_demands",
+    "PF_OFF_DEMANDS": "pf_off_demands",
+    "PF_PROBE_BUDGET": "pf_probe_budget",
+    "PF_PROBE_REFILL": "pf_probe_refill",
+    "PF_ON_REFILL": "pf_on_refill",
+    "VC_FORMAT_IN_SWAP": "vc_format_in_swap",
 }
+
+OOC_REPORTS = (
+    "utilization.rpt",
+    "hierarchical_utilization.rpt",
+    "timing_summary.rpt",
+    "timing_top20.rpt",
+    "high_fanout.rpt",
+    "control_sets.rpt",
+    "unconstrained_paths.rpt",
+    "power_vectorless.rpt",
+    "synth.dcp",
+)
+
+IMPLEMENTATION_REPORTS = (
+    "post_route_utilization.rpt",
+    "post_route_hierarchical_utilization.rpt",
+    "post_route_timing_summary.rpt",
+    "post_route_timing_top20.rpt",
+    "post_route_high_fanout.rpt",
+    "post_route_control_sets.rpt",
+    "post_route_unconstrained_paths.rpt",
+    "post_route_power_vectorless.rpt",
+    "post_route_power_activity.rpt",
+    "activity_annotation.rpt",
+    "post_route.dcp",
+)
 
 REQUIRED_EVIDENCE_ARTIFACTS = (
     "build/vivado/reports/2w_s4_vc4_pf1.vcd",
+    "build/vivado/reports/activity/optimized_pf0_deploy.saif",
+    "build/vivado/reports/activity/p3_deploy.saif",
+    "build/vivado/reports/activity/p3_lite_mshr_fixed.saif",
+    "build/vivado/reports/activity/legacy_matched.saif",
     "vivado.log",
     "vivado.jou",
 )
@@ -179,6 +296,20 @@ FAIL_PATTERNS = [
     re.compile(r"couldn'?t read file", re.IGNORECASE),
     re.compile(r"\bFAIL\b", re.IGNORECASE),
     re.compile(r"source.*failed", re.IGNORECASE),
+]
+
+# This warning reports a design-gate outcome, not a Vivado execution failure.
+# The exact WNS/TNS result is parsed from the dedicated timing report and is
+# evaluated by evaluate_prefetch_evidence.py. Keep this allowlist deliberately
+# narrow so every other CRITICAL WARNING still fails evidence collection.
+EXPECTED_GATE_WARNING_PATTERNS = [
+    re.compile(
+        r"^\s*CRITICAL WARNING:\s*\[Timing 38-282\]\s+"
+        r"The design failed to meet the timing requirements\.\s+"
+        r"Please see the timing summary report for details on the timing "
+        r"violations\.\s*$",
+        re.IGNORECASE,
+    ),
 ]
 
 try:
@@ -309,8 +440,19 @@ def scan_logs(local_root: Path, rel_paths: list[str]) -> tuple[int, list[str]]:
             findings.append(f"{path}: cannot read log: {exc}")
             continue
         for line_no, line in enumerate(text.splitlines(), start=1):
+            if any(
+                pattern.search(line)
+                for pattern in EXPECTED_GATE_WARNING_PATTERNS
+            ):
+                continue
             matched = None
-            for pattern in FAIL_PATTERNS:
+            patterns = FAIL_PATTERNS
+            if path.suffix.lower() == ".rpt":
+                # Timing/check reports legitimately use FAIL as a status word.
+                # Numerical timing and unconstrained-path gates are evaluated
+                # from their dedicated reports, not as tool-crash signatures.
+                patterns = FAIL_PATTERNS[:-2]
+            for pattern in patterns:
                 if pattern.search(line):
                     matched = pattern
                     break
@@ -323,9 +465,11 @@ def scan_logs(local_root: Path, rel_paths: list[str]) -> tuple[int, list[str]]:
         simulation_suffix = "_simulation.log"
         if path.name.endswith(simulation_suffix):
             simulation_name = path.name[: -len(simulation_suffix)]
-            expected_pass_marker = AUXILIARY_SIMULATIONS.get(
-                simulation_name, "ALL OOP TESTS PASSED"
-            )
+            expected_pass_marker = AUXILIARY_SIMULATIONS.get(simulation_name)
+            if expected_pass_marker is None:
+                expected_pass_marker = ACTIVITY_SIMULATIONS.get(
+                    simulation_name, "ALL OOP TESTS PASSED"
+                )
             if expected_pass_marker not in text:
                 findings.append(
                     f"{path}: missing PASS marker {expected_pass_marker!r}"
@@ -379,14 +523,22 @@ def execution_evidence(
     )
 
 
-def parse_synthesis_parameters(path: Path) -> dict[str, dict[str, set[int]]]:
-    """Read the parameter bindings Vivado reports for each synthesis point."""
+def parse_vivado_parameters(
+    path: Path, stage: str
+) -> dict[str, dict[str, set[int]]]:
+    """Read parameter bindings for one marked Vivado matrix stage."""
     text = path.read_text(encoding="utf-8", errors="replace")
     starts = list(
-        re.finditer(r"^Running Vivado synthesis: (\S+)\s*$", text, re.MULTILINE)
+        re.finditer(
+            r"^Running Vivado (synthesis|implementation): (\S+)\s*$",
+            text,
+            re.MULTILINE,
+        )
     )
     result: dict[str, dict[str, set[int]]] = {}
     for index, match in enumerate(starts):
+        if match.group(1) != stage:
+            continue
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
         section = text[match.end() : end]
         parameters: dict[str, set[int]] = {}
@@ -396,8 +548,18 @@ def parse_synthesis_parameters(path: Path) -> dict[str, dict[str, set[int]]]:
             re.MULTILINE,
         ):
             parameters.setdefault(parameter, set()).add(int(value))
-        result[match.group(1)] = parameters
+        result[match.group(2)] = parameters
     return result
+
+
+def parse_synthesis_parameters(path: Path) -> dict[str, dict[str, set[int]]]:
+    """Read the parameter bindings Vivado reports for each OOC synthesis point."""
+    return parse_vivado_parameters(path, "synthesis")
+
+
+def parse_implementation_parameters(path: Path) -> dict[str, dict[str, set[int]]]:
+    """Read the parameter bindings Vivado reports for each harness build."""
+    return parse_vivado_parameters(path, "implementation")
 
 
 def parse_workload_results(path: Path) -> list[dict[str, str]]:
@@ -415,6 +577,193 @@ def parse_workload_results(path: Path) -> list[dict[str, str]]:
             row[key] = value
         rows.append(row)
     return rows
+
+
+class ReportParseError(ValueError):
+    """A required numerical Vivado report field is absent or malformed."""
+
+
+def _read_report(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ReportParseError(f"{path}: cannot read report: {exc}") from exc
+
+
+def parse_utilization_report(path: Path) -> dict[str, int]:
+    """Parse the first summary table from a Vivado utilization report."""
+    text = _read_report(path)
+    labels = {
+        "slice_luts": r"Slice LUTs\*?",
+        "lut_as_logic": r"LUT as Logic",
+        "lut_as_memory": r"LUT as Memory",
+        "slice_registers": r"Slice Registers",
+        "f7_muxes": r"F7 Muxes",
+        "f8_muxes": r"F8 Muxes",
+        "block_ram_tiles": r"Block RAM Tile",
+    }
+    values: dict[str, int] = {}
+    for field, label in labels.items():
+        match = re.search(
+            rf"^\|\s*{label}\s*\|\s*([0-9]+)\s*\|",
+            text,
+            re.MULTILINE,
+        )
+        if match is None:
+            raise ReportParseError(f"{path}: missing utilization field {field}")
+        values[field] = int(match.group(1), 10)
+    control_sets = re.search(
+        r"^\|\s*Unique Control Sets\s*\|\s*([0-9]+)\s*\|",
+        text,
+        re.MULTILINE,
+    )
+    values["unique_control_sets"] = (
+        int(control_sets.group(1), 10) if control_sets else 0
+    )
+    return values
+
+
+def parse_timing_summary_report(
+    path: Path, *, clock_period_ns: float = 10.0
+) -> dict[str, float | int]:
+    """Parse setup/hold summary and check_timing counts fail-closed."""
+    text = _read_report(path)
+    check_start = text.find("check_timing report")
+    if check_start < 0:
+        raise ReportParseError(f"{path}: missing check_timing report")
+    summary_start = text.find("| Design Timing Summary", check_start)
+    if summary_start < 0:
+        raise ReportParseError(f"{path}: missing Design Timing Summary")
+    check_section = text[check_start:summary_start]
+    summary = text[summary_start:]
+    row = re.search(
+        r"^\s*(-?[0-9]+(?:\.[0-9]+)?)\s+"
+        r"(-?[0-9]+(?:\.[0-9]+)?)\s+([0-9]+)\s+([0-9]+)\s+"
+        r"(-?[0-9]+(?:\.[0-9]+)?)\s+"
+        r"(-?[0-9]+(?:\.[0-9]+)?)\s+([0-9]+)\s+([0-9]+)",
+        summary,
+        re.MULTILINE,
+    )
+    if row is None:
+        raise ReportParseError(f"{path}: missing numerical timing summary row")
+    wns = float(row.group(1))
+    tns = float(row.group(2))
+    setup_failing = int(row.group(3), 10)
+    whs = float(row.group(5))
+    ths = float(row.group(6))
+    hold_failing = int(row.group(7), 10)
+    data_path_ns = clock_period_ns - wns
+    if data_path_ns <= 0:
+        raise ReportParseError(
+            f"{path}: impossible slack-derived data path {data_path_ns} ns"
+        )
+    checks: dict[str, int] = {}
+    for name in (
+        "no_clock",
+        "constant_clock",
+        "unconstrained_internal_endpoints",
+        "no_input_delay",
+        "no_output_delay",
+        "multiple_clock",
+        "loops",
+        "partial_input_delay",
+        "partial_output_delay",
+        "latch_loops",
+    ):
+        matches = re.findall(rf"checking {name} \(([0-9]+)\)", check_section)
+        if len(matches) != 2 or matches[0] != matches[1]:
+            raise ReportParseError(
+                f"{path}: inconsistent check_timing count {name}: {matches}"
+            )
+        checks[name] = int(matches[0], 10)
+    return {
+        "wns_ns": wns,
+        "tns_ns": tns,
+        "setup_failing_endpoints": setup_failing,
+        "whs_ns": whs,
+        "ths_ns": ths,
+        "hold_failing_endpoints": hold_failing,
+        "clock_period_ns": clock_period_ns,
+        "slack_derived_fmax_mhz": 1000.0 / data_path_ns,
+        **{f"check_{name}": count for name, count in checks.items()},
+    }
+
+
+def parse_power_report(path: Path) -> dict[str, float | int | str | None]:
+    """Parse the Vivado power summary and available activity provenance."""
+    text = _read_report(path)
+
+    def table_value(label: str) -> str:
+        match = re.search(
+            rf"^\|\s*{re.escape(label)}\s*\|\s*([^|]+?)\s*\|",
+            text,
+            re.MULTILINE,
+        )
+        if match is None:
+            raise ReportParseError(f"{path}: missing power field {label}")
+        return match.group(1).strip()
+
+    try:
+        total = float(table_value("Total On-Chip Power (W)"))
+        dynamic = float(table_value("Dynamic (W)"))
+        static = float(table_value("Device Static (W)"))
+    except ValueError as exc:
+        raise ReportParseError(f"{path}: malformed numerical power field") from exc
+    activity_file = table_value("Simulation Activity File")
+    matched_text = table_value("Design Nets Matched")
+    matched_count = re.fullmatch(r"([0-9]+)\s+of\s+([0-9]+)", matched_text)
+    matched_percent = re.fullmatch(
+        r"([0-9]+(?:\.[0-9]+)?)%\s*\(([0-9]+)/([0-9]+)\)",
+        matched_text,
+    )
+    if matched_count:
+        matched_nets: int | None = int(matched_count.group(1), 10)
+        total_nets: int | None = int(matched_count.group(2), 10)
+    elif matched_percent:
+        reported_percent = float(matched_percent.group(1))
+        matched_nets = int(matched_percent.group(2), 10)
+        total_nets = int(matched_percent.group(3), 10)
+        if not 0.0 <= reported_percent <= 100.0:
+            raise ReportParseError(
+                f"{path}: out-of-range Design Nets Matched percentage "
+                f"{reported_percent}"
+            )
+        if total_nets <= 0 or matched_nets > total_nets:
+            raise ReportParseError(
+                f"{path}: invalid Design Nets Matched counts "
+                f"{matched_nets}/{total_nets}"
+            )
+        calculated_percent = 100.0 * matched_nets / total_nets
+        if abs(reported_percent - calculated_percent) > 1.0:
+            raise ReportParseError(
+                f"{path}: inconsistent Design Nets Matched value "
+                f"{matched_text!r}"
+            )
+    elif matched_text == "NA":
+        matched_nets = None
+        total_nets = None
+    else:
+        raise ReportParseError(
+            f"{path}: malformed Design Nets Matched value {matched_text!r}"
+        )
+    if total_nets is not None and (
+        total_nets <= 0 or matched_nets is None or matched_nets > total_nets
+    ):
+        raise ReportParseError(
+            f"{path}: invalid Design Nets Matched counts "
+            f"{matched_nets}/{total_nets}"
+        )
+    return {
+        "total_on_chip_w": total,
+        "dynamic_w": dynamic,
+        "device_static_w": static,
+        "confidence": table_value("Confidence Level"),
+        "simulation_activity_file": (
+            None if activity_file in {"---", "NA"} else activity_file
+        ),
+        "matched_design_nets": matched_nets,
+        "total_design_nets": total_nets,
+    }
 
 
 def validate_optimized_lifecycle(
@@ -495,12 +844,17 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
     evidence: dict[str, object] = {
         "simulations": [],
         "synthesis": [],
+        "implementation": [],
         "artifacts": {},
     }
 
     expected_logs = {
         f"{name}_simulation.log" for name in SIMULATION_CONFIGURATIONS
-    } | {f"{name}_simulation.log" for name in AUXILIARY_SIMULATIONS}
+    } | {
+        f"{name}_simulation.log" for name in AUXILIARY_SIMULATIONS
+    } | {
+        f"{name}_simulation.log" for name in ACTIVITY_SIMULATIONS
+    }
     actual_logs = {path.name for path in report_root.glob("*_simulation.log")}
     if actual_logs != expected_logs:
         findings.append(
@@ -509,7 +863,7 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
             f"extra={sorted(actual_logs - expected_logs)}"
         )
 
-    expected_dirs = set(SYNTHESIS_CONFIGURATIONS)
+    expected_dirs = {"ooc", "implementation", "activity"}
     actual_dirs = {path.name for path in report_root.iterdir() if path.is_dir()} \
         if report_root.is_dir() else set()
     if actual_dirs != expected_dirs:
@@ -621,13 +975,35 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
             }
         )
 
+    for name, pass_marker in ACTIVITY_SIMULATIONS.items():
+        log = report_root / f"{name}_simulation.log"
+        if not log.is_file():
+            continue
+        text = log.read_text(encoding="utf-8", errors="replace")
+        if pass_marker not in text:
+            findings.append(f"{log}: missing PASS marker {pass_marker!r}")
+        evidence["simulations"].append(
+            {
+                "config_id": name,
+                "geometry": IMPLEMENTATION_CONFIGURATIONS[
+                    name.removeprefix("harness_")
+                ],
+                "log": str(log.relative_to(local_root)),
+                "sha256": sha256(log),
+                "workload_results": 0,
+                "workloads": [],
+            }
+        )
+
     vivado_log = local_root / "vivado.log"
     synthesis_parameters: dict[str, dict[str, set[int]]] = {}
+    implementation_parameters: dict[str, dict[str, set[int]]] = {}
     if vivado_log.is_file():
         try:
             synthesis_parameters = parse_synthesis_parameters(vivado_log)
+            implementation_parameters = parse_implementation_parameters(vivado_log)
         except (OSError, UnicodeError, ValueError) as exc:
-            findings.append(f"cannot parse synthesis parameters: {exc}")
+            findings.append(f"cannot parse Vivado parameters: {exc}")
     actual_synthesis_sections = set(synthesis_parameters)
     expected_synthesis_sections = set(SYNTHESIS_CONFIGURATIONS)
     if actual_synthesis_sections != expected_synthesis_sections:
@@ -637,11 +1013,10 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
             f"extra={sorted(actual_synthesis_sections - expected_synthesis_sections)}"
         )
 
-    required_reports = ("utilization.rpt", "timing_summary.rpt", "power.rpt")
     for name, geometry in SYNTHESIS_CONFIGURATIONS.items():
-        report_dir = report_root / name
+        report_dir = report_root / "ooc" / name
         artifacts: dict[str, dict[str, str]] = {}
-        for filename in required_reports:
+        for filename in OOC_REPORTS:
             report = report_dir / filename
             if not report.is_file():
                 findings.append(f"missing synthesis report: {report}")
@@ -650,6 +1025,19 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
                 "path": str(report.relative_to(local_root)),
                 "sha256": sha256(report),
             }
+        metrics: dict[str, object] = {}
+        for metric_name, filename, parser in (
+            ("utilization", "utilization.rpt", parse_utilization_report),
+            ("timing", "timing_summary.rpt", parse_timing_summary_report),
+            ("power_vectorless", "power_vectorless.rpt", parse_power_report),
+        ):
+            report = report_dir / filename
+            if not report.is_file():
+                continue
+            try:
+                metrics[metric_name] = parser(report)
+            except ReportParseError as exc:
+                findings.append(str(exc))
         bound_parameters = synthesis_parameters.get(name, {})
         normalized_parameters: dict[str, object] = {}
         for parameter, geometry_field in SYNTHESIS_PARAMETER_FIELDS.items():
@@ -669,6 +1057,84 @@ def validate_report_matrix(local_root: Path) -> tuple[list[str], dict[str, objec
                 "geometry": geometry,
                 "bound_parameters": normalized_parameters,
                 "reports": artifacts,
+                "metrics": metrics,
+            }
+        )
+
+    actual_implementation_sections = set(implementation_parameters)
+    expected_implementation_sections = set(IMPLEMENTATION_CONFIGURATIONS)
+    if actual_implementation_sections != expected_implementation_sections:
+        findings.append(
+            "Vivado implementation section mismatch: "
+            f"missing={sorted(expected_implementation_sections - actual_implementation_sections)} "
+            f"extra={sorted(actual_implementation_sections - expected_implementation_sections)}"
+        )
+
+    for name, geometry in IMPLEMENTATION_CONFIGURATIONS.items():
+        report_dir = report_root / "implementation" / name
+        artifacts = {}
+        for filename in IMPLEMENTATION_REPORTS:
+            report = report_dir / filename
+            if not report.is_file():
+                findings.append(f"missing implementation report: {report}")
+                continue
+            artifacts[filename] = {
+                "path": str(report.relative_to(local_root)),
+                "sha256": sha256(report),
+            }
+        metrics = {}
+        for metric_name, filename, parser in (
+            (
+                "utilization",
+                "post_route_utilization.rpt",
+                parse_utilization_report,
+            ),
+            (
+                "timing",
+                "post_route_timing_summary.rpt",
+                parse_timing_summary_report,
+            ),
+            (
+                "power_vectorless",
+                "post_route_power_vectorless.rpt",
+                parse_power_report,
+            ),
+            (
+                "power_activity",
+                "post_route_power_activity.rpt",
+                parse_power_report,
+            ),
+        ):
+            report = report_dir / filename
+            if not report.is_file():
+                continue
+            try:
+                metrics[metric_name] = parser(report)
+            except ReportParseError as exc:
+                findings.append(str(exc))
+        bound_parameters = implementation_parameters.get(name, {})
+        normalized_parameters = {}
+        for parameter, geometry_field in SYNTHESIS_PARAMETER_FIELDS.items():
+            values = bound_parameters.get(parameter, set())
+            expected_value = geometry[geometry_field]
+            if values != {expected_value}:
+                findings.append(
+                    f"Vivado implementation {name}: {parameter} bindings="
+                    f"{sorted(values)}, expected [{expected_value}]"
+                )
+            normalized_parameters[parameter] = (
+                next(iter(values)) if len(values) == 1 else sorted(values)
+            )
+        evidence["implementation"].append(
+            {
+                "config_id": name,
+                "geometry": geometry,
+                "bound_parameters": normalized_parameters,
+                "reports": artifacts,
+                "metrics": metrics,
+                "activity_source": (
+                    f"build/vivado/reports/activity/{name}.saif"
+                ),
             }
         )
 
@@ -716,7 +1182,7 @@ def write_evidence_manifest(
         path = local_root / rel_path
         inputs[rel_path] = sha256(path)
     manifest = {
-        "schema": "l1d-vivado-evidence-v2",
+        "schema": "l1d-vivado-evidence-v3",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": "PASS" if not findings else "FAIL",
         "findings": findings,
@@ -858,6 +1324,7 @@ def main() -> int:
     evidence: dict[str, object] = {
         "simulations": [],
         "synthesis": [],
+        "implementation": [],
         "artifacts": {},
     }
     if not args.probe_only:

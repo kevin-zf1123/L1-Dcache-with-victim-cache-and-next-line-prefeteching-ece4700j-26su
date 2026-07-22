@@ -3,12 +3,13 @@
 ## 当前状态
 
 本文档是 L1 数据缓存的中文说明副本；英文
-`docs/l1d_baseline.md` 是权威版本。至 2026-07-13，`l1d_cache`
-是一个 elaboration-time wrapper，可选择两个 write-back、write-allocate
-engine：
+`docs/l1d_baseline.md` 是权威版本。至 2026-07-22，`l1d_cache`
+仍是可选择两个 write-back、write-allocate engine 的 elaboration-time
+研究 wrapper：
 
 - `PREFETCH_POLICY=0` 选择冻结的 legacy blocking next-line engine；
-- `PREFETCH_POLICY=1` 选择 optimized direct-L1 engine，也是默认值；
+- `PREFETCH_POLICY=1` 选择 optimized direct-L1 研究 engine，也是研究
+  wrapper 的默认值；
 - `PF_OPT_LEVEL=1/2/3` 分别选择安全 next-line、自适应相邻 stream、
   shadow feedback + 单 PF MSHR；默认为 3。
 
@@ -28,14 +29,21 @@ engine：
   discard、suppression、controller、shadow 和 block-cost telemetry；
 - Icarus Verilog 自检测试和 Vivado batch 入口。
 
-Icarus Verilog 仅用于快速初步功能检查。项目最终以 Vivado 仿真和综合
-结果为准。
+面向板级综合的 seam 是 `l1d_cache_deploy`。它默认
+`ENABLE_PREFETCH=0`、`PF_OPT_LEVEL=1`，并通过常量折叠禁用所有可选
+prefetch 结构。Full P3 和 P3-lite 必须显式选择，仍属研究 profile。
+`l1d_fpga_harness` 为 Vivado 提供可放置的标量 I/O top，而不是把完整
+line interface 暴露为器件引脚。
 
-最终主 profile replay 在相同 25 个 zero-bubble window 上验证了四个 policy
-level。P3 将 aggregate service cycles 降低 724，byte overhead 为零、harmful
-window 为零、prefetch-caused write-back 为零。P1、P2 与冻结 legacy 为
-neutral，因为它们没有在 zero-bubble opportunity 中 issue blocking prefetch。详见
-[optimized 无地址证据](../evidence/2026-07-13-optimized/README.md)。
+Icarus Verilog 用于快速功能检查。Vivado XSim、OOC synthesis、独立
+post-route implementation、timing 和基于 activity 的 power 是最终 FPGA 证据。
+
+7 月 22 日主 replay 在相同 25 个 zero-bubble window 上验证了 legacy、
+P1、P2、full P3 和 P3-lite。Full P3 节省 1 个 aggregate service cycle；
+P3-lite 增加 31 cycle。两者的 byte overhead 和 prefetch-caused write-back 都为
+零，但均未达到 1% improvement 门禁。P3-lite 还未通过面积、setup timing、
+activity power 和按实际频率折算的执行时间门禁，因此部署默认保持
+prefetch-off。详见 [7 月 22 日无地址证据](../evidence/2026-07-22-prefetch-ppa/README.md)。
 
 ## 源码结构
 
@@ -49,8 +57,11 @@ neutral，因为它们没有在 zero-bubble opportunity 中 issue blocking prefe
 | `src/l1d_shadow_cache.sv` | Demand-only tag/dirty counterfactual L1/VC model |
 | `src/l1d_cache_optimized.sv` | 安全 direct-L1 insertion、lifecycle telemetry、shadow feedback 与单 PF MSHR |
 | `src/l1d_cache.sv` | Legacy/optimized elaboration-time wrapper；optimized level 3 为默认 |
+| `src/l1d_cache_deploy.sv` | 部署 seam；prefetch-off 默认与显式结构 feature 参数 |
+| `src/l1d_fpga_harness.sv` | 用于独立 implementation 和 activity power 的标量 I/O FPGA harness |
 | `src/tb_l1d_cache.sv` | 自检 testbench 和缓存行内存模型 |
 | `src/tb_l1d_cache_oop.sv` | Class-based Vivado Phase 3 workload harness |
+| `src/tb_l1d_fpga_harness.sv` | Deploy profile signature 和 SAIF activity testbench |
 | `scripts/run_iverilog.sh` | 功能与 synthetic workload 初步回归 |
 | `scripts/summarize_workloads.sh` | 将 workload 日志记录转换为 CSV |
 | `scripts/validate_workload_results.py` | fail-closed 的 schema-2/schema-3 字段与 counter 守恒验证器 |
@@ -62,7 +73,10 @@ neutral，因为它们没有在 zero-bubble opportunity 中 issue blocking prefe
 | `scripts/capture_spec_qemu_windows.py` | fail-closed 的逐命令 RV64 QEMU 抓取与私有 manifest |
 | `scripts/split_qemu_memtrace_windows.py` | 验证 schema-v3 raw capture 并生成 canonical 分阶段 replay window |
 | `scripts/run_spec_trace_replay.sh` | manifest 驱动的四配置 replay 与 paired analysis |
+| `scripts/run_feedback_replay_matrix.sh` | 可恢复、串行的 7 月 22 日 main/sweep/sensitivity campaign matrix |
 | `scripts/summarize_spec_replay.py` | 严格验证 artifact、counter、sidecar 与 off/on pair |
+| `scripts/evaluate_prefetch_evidence.py` | Replay 与 Vivado 部署门禁评估器 |
+| `scripts/publish_prefetch_evidence.py` | 无地址证据发布器和隐私审计 |
 | `scripts/render_spec_replay_plots.py` | 确定性 helpful/neutral/harmful 分类 CSV 与 cycle-delta SVG |
 | `scripts/analyze_trace_windows.py` | locality、stride、reuse distance 与 set pressure 分析 |
 | `constraints/l1d_baseline.xdc` | 默认 100 MHz 综合时钟约束 |
@@ -74,7 +88,7 @@ neutral，因为它们没有在 zero-bubble opportunity 中 issue blocking prefe
 
 ## 架构与 Block Diagram
 
-Optimized 默认路径保留 CPU 和下级内存协议，但将 speculative
+Optimized 研究路径保留 CPU 和下级内存协议，但将 speculative
 control 与 demand service 分离：
 
 - CPU request 和 response 分别使用独立的 ready/valid handshake；
@@ -154,6 +168,37 @@ unused speculative line；该 line 被替换时直接 discard，不进入 VC。
 | `ENABLE_PREFETCH` | 1 | elaboration-time 的 built-in/external prefetch 接收开关；仍受 runtime enable 控制 |
 | `PREFETCH_POLICY` | 1 | `0` 冻结 legacy 行为；`1` 选择 optimized engine |
 | `PF_OPT_LEVEL` | 3 | `1` safe next-line；`2` adaptive stream；`3` shadow feedback + PF MSHR |
+
+上述默认值属于为保持研究兼容而留下的 `l1d_cache`。
+`l1d_cache_deploy` 则默认 `ENABLE_PREFETCH=0`，并将 `PF_USE_STREAM`、
+`PF_USE_ADAPTIVE`、`PF_USE_SHADOW` 和 `PF_USE_MSHR` 暴露为独立
+elaboration 参数。被禁用的结构会在综合后消失，而不是只被保持在 reset。
+其注册化 PF scheduler 使用 S0 capture 和 S1 request 两级；下级内存请求只由
+已注册 MSHR payload 驱动，因此可在任意多个 `mem_req_ready=0` cycle 中保持稳定。
+显式 lower-port grant 使 state-owned demand read 与 write-back 具有优先权；只有
+总线 payload 确为已注册 PF request 时，PF issue、token 与 cost 记账才会前进。
+
+部署选择 `VC_FORMAT_IN_SWAP=1`。OOC A/B 结果为：swap-stage format 使用
+6,048 LUT、2,047 register、WNS +0.363 ns；lookup-stage format 使用 5,647 LUT、
+2,034 register、WNS -0.675 ns。虽然前者逻辑更多，但它是唯一闭合 10 ns
+OOC setup 的 PF0 变体，因此保留。
+
+### 瞬态 Line Register 生存期
+
+本次没有添加持久的 line-sized prefetch buffer。现有 line-width register 的状态
+所有权不同，不能安全合并：
+
+| Register | 生存期与 owner | 不能复用的原因 |
+| --- | --- | --- |
+| `data_q[way]` | 当前已发起 set lookup 的同步 SRAM read output | 下一次 array read 会改变它，不是跨 arbitration 的存储。 |
+| `working_line` | Demand hit-write 或 victim swap 副本，持续到 `ST_HIT_WRITE`/`ST_VC_SWAP` | 并发 PF response 会在 array write 或 response format 完成前破坏 demand data。 |
+| `fill_line` | 唯一的瞬态 lower-read response，从 capture 持续到 demand install、PF merge/install 或有界 discard | 它已是共享 response register；如果 arbitration 在两个 cycle 内无法消费 PF response，就会 discard。延长它的生存期就等于新增 prefetch buffer。 |
+| `evicted_data` | 从 lookup/revalidation 到 VC insertion 或 swap 的 replacement-line snapshot | 覆盖它会丢失必须保存或归因为 unused 的精确缓存行。 |
+| `wb_data` | 在下级内存 write handshake 期间保持的 dirty victim snapshot | 别名复用会在 `mem_req_ready` 为低时违反 request payload 稳定性。 |
+
+这些生存期在 demand/PF merge 和 eviction 路径上会重叠。因此复用另一个
+register 会导致数据破坏或协议不稳定，而不是消除冗余存储。真正的 buffer
+或更宽的内存 transaction interface 属于架构变更，不在本次收尾授权范围内。
 
 Demand 替换是每 set round-robin。Optimized prefetch admission 依次选择
 invalid way、unused-prefetched way，然后仅当 confidence=3 且 VC 有 invalid
@@ -326,7 +371,35 @@ drop/protocol counter，以及 replay service cycle。
 
 ## Vivado 验证证据
 
-### Optimized P3 证据
+### 7 月 22 日部署收尾
+
+最终远程 Vivado 2024.2.1 执行退出状态为 0。证据收集器验证了 15 份
+XSim log、8 个 OOC synthesis 配置、4 个独立 post-route implementation、
+SAIF-backed power report 和 121 个下载的 log/report 文件。
+`l1d-vivado-evidence-v3` manifest 为 `PASS`，finding 为零。预期的
+`[Timing 38-282]` setup 门禁 warning 由数值报告评估；其他任何 critical warning
+仍会使收集失败。
+
+受控 PF0/P3-lite 比较为：
+
+| 阶段 / 指标 | Optimized PF0 | P3-lite | 结果 |
+| --- | ---: | ---: | ---: |
+| OOC slice LUT | 6,048 | 10,055 | +66.25% |
+| OOC register | 2,047 | 3,095 | +51.20% |
+| 10 ns OOC WNS | +0.363 ns | -5.896 ns | P3-lite setup 失败 |
+| Post-route slice LUT | 751 | 2,955 | +293.48% |
+| Post-route register | 748 | 2,280 | +204.81% |
+| Post-route WNS | -0.407 ns | -4.169 ns | 两者均失败，P3-lite 更差 |
+| Post-route WHS | +0.118 ns | +0.065 ns | 两者 hold 通过 |
+| Activity dynamic power | 0.008 W | 0.015 W | +87.5% |
+
+所有 implementation 变体的 unconstrained path 都为零。综合门禁决策为
+`DISABLE_DEPLOY_PREFETCH_STRUCTURAL_LIMIT`：P3-lite 在主 replay 中还增加
+31 cycle，其 stream detector 占据主要面积与关键路径。参数调整及删除
+adaptive/shadow 结构都没有消除该结构成本。完整表格与 provenance 见
+[7 月 22 日证据包](../evidence/2026-07-22-prefetch-ppa/README.md)。
+
+### Optimized P3 证据（历史 7 月 13 日结果）
 
 最终 optimized 远程 campaign 已在 Vivado 2024.2.1 下通过。它生成了
 11 份 XSim log：8 个 class-based OOP workload point 和 3 个定向
@@ -806,6 +879,6 @@ entry；需要先增加零 entry bypass，才能在未来进行 0/4/8 sweep。
 - coherence、atomic、显式 fence/flush/invalidate 命令、ECC、MMU/TLB
   地址转换、PMP/PMA 检查和 uncached MMIO region 不属于该 L1D baseline，
   需要由外围系统逻辑或后续 RTL 处理；
-- 先前 legacy 与 optimized P3 XSim/综合后报告均已完成。手工检查
-  全部路径波形、implementation/post-route timing 和基于实际 activity 的
-  功耗分析仍是最终签核的待完成项。
+- XSim、OOC synthesis、独立 implementation/post-route timing 和基于 activity
+  的 power 证据已完成。结果未闭合部署门禁；prefetch 默认保持关闭。
+- 所有路径的手工 waveform 检查仍未完成。
